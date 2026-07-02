@@ -175,3 +175,21 @@ graph TD
     Cron & Noti <--> Cache
     Task <--> S3
 ```
+
+## 8. Công nghệ Đề xuất (Tech Stack)
+
+Để đáp ứng các yêu cầu phi chức năng (NFR) về bảo mật, hiệu suất và khả năng bảo trì, hệ thống sử dụng bộ công nghệ sau (áp dụng kiến trúc **Modular Monolith** kết hợp **Turborepo**):
+
+- **Frontend (Web):** React (Vite, TSX), HeroUI, Tailwind CSS.
+- **Frontend (Mobile):** Kotlin (Android) và Swift (iOS).
+- **Browser Extension:** JavaScript (Manifest V3).
+- **Backend:** Node.js (Express, TypeScript).
+- **Database:** MongoDB (Mongoose).
+- **Cache & Queue:** Valkey (BullMQ).
+- **DevOps:** Docker, PM2, Nginx.
+- **Security:** Helmet, CORS, Zod (Data Validation), JWT, Google OAuth, 2FA, Rate Limit (Token Bucket).
+- **Authorization:** RBAC (Role-Based Access Control).
+- **Real-time & Notifications:** Socket.IO (Web/Extension) và Firebase/APNs (Mobile).
+- **Logging:** Pino.
+- **Storage:** MinIO.
+- **AI / OCR:** Qwen 3.6 27B (vLLM).
