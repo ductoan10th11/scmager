@@ -1,25 +1,22 @@
-import express, { Request, Response } from 'express';
-import cors from 'cors';
+import dotenv from 'dotenv';
+import app from './src/app';
 import { connectDB } from './src/configs/mongo';
+import { seedDefaultAdmin } from './src/seed/default-admin';
 
-// Khởi tạo app
-const app = express();
+dotenv.config();
+
 const PORT = process.env.PORT || 8004;
 
-// Middleware
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+const bootstrap = async () => {
+  await connectDB();
+  await seedDefaultAdmin();
 
-// Kết nối Database
-connectDB();
+  app.listen(PORT, () => {
+    console.log(`🚀 Server is running on port ${PORT}`);
+  });
+};
 
-// Basic route để test API
-app.get('/', (req: Request, res: Response) => {
-  res.json({ message: 'SCMager Backend API is running!' });
-});
-
-// Start server
-app.listen(PORT, () => {
-  console.log(`🚀 Server is running on port ${PORT}`);
+bootstrap().catch((error) => {
+  console.error('❌ Server bootstrap failed:', error);
+  process.exit(1);
 });

@@ -1,16 +1,22 @@
 <script setup>
 import { ref, reactive, onMounted, computed, watch, nextTick, onUnmounted } from 'vue'
 import { 
+  AlertTriangle,
   ChevronLeft, 
   ChevronRight, 
-  Search, 
-  Settings, 
+  Download,
   Plus, 
-  Filter
+  Filter,
+  Loader2,
+  Paperclip,
+  Play,
+  SendHorizontal,
 } from 'lucide-vue-next'
 import { today, getLocalTimeZone } from '@internationalized/date'
+import { ScheduleService } from '@/features/schedule/services/schedule.service'
+import { http } from '@/shared/api/http'
+import { useAuth } from '@/features/auth/composables/useAuth'
 import { Button } from '@/components/ui/button'
-import { Card } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Separator } from '@/components/ui/separator'
 import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar'
@@ -24,15 +30,22 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 
 const viewportRef = ref(null)
 const isSidebarOpen = ref(true)
+const scheduleEvents = ref([])
+const scheduleLoading = ref(false)
+const scheduleError = ref('')
+const { user } = useAuth()
+const isSpecialist = computed(() => user.value?.role?.code === 'SPECIALIST')
 
 // Core State
 const currentView = ref('day') // Default to Day view as requested
 const miniCalendarDate = ref(today(getLocalTimeZone()))
 const currentTime = ref(new Date())
 const transitionDirection = ref('slide-left')
+let currentTimeInterval = null
 
 const scrollToFocusedDay = async () => {
   await nextTick()
@@ -146,6 +159,7 @@ const preventContextMenu = (e) => {
 onUnmounted(() => {
   window.removeEventListener('mousemove', handlePanMove)
   window.removeEventListener('mouseup', handlePanEnd)
+  if (currentTimeInterval) clearInterval(currentTimeInterval)
   document.body.style.cursor = ''
 })
 
@@ -205,15 +219,76 @@ const visibleDaysArray = computed(() => {
   return days;
 })
 
-import { globalMockEvents } from '@/mocks/schedule'
-
 const filteredEvents = computed(() => {
   const visibleDateStrs = new Set(visibleDaysArray.value.map(d => d.dateStr));
-  return globalMockEvents.value.filter(e => 
-    visibleDateStrs.has(e.dateStr) && 
-    e.assignee.fullName === 'Nguyễn Văn A'
-  );
+  return scheduleEvents.value.filter((event) => {
+    if (!visibleDateStrs.has(event.dateStr)) return false
+    if (filters.all) return true
+    if (event.task?.status === 'TODO') return filters.coquan
+    if (['IN_PROGRESS', 'REVISION_REQUESTED'].includes(event.task?.status)) return filters.canhan
+    if (event.task?.status === 'PENDING_REVIEW') return filters.events
+    return filters.congtac
+  })
 })
+
+const statusMeta = {
+  TODO: { label: 'Chờ xử lý', class: 'bg-blue-50 text-blue-700 border-blue-200' },
+  IN_PROGRESS: { label: 'Đang thực hiện', class: 'bg-amber-50 text-amber-700 border-amber-200' },
+  PENDING_REVIEW: { label: 'Chờ duyệt', class: 'bg-violet-50 text-violet-700 border-violet-200' },
+  REVISION_REQUESTED: { label: 'Cần chỉnh sửa', class: 'bg-orange-50 text-orange-700 border-orange-200' },
+  DONE: { label: 'Hoàn thành', class: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+}
+
+const selectedEvent = ref(null)
+const taskActionLoading = ref('')
+const taskActionError = ref('')
+const submitNote = ref('')
+
+const openTaskEvent = (event) => {
+  selectedEvent.value = event
+  taskActionError.value = ''
+  submitNote.value = ''
+}
+
+const refreshSchedule = async () => {
+  scheduleLoading.value = true
+  scheduleError.value = ''
+  try {
+    scheduleEvents.value = await ScheduleService.listEvents()
+  } catch (error) {
+    scheduleError.value = error.message || 'Không thể tải lịch làm việc.'
+  } finally {
+    scheduleLoading.value = false
+  }
+}
+
+const runTaskAction = async (action) => {
+  const taskId = selectedEvent.value?.task?._id
+  if (!taskId) return
+  taskActionLoading.value = action
+  taskActionError.value = ''
+  try {
+    await http(`/api/tasks/${taskId}/${action}`, {
+      method: 'POST',
+      body: action === 'submit-review' ? { note: submitNote.value.trim() } : {},
+    })
+    selectedEvent.value = null
+    await refreshSchedule()
+  } catch (error) {
+    taskActionError.value = error.message || 'Không thể cập nhật nhiệm vụ.'
+  } finally {
+    taskActionLoading.value = ''
+  }
+}
+
+const formatTaskDate = (value) => value
+  ? new Date(value).toLocaleString('vi-VN', { dateStyle: 'short', timeStyle: 'short' })
+  : 'Chưa thiết lập'
+const formatFileSize = (bytes = 0) => (
+  bytes >= 1048576
+    ? `${(bytes / 1048576).toFixed(1)} MB`
+    : `${Math.max(Math.round(bytes / 1024), 1)} KB`
+)
 
 const actualTodayStr = computed(() => {
   const t = today(getLocalTimeZone());
@@ -257,6 +332,7 @@ const draftEventTitle = ref('')
 
 const handleMouseDown = (e) => {
   if (e.button !== 0) return
+  if (isSpecialist.value) return
   if (currentView.value !== 'day') return
   isDragging.value = true
   const rect = e.currentTarget.getBoundingClientRect()
@@ -301,7 +377,7 @@ const formatHour = (hourFloat) => {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
 }
 
-const handleSaveDraftEvent = () => {
+const handleSaveDraftEvent = async () => {
   if (!draftEventTitle.value.trim()) draftEventTitle.value = 'Cuộc họp mới'
   
   const newEvent = {
@@ -320,14 +396,20 @@ const handleSaveDraftEvent = () => {
     remainingCount: 0
   }
   
-  globalMockEvents.value.push(newEvent)
-  
-  isCreateModalOpen.value = false
-  draftEventTitle.value = ''
+  try {
+    const created = await ScheduleService.createEvent(newEvent)
+    if (created) scheduleEvents.value.push(created)
+    isCreateModalOpen.value = false
+    draftEventTitle.value = ''
+  } catch (error) {
+    scheduleError.value = error.message || 'Không thể tạo sự kiện.'
+  }
 }
 
-onMounted(() => {
-  setInterval(() => {
+onMounted(async () => {
+  await refreshSchedule()
+
+  currentTimeInterval = setInterval(() => {
     currentTime.value = new Date()
   }, 60000)
   
@@ -357,19 +439,19 @@ onMounted(() => {
         <div class="flex flex-col gap-1">
           <label for="all" class="flex items-center gap-3 px-2 py-2 hover:bg-zinc-100 rounded-xl cursor-pointer group transition-colors">
             <Checkbox id="all" v-model:checked="filters.all" class="rounded-[4px] border-zinc-300 data-[state=checked]:bg-zinc-900 data-[state=checked]:border-zinc-900 shrink-0" />
-            <span class="text-sm font-medium text-zinc-700 group-hover:text-zinc-950 transition-colors flex-1 text-left whitespace-nowrap">Tất cả lịch</span>
+            <span class="text-sm font-medium text-zinc-700 group-hover:text-zinc-950 transition-colors flex-1 text-left whitespace-nowrap">Tất cả nhiệm vụ</span>
           </label>
           <label for="coquan" class="flex items-center gap-3 px-2 py-2 hover:bg-zinc-100 rounded-xl cursor-pointer group transition-colors">
             <Checkbox id="coquan" v-model:checked="filters.coquan" class="rounded-[4px] border-zinc-300 data-[state=checked]:bg-zinc-900 data-[state=checked]:border-zinc-900 shrink-0" />
-            <span class="text-sm font-medium text-zinc-700 group-hover:text-zinc-950 transition-colors flex-1 text-left whitespace-nowrap">Lịch cơ quan</span>
+            <span class="text-sm font-medium text-zinc-700 group-hover:text-zinc-950 transition-colors flex-1 text-left whitespace-nowrap">Chờ xử lý</span>
           </label>
           <label for="canhan" class="flex items-center gap-3 px-2 py-2 hover:bg-zinc-100 rounded-xl cursor-pointer group transition-colors">
             <Checkbox id="canhan" v-model:checked="filters.canhan" class="rounded-[4px] border-zinc-300 data-[state=checked]:bg-zinc-900 data-[state=checked]:border-zinc-900 shrink-0" />
-            <span class="text-sm font-medium text-zinc-700 group-hover:text-zinc-950 transition-colors flex-1 text-left whitespace-nowrap">Lịch cá nhân</span>
+            <span class="text-sm font-medium text-zinc-700 group-hover:text-zinc-950 transition-colors flex-1 text-left whitespace-nowrap">Đang thực hiện</span>
           </label>
           <label for="events" class="flex items-center gap-3 px-2 py-2 hover:bg-zinc-100 rounded-xl cursor-pointer group transition-colors">
             <Checkbox id="events" v-model:checked="filters.events" class="rounded-[4px] border-zinc-300 data-[state=checked]:bg-zinc-900 data-[state=checked]:border-zinc-900 shrink-0" />
-            <span class="text-sm font-medium text-zinc-700 group-hover:text-zinc-950 transition-colors flex-1 text-left whitespace-nowrap">Họp & Sự kiện</span>
+            <span class="text-sm font-medium text-zinc-700 group-hover:text-zinc-950 transition-colors flex-1 text-left whitespace-nowrap">Chờ duyệt</span>
           </label>
         </div>
 
@@ -435,14 +517,22 @@ onMounted(() => {
           <Button variant="outline" class="h-9 px-4 rounded-full border-zinc-200 text-sm font-semibold hover:bg-zinc-50 shadow-sm" @click="handleToday">
             Hôm nay
           </Button>
-          <Button class="bg-zinc-900 hover:bg-zinc-800 text-white shadow-md rounded-full h-9 px-4 text-sm font-semibold">
+          <Button v-if="!isSpecialist" class="bg-zinc-900 hover:bg-zinc-800 text-white shadow-md rounded-full h-9 px-4 text-sm font-semibold">
             <Plus class="w-4 h-4 mr-1.5" /> Tạo sự kiện
           </Button>
         </div>
       </div>
 
+      <div v-if="scheduleError" class="mx-6 mt-3 flex items-center justify-between gap-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+        <span>{{ scheduleError }}</span>
+        <button type="button" aria-label="Đóng thông báo" @click="scheduleError = ''">×</button>
+      </div>
+
       <!-- Scrollable Matrix Viewport -->
       <div ref="viewportRef" class="flex-1 overflow-auto bg-zinc-50/20 relative hide-scrollbar min-w-0 min-h-0" @mousedown="handlePanStart" @contextmenu="preventContextMenu">
+        <div v-if="scheduleLoading" class="sticky left-0 top-0 z-[70] flex h-16 items-center justify-center gap-2 bg-white/90 text-sm font-medium text-zinc-500">
+          <Loader2 class="h-4 w-4 animate-spin" /> Đang tải lịch làm việc...
+        </div>
         <div class="inline-flex flex-col min-w-full">
           <!-- Invisible Spacer to enforce true scroll width without overflow-hidden cutting it off -->
           <div class="h-0 flex pointer-events-none invisible w-max">
@@ -496,13 +586,13 @@ onMounted(() => {
                     :key="'event-' + event.id"
                     class="absolute rounded-xl border cursor-pointer flex overflow-hidden transition-all duration-300 ease-[cubic-bezier(0.23,1,0.32,1)] hover:z-[60] hover:-translate-y-1 hover:scale-[1.01] hover:shadow-[0_16px_32px_-12px_rgba(0,0,0,0.25)] hover:border-black/15"
                     @mousedown="e => { if (e.button !== 2) e.stopPropagation() }"
+                    @click="openTaskEvent(event)"
                     :class="[event.colorClass, event.duration < 0.5 ? 'p-1 px-2.5 flex-row items-center gap-2' : 'p-2.5 flex-col justify-between']"
                     :style="{
                       left: `calc(${(visibleDaysArray.findIndex(d => d.dateStr === event.dateStr) / visibleDaysArray.length) * 100}% + 4px)`,
                       width: `calc(${(1 / visibleDaysArray.length) * 100}% - 8px)`,
                       top: `${event.startHour * 160 + 2}px`,
-                      height: `${event.duration * 160 - 4}px`,
-                      backgroundColor: 'white'
+                      height: `${event.duration * 160 - 4}px`
                     }"
                   >
                     <template v-if="event.duration < 0.5">
@@ -576,6 +666,108 @@ onMounted(() => {
         <DialogFooter>
           <Button variant="outline" @click="isCreateModalOpen = false">Hủy</Button>
           <Button @click="handleSaveDraftEvent" class="bg-blue-600 hover:bg-blue-700 text-white">Lưu sự kiện</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Specialist task detail -->
+    <Dialog :open="Boolean(selectedEvent)" @update:open="open => { if (!open) selectedEvent = null }">
+      <DialogContent class="sm:max-w-xl rounded-2xl">
+        <DialogHeader>
+          <div class="flex items-start justify-between gap-3 pr-8">
+            <div class="min-w-0">
+              <DialogTitle class="text-xl leading-snug">{{ selectedEvent?.task?.title }}</DialogTitle>
+              <DialogDescription class="mt-1">
+                {{ selectedEvent?.task?.sourceDocument?.documentNumber
+                  ? `Văn bản ${selectedEvent.task.sourceDocument.documentNumber}`
+                  : 'Nhiệm vụ được giao' }}
+              </DialogDescription>
+            </div>
+            <span
+              v-if="selectedEvent?.task?.status"
+              :class="['shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-bold', statusMeta[selectedEvent.task.status]?.class]"
+            >
+              {{ statusMeta[selectedEvent.task.status]?.label }}
+            </span>
+          </div>
+        </DialogHeader>
+
+        <div class="space-y-4 py-2">
+          <p v-if="selectedEvent?.task?.description" class="text-sm leading-relaxed text-zinc-600">
+            {{ selectedEvent.task.description }}
+          </p>
+
+          <div class="grid grid-cols-2 gap-3 text-sm">
+            <div class="rounded-lg border border-zinc-200 p-3">
+              <p class="text-[11px] font-bold uppercase text-zinc-400">Lịch thực hiện</p>
+              <p class="mt-1 font-semibold text-zinc-800">
+                {{ selectedEvent?.isDeadlineOnly
+                  ? 'Chưa được xếp giờ'
+                  : formatTaskDate(selectedEvent?.task?.scheduledStartAt) }}
+              </p>
+            </div>
+            <div class="rounded-lg border border-zinc-200 p-3">
+              <p class="text-[11px] font-bold uppercase text-zinc-400">Deadline</p>
+              <p class="mt-1 font-semibold text-zinc-800">{{ formatTaskDate(selectedEvent?.task?.dueAt) }}</p>
+            </div>
+          </div>
+
+          <div v-if="selectedEvent?.task?.attachments?.length" class="space-y-2">
+            <p class="text-xs font-bold uppercase text-zinc-500">File công việc được giao</p>
+            <div class="divide-y divide-zinc-100 rounded-lg border border-zinc-200">
+              <a
+                v-for="file in selectedEvent.task.attachments"
+                :key="file._id"
+                :href="`/api/tasks/${selectedEvent.task._id}/attachments/${file._id}/download`"
+                target="_blank"
+                rel="noopener"
+                class="flex items-center gap-3 px-3 py-2.5 hover:bg-zinc-50"
+              >
+                <Paperclip class="h-4 w-4 shrink-0 text-indigo-500" />
+                <span class="min-w-0 flex-1 truncate text-sm font-semibold text-zinc-700">{{ file.fileName }}</span>
+                <span class="shrink-0 text-[11px] text-zinc-400">{{ formatFileSize(file.sizeBytes) }}</span>
+                <Download class="h-4 w-4 shrink-0 text-zinc-400" />
+              </a>
+            </div>
+          </div>
+
+          <div v-if="selectedEvent?.task?.status === 'REVISION_REQUESTED' && selectedEvent?.task?.review?.note"
+               class="rounded-lg border border-orange-200 bg-orange-50 p-3">
+            <p class="text-xs font-bold text-orange-700">Yêu cầu chỉnh sửa</p>
+            <p class="mt-1 text-sm text-orange-900">{{ selectedEvent.task.review.note }}</p>
+          </div>
+
+          <div v-if="selectedEvent?.task?.status === 'IN_PROGRESS'" class="space-y-1.5">
+            <label class="text-xs font-bold uppercase text-zinc-500">Ghi chú kết quả</label>
+            <Textarea v-model="submitNote" class="h-20 resize-none rounded-lg" placeholder="Mô tả kết quả đã thực hiện..." />
+          </div>
+
+          <div v-if="taskActionError" class="flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+            <AlertTriangle class="h-4 w-4" /> {{ taskActionError }}
+          </div>
+        </div>
+
+        <DialogFooter v-if="isSpecialist">
+          <Button
+            v-if="['TODO', 'REVISION_REQUESTED'].includes(selectedEvent?.task?.status)"
+            class="rounded-full bg-amber-600 text-white hover:bg-amber-700"
+            :disabled="Boolean(taskActionLoading)"
+            @click="runTaskAction('start')"
+          >
+            <Loader2 v-if="taskActionLoading === 'start'" class="mr-2 h-4 w-4 animate-spin" />
+            <Play v-else class="mr-2 h-4 w-4" />
+            {{ selectedEvent?.task?.status === 'REVISION_REQUESTED' ? 'Tiếp tục chỉnh sửa' : 'Bắt đầu thực hiện' }}
+          </Button>
+          <Button
+            v-if="selectedEvent?.task?.status === 'IN_PROGRESS'"
+            class="rounded-full bg-violet-600 text-white hover:bg-violet-700"
+            :disabled="Boolean(taskActionLoading)"
+            @click="runTaskAction('submit-review')"
+          >
+            <Loader2 v-if="taskActionLoading === 'submit-review'" class="mr-2 h-4 w-4 animate-spin" />
+            <SendHorizontal v-else class="mr-2 h-4 w-4" />
+            Nộp trưởng phòng duyệt
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

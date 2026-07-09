@@ -6,6 +6,8 @@ build/
 
 # Agent directories
 .agents/
+.codex/
+.gemini/
 
 # Environment files
 .env

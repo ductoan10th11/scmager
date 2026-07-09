@@ -1,0 +1,55 @@
+export const ROLE_CODES = [
+  'ADMIN',
+  'OFFICE_CHIEF',
+  'COMMUNE_LEADER',
+  'DEPARTMENT_LEADER',
+  'SPECIALIST',
+] as const;
+
+export const USER_STATUSES = ['ACTIVE', 'INACTIVE', 'SUSPENDED'] as const;
+
+export const ORGANIZATION_TYPES = ['DISTRICT', 'COMMUNE', 'DEPARTMENT', 'OTHER'] as const;
+
+export const DOCUMENT_SOURCES = ['MANUAL', 'VNPT_EXTENSION', 'AI_OCR', 'FOLDER_WATCHER'] as const;
+
+export const DOCUMENT_STATUSES = [
+  'DRAFT',
+  'RECEIVED',
+  'ASSIGNED_TO_DEPARTMENT',
+  'ASSIGNED_TO_USER',
+  'IN_PROGRESS',
+  'COMPLETED',
+  'ARCHIVED',
+] as const;
+
+export const TASK_TYPES = ['INVITATION', 'DEADLINE', 'DAILY'] as const;
+
+export const TASK_STATUSES = [
+  'DRAFT',
+  'TODO',
+  'IN_PROGRESS',
+  'PENDING_REVIEW',
+  'REVISION_REQUESTED',
+  'DONE',
+  'CANCELLED',
+] as const;
+
+export const PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'] as const;
+
+export const TIMESHEET_STATUSES = ['DRAFT', 'SUBMITTED', 'APPROVED', 'RETURNED'] as const;
+
+export const TIME_ENTRY_STATUSES = ['PLANNED', 'IN_PROGRESS', 'DONE', 'CANCELLED'] as const;
+
+export const AI_JOB_TYPES = ['OCR_EXTRACT', 'TASK_SUGGESTION', 'SPELLCHECK', 'SUMMARY'] as const;
+
+export const JOB_STATUSES = ['QUEUED', 'PROCESSING', 'SUCCEEDED', 'FAILED', 'CANCELLED'] as const;
+
+export const NOTIFICATION_TYPES = [
+  'TASK_ASSIGNED',
+  'TASK_DUE_SOON',
+  'TASK_OVERDUE',
+  'DOCUMENT_UNASSIGNED',
+  'REVIEW_REQUESTED',
+  'REVIEW_RETURNED',
+  'REVIEW_APPROVED',
+] as const;

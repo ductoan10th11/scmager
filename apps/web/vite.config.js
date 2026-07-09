@@ -17,6 +17,12 @@ export default defineConfig({
     allowedHosts: true,
     watch: {
       usePolling: true,
+    },
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8004',
+        changeOrigin: true,
+      },
     }
   }
 })

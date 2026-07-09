@@ -9,7 +9,7 @@ const router = useRouter()
   <div class="min-h-screen bg-white text-zinc-900 flex flex-col items-center justify-center p-4">
     <div class="max-w-md text-center space-y-6">
       <h1 class="text-4xl font-semibold tracking-tight text-zinc-900">
-        SCMAGER
+        eWork
       </h1>
       <p class="text-lg text-zinc-500 leading-relaxed">
         Hệ thống Quản lý Lịch công tác và Theo dõi Nhiệm vụ Cơ quan.
