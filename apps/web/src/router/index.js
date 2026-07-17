@@ -3,19 +3,18 @@ import { useAuth } from '@/features/auth/composables/useAuth'
 import LandingPage from '../pages/LandingPage.vue'
 import LoginPage from '../pages/LoginPage.vue'
 import DashboardPage from '../pages/DashboardPage.vue'
-import SchedulePage from '../pages/SchedulePage.vue'
-import AssignmentPage from '../pages/AssignmentPage.vue'
 import MainLayout from '../layouts/MainLayout.vue'
 import {
   DocumentsPage,
-  NotificationsPage,
+  IngestDocumentsPage,
+  IngestMonitorPage,
   OrganizationDepartmentsPage,
   DepartmentDetailPage,
   MyDepartmentPage,
   OrganizationsPage,
   SettingsPage,
-  TaskDetailPage,
-  TasksPage,
+  AssignmentPage,
+  PerformancePage,
   UsersPage,
 } from './page-loaders'
 
@@ -46,14 +45,19 @@ const routes = [
       {
         path: 'schedule',
         name: 'Schedule',
-        component: SchedulePage,
-        meta: { requiresAuth: true, roles: ['COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
+        redirect: '/assignments',
       },
       {
         path: 'assignments',
         name: 'Assignments',
         component: AssignmentPage,
-        meta: { requiresAuth: true, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER'] },
+        meta: { requiresAuth: true, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
+      },
+      {
+        path: 'performance',
+        name: 'Performance',
+        component: PerformancePage,
+        meta: { requiresAuth: true, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
       },
       {
         path: 'assignment',
@@ -94,28 +98,52 @@ const routes = [
         meta: { requiresAuth: true, roles: ['DEPARTMENT_LEADER'] },
       },
       {
-        path: 'tasks',
-        name: 'Tasks',
-        component: TasksPage,
-        meta: { requiresAuth: true, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
+        path: 'work-declarations',
+        name: 'WorkDeclarations',
+        redirect: '/assignments',
       },
       {
-        path: 'tasks/:taskId',
-        name: 'TaskDetail',
-        component: TaskDetailPage,
-        meta: { requiresAuth: true, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
+        path: 'work-declarations/:workDeclarationId',
+        name: 'WorkDeclarationDetail',
+        redirect: '/assignments',
+      },
+      {
+        path: 'tasks/:taskId?',
+        redirect: '/assignments',
       },
       {
         path: 'documents',
         name: 'Documents',
         component: DocumentsPage,
-        meta: { requiresAuth: true, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER'] },
+        meta: { requiresAuth: true, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
+      },
+      {
+        path: 'documents/:documentId',
+        name: 'DocumentDetail',
+        component: DocumentsPage,
+        meta: { requiresAuth: true, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
+      },
+      {
+        path: 'ingest-documents',
+        name: 'IngestDocuments',
+        component: IngestDocumentsPage,
+        meta: { requiresAuth: true, roles: ['ADMIN'] },
+      },
+      {
+        path: 'ingest-monitor',
+        name: 'IngestMonitor',
+        component: IngestMonitorPage,
+        meta: { requiresAuth: true, roles: ['ADMIN'] },
       },
       {
         path: 'notifications',
         name: 'Notifications',
-        component: NotificationsPage,
-        meta: { requiresAuth: true },
+        redirect: '/dashboard',
+      },
+      {
+        path: 'reports',
+        name: 'Reports',
+        redirect: '/dashboard',
       },
       {
         path: 'settings',

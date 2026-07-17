@@ -1,5 +1,6 @@
 import { isValidObjectId } from 'mongoose';
 import { ROLE_CODES, USER_STATUSES } from '../models/enums';
+import { departmentRepository } from '../repositories/department.repository';
 import { roleRepository } from '../repositories/role.repository';
 import { userRepository } from '../repositories/user.repository';
 import { AuthUser } from '../types/auth';
@@ -24,6 +25,7 @@ export type ListUsersQuery = {
 export type CreateUserPayload = {
   username?: unknown;
   fullName?: unknown;
+  position?: unknown;
   email?: unknown;
   password?: unknown;
   phone?: unknown;
@@ -91,6 +93,45 @@ const normalizeText = (value: unknown, field: string, required = false) => {
 };
 
 const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const objectIdOf = (value: unknown) => {
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'object' && '_id' in value) {
+    return String((value as { _id?: unknown })._id ?? '');
+  }
+  return String(value);
+};
+
+const ensureOrganizationAccess = (actor: AuthUser, organizationId: string | null) => {
+  if (actor.role.code === 'ADMIN') return;
+  if (!actor.organization || organizationId !== actor.organization) {
+    throw forbidden('Access denied.');
+  }
+};
+
+const resolveUserOrganization = (actor: AuthUser, value: unknown, fallback: string | null = null) => {
+  const requestedOrganization = assertObjectId(value, 'organization');
+  if (actor.role.code === 'ADMIN') return requestedOrganization ?? fallback;
+
+  if (!actor.organization) throw forbidden('User has no organization assigned.');
+  if (requestedOrganization && requestedOrganization !== actor.organization) {
+    throw forbidden('Access denied.');
+  }
+  return actor.organization;
+};
+
+const resolveUserDepartment = async (value: unknown, organizationId: string | null) => {
+  const departmentId = assertObjectId(value, 'department');
+  if (!departmentId) return null;
+  if (!organizationId) throw badRequest('organization is required when department is set.');
+
+  const department = await departmentRepository.findRawById(departmentId);
+  if (!department || objectIdOf((department as any).organization) !== organizationId) {
+    throw badRequest('department must belong to the selected organization.');
+  }
+  return departmentId;
+};
 
 const resolveRole = async (
   payload: { role?: unknown; roleCode?: unknown },
@@ -178,6 +219,7 @@ const toSafeUser = (user: any) => {
     _id: String(raw._id),
     username: raw.username,
     fullName: raw.fullName,
+    position: raw.position ?? null,
     email: raw.email,
     phone: raw.phone,
     avatarUrl: raw.avatarUrl,
@@ -204,11 +246,12 @@ export const userService = {
     const roleCode = !roleId
       ? assertRoleCode(query.roleCode ?? query.role)
       : undefined;
-    const organization = assertObjectId(query.organization, 'organization');
-    const department = assertObjectId(query.department ?? query.departmentId, 'department');
+    const requestedOrganization = assertObjectId(query.organization, 'organization');
+    const requestedDepartment = assertObjectId(query.department ?? query.departmentId, 'department');
     const search = normalizeText(query.search, 'search');
 
     const filter: Record<string, unknown> = {};
+    let scopedOrganization: string | undefined;
 
     if (status) filter.status = status;
     if (roleId) filter.role = roleId;
@@ -217,11 +260,33 @@ export const userService = {
       if (!role) throw badRequest('roleCode is invalid.');
       filter.role = (role as any)._id;
     }
-    if (organization) filter.organization = organization;
-    if (department) filter.department = department;
+    if (actor.role.code !== 'ADMIN') {
+      if (!actor.organization) throw forbidden('User has no organization assigned.');
+      if (requestedOrganization && requestedOrganization !== actor.organization) {
+        throw forbidden('Access denied.');
+      }
+      filter.organization = actor.organization;
+      scopedOrganization = actor.organization;
+    } else if (requestedOrganization) {
+      filter.organization = requestedOrganization;
+      scopedOrganization = requestedOrganization;
+    }
+    if (actor.role.code === 'DEPARTMENT_LEADER') {
+      if (!actor.department) throw forbidden('Department leader has no department assigned.');
+      if (requestedDepartment && requestedDepartment !== actor.department) throw forbidden('Access denied.');
+      filter.department = actor.department;
+    } else if (requestedDepartment) {
+      if (scopedOrganization) {
+        const department = await departmentRepository.findRawById(requestedDepartment);
+        if (!department || objectIdOf((department as any).organization) !== scopedOrganization) {
+          throw badRequest('department must belong to the selected organization.');
+        }
+      }
+      filter.department = requestedDepartment;
+    }
     if (search) {
       const regex = new RegExp(escapeRegex(search), 'i');
-      filter.$or = [{ username: regex }, { fullName: regex }, { email: regex }, { phone: regex }];
+      filter.$or = [{ username: regex }, { fullName: regex }, { position: regex }, { email: regex }, { phone: regex }];
     }
 
     const [items, total] = await Promise.all([
@@ -248,6 +313,12 @@ export const userService = {
     const userId = assertObjectId(id, 'id');
     const user = await userRepository.findPublicById(userId as string);
     if (!user) throw notFound('User not found.');
+    if (
+      actor.role.code !== 'ADMIN'
+      && (!actor.organization || String((user as any).organization?._id ?? (user as any).organization) !== actor.organization)
+    ) {
+      throw forbidden('Access denied.');
+    }
     ensureCanReadUser(actor, user);
 
     return { data: toSafeUser(user) };
@@ -258,21 +329,25 @@ export const userService = {
     ensureCanAssignRole(actor, role);
     const username = normalizeText(payload.username, 'username', true)?.toLowerCase();
     const fullName = normalizeText(payload.fullName, 'fullName', true);
+    const position = normalizeText(payload.position, 'position');
     const email = normalizeText(payload.email, 'email', true)?.toLowerCase();
     const password = normalizeText(payload.password, 'password', true);
     const status = assertStatus(payload.status) || 'ACTIVE';
+    const organization = resolveUserOrganization(actor, payload.organization);
+    const department = await resolveUserDepartment(payload.department, organization);
 
     try {
       const user = await userRepository.create({
         username,
         fullName,
+        position: position || null,
         email,
         phone: normalizeText(payload.phone, 'phone'),
         passwordHash: hashPassword(password as string),
         avatarUrl: normalizeText(payload.avatarUrl, 'avatarUrl'),
         role: (role as any)._id,
-        organization: assertObjectId(payload.organization, 'organization') || null,
-        department: assertObjectId(payload.department, 'department') || null,
+        organization,
+        department,
         manager: assertObjectId(payload.manager, 'manager') || null,
         status,
         notificationSettings: payload.notificationSettings,
@@ -290,6 +365,7 @@ export const userService = {
     const userId = assertObjectId(id, 'id');
     const user = await userRepository.findByIdWithPassword(userId as string);
     if (!user) throw notFound('User not found.');
+    ensureOrganizationAccess(actor, objectIdOf((user as any).organization) || null);
     const updatingSelf = isSelf(actor, user);
 
     if (updatingSelf) {
@@ -315,6 +391,10 @@ export const userService = {
     const fullName = normalizeText(payload.fullName, 'fullName');
     if (fullName) (user as any).fullName = fullName;
 
+    if (payload.position !== undefined) {
+      (user as any).position = normalizeText(payload.position, 'position') || null;
+    }
+
     const email = normalizeText(payload.email, 'email');
     if (email) (user as any).email = email.toLowerCase();
 
@@ -332,11 +412,18 @@ export const userService = {
       (user as any).status = status;
     }
 
-    if (payload.organization !== undefined) {
-      (user as any).organization = assertObjectId(payload.organization, 'organization') || null;
-    }
+    const currentOrganization = objectIdOf((user as any).organization) || null;
+    const currentDepartment = objectIdOf((user as any).department) || null;
+    const organization = payload.organization !== undefined
+      ? resolveUserOrganization(actor, payload.organization, currentOrganization)
+      : currentOrganization;
+    const department = payload.department !== undefined
+      ? await resolveUserDepartment(payload.department, organization)
+      : await resolveUserDepartment(currentDepartment, organization);
+
+    if (payload.organization !== undefined) (user as any).organization = organization;
     if (payload.department !== undefined) {
-      (user as any).department = assertObjectId(payload.department, 'department') || null;
+      (user as any).department = department;
     }
     if (payload.manager !== undefined) {
       (user as any).manager = assertObjectId(payload.manager, 'manager') || null;

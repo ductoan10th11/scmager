@@ -1,15 +1,18 @@
 import DepartmentModel from '../models/department.model';
 
 const populateDepartment = (query: any) => query
-  .populate('organization', 'name code type isActive')
   .populate('parent', 'name code isActive')
-  .populate('leader', 'username fullName email');
+  .populate('leader', 'username fullName position email');
 
 export const departmentRepository = {
   findMany(filter: Record<string, unknown>, skip: number, limit: number) {
     return populateDepartment(
       DepartmentModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
     );
+  },
+
+  findAll(filter: Record<string, unknown>) {
+    return populateDepartment(DepartmentModel.find(filter).sort({ createdAt: -1 }));
   },
 
   count(filter: Record<string, unknown>) {

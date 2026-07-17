@@ -36,6 +36,7 @@ import { OrganizationService, ORGANIZATION_TYPES } from '@/features/organization
 import { UserService } from '@/features/users/services/user.service'
 import SlidingTabs from '@/components/ui/sliding-tabs/SlidingTabs.vue'
 import { useAuth } from '@/features/auth/composables/useAuth'
+import AppBreadcrumb from '@/components/ui/breadcrumb/AppBreadcrumb.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -77,10 +78,17 @@ const parentOptions = computed(() => departments.value
   .filter((item) => item._id !== selectedDepartment.value?._id && item.isActive)
   .map((item) => ({ value: item._id, label: `${item.name} (${item.code})` })))
 
-const leaderOptions = computed(() => leaders.value.map((user) => ({
-  value: user._id,
-  label: `${user.fullName || user.username} (${user.email})`,
-})))
+const leaderOptions = computed(() => {
+  const departmentId = selectedDepartment.value?._id
+  if (!departmentId) return []
+
+  return leaders.value
+    .filter((user) => (user.department?._id || user.department) === departmentId)
+    .map((user) => ({
+      value: user._id,
+      label: `${user.fullName || user.username} (${user.email})`,
+    }))
+})
 
 const userPage = ref(1)
 const userLimit = ref(10)
@@ -94,6 +102,7 @@ const fetchOrgUsers = async () => {
     const res = await UserService.getUsers({
       limit: userLimit.value,
       page: userPage.value,
+      search: activeTab.value === 'users' ? search.value : '',
       organization: organizationId.value
     })
     orgUsers.value = res?.data || []
@@ -110,13 +119,19 @@ watch([userPage, userLimit], () => {
   fetchOrgUsers()
 })
 
+watch(activeTab, () => {
+  search.value = ''
+  userPage.value = 1
+  fetchPageData()
+})
+
 const fetchPageData = async () => {
   loading.value = true
   try {
     const [organizationRes, departmentRes, usersRes] = await Promise.all([
       OrganizationService.getOrganizationById(organizationId.value),
       DepartmentService.getDepartments(organizationId.value, { limit: 100, search: activeTab.value === 'departments' ? search.value : '' }),
-      UserService.getUsers({ limit: 100, status: 'ACTIVE' }),
+      UserService.getUsers({ limit: 100, status: 'ACTIVE', organization: organizationId.value }),
       fetchOrgUsers(),
     ])
     organization.value = organizationRes?.data || null
@@ -246,7 +261,7 @@ const isUserSubmitting = ref(false)
 const userErrorMessage = ref('')
 const userDialogMode = ref('create') // 'create' | 'edit'
 const selectedOrgUser = ref(null)
-const userFormData = ref({ username: '', fullName: '', email: '', password: '', roleCode: 'OFFICE_CHIEF', phone: '', department: 'none' })
+const userFormData = ref({ username: '', fullName: '', position: '', email: '', password: '', roleCode: 'OFFICE_CHIEF', phone: '', department: 'none' })
 
 // Auto-generate username from fullName (only in create mode)
 const toUsername = (name) => name
@@ -264,7 +279,7 @@ const openUserDialog = () => {
   userDialogMode.value = 'create'
   selectedOrgUser.value = null
   userErrorMessage.value = ''
-  userFormData.value = { username: '', fullName: '', email: '', password: '', roleCode: 'OFFICE_CHIEF', phone: '', department: 'none' }
+  userFormData.value = { username: '', fullName: '', position: '', email: '', password: '', roleCode: 'OFFICE_CHIEF', phone: '', department: 'none' }
   isUserDialogOpen.value = true
 }
 
@@ -275,6 +290,7 @@ const openEditUserDialog = (u) => {
   userFormData.value = {
     username: u.username,
     fullName: u.fullName,
+    position: u.position || '',
     email: u.email,
     password: '',
     roleCode: u.role?.code || 'OFFICE_CHIEF',
@@ -400,6 +416,10 @@ onMounted(fetchPageData)
       <!-- Row 1: back + org info -->
       <div class="flex items-start justify-between gap-4">
         <div class="min-w-0">
+          <AppBreadcrumb :items="[
+            { label: 'Tổ chức', to: '/organizations' },
+            { label: organization?.name || 'Phòng ban' },
+          ]" />
           <Button v-if="currentUser?.role?.code === 'ADMIN'" variant="ghost" class="h-9 rounded-full px-3 text-zinc-500 hover:text-zinc-900 -ml-3 mb-2" @click="router.push('/organizations')">
             <ArrowLeft class="w-4 h-4 mr-2" />
             Tổ chức
@@ -519,7 +539,7 @@ onMounted(fetchPageData)
             </div>
             <div class="flex flex-col w-[100px]">
               <span class="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Nhân sự</span>
-              <span class="font-semibold text-zinc-800 truncate mt-0.5">{{ orgUsers.filter(u => u.department?._id === department._id || u.department === department._id).length }} người</span>
+              <span class="font-semibold text-zinc-800 truncate mt-0.5">{{ department.memberCount || 0 }} người</span>
             </div>
           </div>
 
@@ -593,6 +613,7 @@ onMounted(fetchPageData)
                     </div>
                     <div class="min-w-0 flex flex-col items-start gap-0.5">
                       <p class="text-sm font-bold text-zinc-900 truncate leading-tight">{{ u.fullName || '—' }}</p>
+                      <p class="max-w-[180px] truncate text-xs font-medium text-zinc-500">{{ u.position || 'Chưa có chức vụ' }}</p>
                       <span class="text-[8px] font-bold uppercase tracking-wider px-2 py-[1px] rounded-full bg-blue-50 text-blue-700 border border-blue-100 shrink-0">
                         {{ u.role?.name || u.role?.code || 'N/A' }}
                       </span>
@@ -616,7 +637,9 @@ onMounted(fetchPageData)
                 <!-- Column 4: Status -->
                 <TableCell class="px-4 py-2">
                   <div class="flex items-center gap-2">
-                    <span class="text-xs font-semibold" :class="u.status === 'ACTIVE' ? 'text-emerald-600' : 'text-zinc-400'"></span>
+                    <span class="whitespace-nowrap text-xs font-semibold" :class="u.status === 'ACTIVE' ? 'text-emerald-600' : 'text-zinc-400'">
+                      {{ u.status === 'ACTIVE' ? 'Hoạt động' : 'Đã ngưng' }}
+                    </span>
                     <button
                       :disabled="togglingUserId === u._id || u.role?.code === 'ADMIN'"
                       :class="[
@@ -729,7 +752,7 @@ onMounted(fetchPageData)
                 </SelectContent>
               </Select>
             </div>
-            <div class="space-y-2">
+            <div v-if="dialogMode === 'edit'" class="space-y-2">
               <label for="dept-leader" class="text-xs font-bold text-zinc-500 uppercase tracking-wider">Lãnh đạo phụ trách</label>
               <Select v-model="formData.leader">
                 <SelectTrigger id="dept-leader" class="h-10 w-full border-zinc-200 bg-white px-4 text-sm font-medium outline-none ring-0 focus:ring-0">
@@ -810,12 +833,16 @@ onMounted(fetchPageData)
             </div>
           </div>
           <div class="space-y-2">
+            <label class="text-xs font-bold text-zinc-500 uppercase tracking-wider">Chức vụ</label>
+            <Input v-model="userFormData.position" placeholder="Ví dụ: Chủ tịch, Công chức văn phòng..." class="h-10 rounded-full" />
+          </div>
+          <div class="space-y-2">
             <label class="text-xs font-bold text-zinc-500 uppercase tracking-wider">Mật khẩu</label>
             <Input v-model="userFormData.password" type="password" placeholder="••••••••" class="h-10 rounded-full" />
           </div>
           <div class="grid grid-cols-2 gap-4">
             <div class="space-y-2">
-              <label class="text-xs font-bold text-zinc-500 uppercase tracking-wider">Chức vụ</label>
+              <label class="text-xs font-bold text-zinc-500 uppercase tracking-wider">Vai trò hệ thống</label>
               <Select v-model="userFormData.roleCode">
                 <SelectTrigger class="h-10 w-full border-zinc-200 bg-white rounded-full px-4 text-sm font-medium">
                   <SelectValue placeholder="Chọn chức vụ" />
@@ -839,7 +866,7 @@ onMounted(fetchPageData)
                 <SelectContent>
                   <SelectGroup>
                     <SelectItem value="none">Không có</SelectItem>
-                    <SelectItem v-for="d in departments" :key="d._id" :value="d._id">{{ d.name }}</SelectItem>
+                    <SelectItem v-for="d in departments.filter((department) => department.isActive)" :key="d._id" :value="d._id">{{ d.name }}</SelectItem>
                   </SelectGroup>
                 </SelectContent>
               </Select>

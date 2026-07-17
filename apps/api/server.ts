@@ -1,17 +1,19 @@
-import dotenv from 'dotenv';
+import 'dotenv/config';
+import { createServer } from 'http';
 import app from './src/app';
 import { connectDB } from './src/configs/mongo';
 import { seedDefaultAdmin } from './src/seed/default-admin';
-
-dotenv.config();
+import { initializeIngestSocket } from './src/realtime/ingest.socket';
 
 const PORT = process.env.PORT || 8004;
 
 const bootstrap = async () => {
   await connectDB();
   await seedDefaultAdmin();
+  const server = createServer(app);
+  initializeIngestSocket(server);
 
-  app.listen(PORT, () => {
+  server.listen(PORT, () => {
     console.log(`🚀 Server is running on port ${PORT}`);
   });
 };

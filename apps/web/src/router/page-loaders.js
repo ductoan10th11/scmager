@@ -13,10 +13,11 @@ export const UsersPage = lazyPage(() => import('../pages/UsersPage.vue'))
 export const OrganizationsPage = lazyPage(() => import('../pages/OrganizationsPage.vue'))
 export const OrganizationDepartmentsPage = lazyPage(() => import('../pages/OrganizationDepartmentsPage.vue'))
 export const DepartmentDetailPage = lazyPage(() => import('../pages/DepartmentDetailPage.vue'))
-export const TasksPage = lazyPage(() => import('../pages/TasksPage.vue'))
-export const TaskDetailPage = lazyPage(() => import('../pages/TaskDetailPage.vue'))
+export const AssignmentPage = lazyPage(() => import('../pages/AssignmentPage.vue'))
+export const PerformancePage = lazyPage(() => import('../pages/PerformancePage.vue'))
 export const DocumentsPage = lazyPage(() => import('../pages/DocumentsPage.vue'))
-export const NotificationsPage = lazyPage(() => import('../pages/NotificationsPage.vue'))
+export const IngestDocumentsPage = lazyPage(() => import('../pages/IngestDocumentsPage.vue'))
+export const IngestMonitorPage = lazyPage(() => import('../pages/IngestMonitorPage.vue'))
 export const SettingsPage = lazyPage(() => import('../pages/SettingsPage.vue'))
 
 export const MyDepartmentPage = lazyPage(() => import('../pages/MyDepartmentPage.vue'))
@@ -27,10 +28,11 @@ const preloadableRouteComponents = {
   '/organizations/:organizationId/departments': OrganizationDepartmentsPage,
   '/organizations/:organizationId/departments/:departmentId': DepartmentDetailPage,
   '/my-department': MyDepartmentPage,
-  '/tasks': TasksPage,
-  '/tasks/:taskId': TaskDetailPage,
+  '/assignments': AssignmentPage,
+  '/performance': PerformancePage,
   '/documents': DocumentsPage,
-  '/notifications': NotificationsPage,
+  '/ingest-documents': IngestDocumentsPage,
+  '/ingest-monitor': IngestMonitorPage,
   '/settings': SettingsPage,
 }
 

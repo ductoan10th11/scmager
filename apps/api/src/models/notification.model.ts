@@ -9,8 +9,9 @@ const notificationSchema = new Schema(
     title: { type: String, required: true, trim: true },
     body: { type: String, trim: true },
     channels: { type: [String], enum: ['IN_APP', 'EMAIL', 'PUSH'], default: ['IN_APP'] },
-    relatedModel: { type: String, enum: ['IncomingDocument', 'Task', 'Timesheet'], required: true },
+    relatedModel: { type: String, enum: ['IncomingDocument', 'Task', 'Timesheet', 'WorkDeclaration'], required: true },
     relatedId: { type: Schema.Types.ObjectId, required: true, index: true },
+    metadata: { type: Schema.Types.Mixed, default: {} },
     readAt: { type: Date, default: null, index: true },
     deliveredAt: { type: Date },
   },
@@ -18,6 +19,7 @@ const notificationSchema = new Schema(
 );
 
 notificationSchema.index({ recipient: 1, readAt: 1, createdAt: -1 });
+notificationSchema.index({ recipient: 1, type: 1, 'metadata.dedupeKey': 1, createdAt: -1 });
 
 export const NotificationModel = models.Notification || model('Notification', notificationSchema);
 export default NotificationModel;

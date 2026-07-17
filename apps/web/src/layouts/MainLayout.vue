@@ -3,7 +3,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuth } from '@/features/auth/composables/useAuth'
 import { preloadProtectedRouteComponents, preloadRouteComponent } from '@/router/page-loaders'
-import { Bell, Building2, FileText, LayoutDashboard, Calendar, CheckSquare, ChevronLeft, ChevronRight, UserPlus, Users, Clock } from 'lucide-vue-next'
+import { Activity, BarChart3, Building2, CalendarRange, FileText, LayoutDashboard, ChevronLeft, ChevronRight, Users, Database } from 'lucide-vue-next'
+import NotificationPopover from '@/features/notifications/NotificationPopover.vue'
 
 const route = useRoute()
 const { user } = useAuth()
@@ -21,34 +22,15 @@ const roleBadge = computed(() => user.value?.role?.code || 'USER')
 
 const navItems = computed(() => {
   const roleCode = user.value?.role?.code
-  if (roleCode === 'DEPARTMENT_LEADER') {
-    return [
-      { name: 'Tổng quan',       path: '/dashboard',      icon: LayoutDashboard },
-      { name: 'Văn bản phòng',   path: '/documents',      icon: FileText },
-      { name: 'Giao chuyên viên', path: '/assignments',    icon: UserPlus },
-      { name: 'Theo dõi tiến độ', path: '/tasks',          icon: CheckSquare },
-      { name: 'Phòng của tôi',   path: '/my-department',  icon: Building2 },
-      { name: 'Thông báo',       path: '/notifications',  icon: Bell },
-    ]
-  }
-  if (roleCode === 'SPECIALIST') {
-    return [
-      { name: 'Tổng quan',       path: '/dashboard',     icon: LayoutDashboard },
-      { name: 'Lịch làm việc',   path: '/schedule',      icon: Calendar },
-      { name: 'Nhiệm vụ của tôi', path: '/tasks',         icon: CheckSquare },
-      { name: 'Thông báo',       path: '/notifications', icon: Bell },
-    ]
-  }
-
   const allItems = [
     // --- Công việc ---
-    { name: 'Tổng quan',     path: '/dashboard',      icon: LayoutDashboard, roles: ['OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
-    { name: 'Lịch công tác', path: '/schedule',       icon: Calendar,        roles: ['COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
-    { name: 'Nhiệm vụ',      path: '/tasks',          icon: CheckSquare,     roles: ['COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
-    { name: 'Giao việc',     path: '/assignments',    icon: UserPlus,        roles: ['COMMUNE_LEADER', 'DEPARTMENT_LEADER'] },
-    { name: 'Văn bản',       path: '/documents',      icon: FileText,        roles: ['OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
-    { name: 'Thông báo',     path: '/notifications',  icon: Bell,            roles: ['COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
+    { name: 'Tổng quan',     path: '/dashboard',      icon: LayoutDashboard, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
+    { name: 'Văn bản',       path: '/documents',      icon: FileText,        roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
+    { name: 'Hiệu suất',     path: '/performance',    icon: BarChart3,       roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
+    { name: 'Lịch công việc', path: '/assignments',   icon: CalendarRange,   roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
     // --- Quản trị ---
+    { name: 'Ingest',        path: '/ingest-documents', icon: Database,       roles: ['ADMIN'] },
+    { name: 'Ingest cron',   path: '/ingest-monitor', icon: Activity,         roles: ['ADMIN'] },
     { name: 'Phòng ban',     path: '/my-department',  icon: Building2,       roles: ['DEPARTMENT_LEADER'] },
     { name: 'Tổ chức',       path: '/organizations',  icon: Building2,       roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER'] },
     { name: 'Nhân sự',       path: '/users',          icon: Users,           roles: ['ADMIN'] },
@@ -65,6 +47,7 @@ const clearPendingPath = () => {
 }
 
 const isPathActive = (path) => {
+  if (path === '/my-department' && ['MyDepartment', 'DepartmentDetail'].includes(String(route.name))) return true
   return route.path === path || (path !== '/' && route.path.startsWith(`${path}/`))
 }
 
@@ -118,7 +101,7 @@ onUnmounted(() => {
       <!-- Desktop Logo Area -->
       <div class="hidden md:flex items-center ml-4 mb-8 mt-2 overflow-hidden px-1.5 w-full">
         <div class="flex items-center gap-2.5 overflow-hidden w-full">
-          <!-- <img src="/icon.png" alt="SCMager Logo" class="w-11 h-11 shrink-0 object-cover" /> -->
+          <img src="/icon.png" alt="eWork" class="h-10 w-10 shrink-0 rounded-lg object-cover" />
           <div class="flex flex-col shrink-0 transition-opacity duration-300" :class="isCollapsed ? 'opacity-0' : 'opacity-100'">
             <span class="font-bold text-lg tracking-tight text-zinc-900 leading-none">eWork</span>
             <span class="text-[9px] uppercase tracking-wider font-bold text-zinc-400 mt-0.5">Workspace</span>
@@ -139,7 +122,7 @@ onUnmounted(() => {
         >
           <div
             :class="[
-              'flex items-center gap-3 px-3 h-[44px] w-full rounded-full transition-colors duration-200 select-none cursor-pointer overflow-hidden',
+              'relative flex items-center gap-3 px-3 h-[44px] w-full rounded-full transition-colors duration-200 select-none cursor-pointer overflow-hidden',
               isNavPathActive(item.path)
                 ? 'text-zinc-900 bg-white font-semibold shadow-[0_2px_8px_-2px_rgba(0,0,0,0.08)] ring-1 ring-zinc-900/5' 
                 : 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-200/50 font-medium'
@@ -149,6 +132,7 @@ onUnmounted(() => {
             <span class="text-[10px] md:text-sm tracking-tight whitespace-nowrap transition-opacity duration-200 shrink-0" :class="isCollapsed ? 'opacity-0 w-0' : 'opacity-100'">{{ item.name }}</span>
           </div>
         </router-link>
+        <NotificationPopover class="md:mt-auto" :collapsed="isCollapsed" />
       </div>
 
       <!-- Bottom Settings & Profile -->

@@ -6,7 +6,6 @@ import { useAuth } from '@/features/auth/composables/useAuth'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 const route = useRoute()
@@ -37,10 +36,6 @@ const handleLogout = async () => {
   router.push('/login')
 }
 
-const isUserActive = computed({
-  get: () => user.value?.status === 'ACTIVE',
-  set: () => {}
-})
 </script>
 
 <template>
@@ -101,6 +96,10 @@ const isUserActive = computed({
                 <Input :model-value="user?.email" readonly class="h-11 rounded-full bg-zinc-50 px-4" />
               </div>
               <div class="space-y-2">
+                <label class="text-xs font-bold text-zinc-500 uppercase tracking-wider">Chức vụ</label>
+                <Input :model-value="user?.position || 'Chưa có chức vụ'" readonly class="h-11 rounded-full bg-zinc-50 px-4" />
+              </div>
+              <div class="space-y-2">
                 <label class="text-xs font-bold text-zinc-500 uppercase tracking-wider">Trạng thái</label>
                 <div class="flex items-center gap-3 h-11">
                   <div 
@@ -131,16 +130,9 @@ const isUserActive = computed({
                   <p class="text-sm text-zinc-500 font-medium mt-1">Tùy chọn nhận thông báo trong hệ thống.</p>
                 </div>
               </div>
-              <div class="mt-5 flex flex-col gap-3">
-                <label class="flex items-center justify-between gap-4 text-sm font-semibold text-zinc-700">
-                  In-app
-                  <input type="checkbox" checked class="h-4 w-4" disabled />
-                </label>
-                <label class="flex items-center justify-between gap-4 text-sm font-semibold text-zinc-700">
-                  Email
-                  <input type="checkbox" class="h-4 w-4" disabled />
-                </label>
-              </div>
+              <p class="mt-5 rounded-lg bg-zinc-50 px-4 py-3 text-sm font-medium text-zinc-600">
+                Thông báo trong ứng dụng được bật theo chính sách hệ thống. Liên hệ quản trị viên để thay đổi.
+              </p>
             </article>
 
             <article class="bg-white border border-zinc-200/70 !rounded-[32px] p-6 shadow-sm">
@@ -153,7 +145,9 @@ const isUserActive = computed({
                   <p class="text-sm text-zinc-500 font-medium mt-1">Phiên đăng nhập dùng cookie HTTP-only.</p>
                 </div>
               </div>
-              <Button class="mt-5 rounded-full font-bold" variant="outline" disabled>Đổi mật khẩu</Button>
+              <p class="mt-5 rounded-lg bg-zinc-50 px-4 py-3 text-sm font-medium text-zinc-600">
+                Liên hệ quản trị viên khi cần đổi mật khẩu hoặc khóa tài khoản.
+              </p>
             </article>
           </div>
         </TabsContent>

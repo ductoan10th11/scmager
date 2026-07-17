@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>eWork</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="popup-shell" aria-live="polite">
+      <div class="loading-overlay is-active" id="loadingOverlay" role="status" aria-live="polite">
+        <div class="loading-box">
+          <div class="loading-dots" id="loadingDots" aria-hidden="true">
+            <span></span><span></span><span></span>
+            <span></span><span></span><span></span>
+            <span></span><span></span><span></span>
+          </div>
+        </div>
+      </div>
+
+      <section class="view is-active" id="authView" data-view="auth">
+        <form class="login-panel" id="loginForm" autocomplete="on">
+          <h2 class="section-title">Đăng nhập</h2>
+          <p class="section-copy">Vui lòng nhập thông tin tài khoản để tiếp tục.</p>
+
+          <div class="field">
+            <label class="sr-only" for="usernameInput">Tài khoản</label>
+            <div class="input-shell">
+              <i class="input-icon" data-lucide="user-round" aria-hidden="true"></i>
+              <input id="usernameInput" name="username" type="text" autocomplete="username" placeholder="Tài khoản" required>
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="sr-only" for="passwordInput">Mật khẩu</label>
+            <div class="input-shell">
+              <i class="input-icon" data-lucide="lock-keyhole" aria-hidden="true"></i>
+              <input id="passwordInput" name="password" type="password" autocomplete="current-password" placeholder="Mật khẩu" required>
+              <button class="password-toggle" type="button" id="passwordToggle" aria-label="Hiện mật khẩu" aria-pressed="false">
+                <i class="eye-icon eye-icon-show" data-lucide="eye" aria-hidden="true"></i>
+                <i class="eye-icon eye-icon-hide" data-lucide="eye-closed" aria-hidden="true"></i>
+              </button>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <label class="checkbox-field" for="rememberInput">
+              <input id="rememberInput" name="remember" type="checkbox" checked>
+              Ghi nhớ phiên
+            </label>
+            <button class="text-link" type="button" id="forgotPasswordButton">Quên mật khẩu</button>
+          </div>
+
+          <button class="button" type="submit" id="loginButton">Đăng nhập</button>
+          <p class="error-message" id="loginError" role="alert">Không đăng nhập được. Vui lòng kiểm tra lại thông tin.</p>
+        </form>
+      </section>
+
+      <section class="view" id="overviewView" data-view="overview">
+        <div class="app-content">
+          <section class="route-page is-active" id="routeOverview" data-route-page="overview">
+            <header class="route-header">
+              <div>
+                <p class="eyebrow">eWork</p>
+                <h1>Tổng quan</h1>
+              </div>
+              <div class="header-actions">
+                <button class="icon-button" type="button" id="refreshButton" aria-label="Tải lại" title="Tải lại">
+                  <i data-lucide="refresh-cw" aria-hidden="true"></i>
+                </button>
+                <button class="icon-button" type="button" id="logoutButton" aria-label="Đăng xuất" title="Đăng xuất">
+                  <i data-lucide="log-out" aria-hidden="true"></i>
+                </button>
+              </div>
+            </header>
+
+            <div class="overview-grid" aria-label="Tổng quan">
+              <article class="metric-card">
+                <p class="metric-label">Việc hôm nay</p>
+                <p class="metric-value" id="todayCount">0</p>
+                <p class="metric-note" id="todayNote">Đang chờ API</p>
+              </article>
+              <article class="metric-card">
+                <p class="metric-label">Việc quá hạn</p>
+                <p class="metric-value" id="overdueCount">0</p>
+                <p class="metric-note">Cần ưu tiên xử lý</p>
+              </article>
+              <article class="metric-card">
+                <p class="metric-label">Văn bản có hạn</p>
+                <p class="metric-value" id="documentCount">0</p>
+                <p class="metric-note">Nguồn ingest</p>
+              </article>
+              <article class="metric-card">
+                <p class="metric-label">Điểm văn bản</p>
+                <p class="metric-value" id="documentPointCount">0</p>
+                <p class="metric-note">Theo comment [p:n]</p>
+              </article>
+            </div>
+
+            <section class="panel feed-panel">
+              <div class="panel-title-row">
+                <h2>Cần chú ý</h2>
+                <span class="badge" id="unreadBadge">0 mới</span>
+              </div>
+              <div class="compact-list" id="overviewFeed"></div>
+            </section>
+          </section>
+
+          <section class="route-page" id="routeAssignment" data-route-page="assignment">
+            <header class="route-header">
+              <div>
+                <p class="eyebrow">Assignment</p>
+                <h1>Lịch thu nhỏ</h1>
+              </div>
+              <div class="header-actions">
+                <button class="button secondary mini hidden" type="button" id="openApprovalButton">
+                  <i data-lucide="clipboard-check" aria-hidden="true"></i>
+                  Duyệt
+                  <span class="button-badge" id="approvalCountBadge">0</span>
+                </button>
+                <button class="button secondary mini" type="button" id="toggleCreateTaskButton">
+                  <i data-lucide="plus" aria-hidden="true"></i>
+                  Khai báo
+                </button>
+              </div>
+            </header>
+
+            <section class="panel schedule-panel">
+              <div class="panel-title-row">
+                <h2>Timeline hôm nay</h2>
+                <span class="badge" id="assignmentCountBadge">0 việc</span>
+              </div>
+              <div class="mini-schedule" id="assignmentSchedule"></div>
+            </section>
+          </section>
+
+          <section class="route-page" id="routePerformance" data-route-page="performance">
+            <header class="route-header">
+              <div>
+                <p class="eyebrow">Hiệu suất</p>
+                <h1>Văn bản</h1>
+              </div>
+            </header>
+            <div class="overview-grid">
+              <article class="metric-card">
+                <p class="metric-label">Điểm đã hoàn thành</p>
+                <p class="metric-value" id="completedDocumentPointCount">0</p>
+                <p class="metric-note" id="completionRateNote">0% hoàn thành</p>
+              </article>
+              <article class="metric-card">
+                <p class="metric-label">Điểm đang xử lý</p>
+                <p class="metric-value" id="pendingDocumentPointCount">0</p>
+                <p class="metric-note">Chưa hoàn thành</p>
+              </article>
+              <article class="metric-card">
+                <p class="metric-label">Điểm quá hạn</p>
+                <p class="metric-value" id="overdueDocumentPointCount">0</p>
+                <p class="metric-note" id="overdueRateNote">0% quá hạn</p>
+              </article>
+              <article class="metric-card">
+                <p class="metric-label">Điểm gần hạn</p>
+                <p class="metric-value" id="dueSoonDocumentPointCount">0</p>
+                <p class="metric-note">Trong 24 giờ</p>
+              </article>
+            </div>
+            <section class="panel list-panel">
+              <div class="panel-title-row">
+                <h2>Văn bản theo hạn xử lý</h2>
+                <span class="badge">Ingest</span>
+              </div>
+              <div class="item-list" id="documentKpiList"></div>
+            </section>
+          </section>
+        </div>
+
+        <nav class="dock-nav compact-dock" aria-label="Điều hướng Side Panel">
+          <button class="dock-item" type="button" data-route="assignment" aria-label="Assignment" title="Assignment">
+            <i data-lucide="calendar-days" aria-hidden="true"></i>
+          </button>
+          <button class="dock-item dock-item-primary is-current-overview" type="button" data-route="overview" aria-label="Tổng quan" title="Tổng quan">
+            <i data-lucide="layout-dashboard" aria-hidden="true"></i>
+          </button>
+          <button class="dock-item" type="button" data-route="performance" aria-label="Hiệu suất" title="Hiệu suất">
+            <i data-lucide="chart-column-increasing" aria-hidden="true"></i>
+          </button>
+        </nav>
+      </section>
+
+      <section class="modal-overlay hidden" id="taskModal" aria-hidden="true">
+        <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="taskModalTitle">
+          <header class="modal-header">
+            <div>
+              <p class="eyebrow">Khai báo</p>
+              <h2 id="taskModalTitle">Khai báo việc</h2>
+            </div>
+            <button class="icon-button" type="button" id="closeTaskModalButton" aria-label="Đóng" title="Đóng">
+              <i data-lucide="x" aria-hidden="true"></i>
+            </button>
+          </header>
+
+          <form class="quick-form modal-form" id="createTaskForm" autocomplete="off">
+            <label>
+              <span>Tên việc</span>
+              <input id="taskTitleInput" name="title" type="text" placeholder="Nhập tên công việc" required>
+            </label>
+            <label>
+              <span>Bắt đầu</span>
+              <input id="taskStartInput" name="workStartAt" type="datetime-local" required>
+            </label>
+            <label>
+              <span>Kết thúc</span>
+              <input id="taskEndInput" name="workEndAt" type="datetime-local" required>
+            </label>
+            <label>
+              <span>Điểm</span>
+              <input id="taskPointInput" name="declaredPoint" type="number" min="0" step="1" value="0" required>
+            </label>
+            <label class="span-full">
+              <span>Mô tả</span>
+              <textarea id="taskDescriptionInput" name="description" rows="3" placeholder="Kết quả hoặc phạm vi công việc"></textarea>
+            </label>
+            <div class="form-actions span-full">
+              <label class="checkbox-field">
+                <input id="submitTaskInput" name="submit" type="checkbox" checked>
+                Gửi duyệt ngay
+              </label>
+              <button class="button mini" type="submit" id="createTaskButton">Lưu</button>
+            </div>
+            <p class="inline-message span-full" id="taskFormMessage"></p>
+          </form>
+        </div>
+      </section>
+
+      <section class="modal-overlay hidden" id="approvalModal" aria-hidden="true">
+        <div class="modal-panel modal-panel-wide" role="dialog" aria-modal="true" aria-labelledby="approvalModalTitle">
+          <header class="modal-header">
+            <div>
+              <p class="eyebrow">Duyệt việc</p>
+              <h2 id="approvalModalTitle">Task chờ duyệt</h2>
+            </div>
+            <button class="icon-button" type="button" id="closeApprovalModalButton" aria-label="Đóng" title="Đóng">
+              <i data-lucide="x" aria-hidden="true"></i>
+            </button>
+          </header>
+          <div class="approval-list" id="approvalList"></div>
+        </div>
+      </section>
+    </main>
+    <script src="vendor/lucide/lucide.min.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

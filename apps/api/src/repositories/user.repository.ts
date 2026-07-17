@@ -1,3 +1,4 @@
+import { Types } from 'mongoose';
 import UserModel from '../models/user.model';
 
 export const USER_PUBLIC_SELECT = '-passwordHash -twoFactorEnabled';
@@ -14,8 +15,26 @@ export const userRepository = {
     return populateUser(UserModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit));
   },
 
+  findAssignmentParticipants(filter: Record<string, unknown>) {
+    return UserModel.find(filter)
+      .select('_id fullName position avatarUrl role department status')
+      .populate('role', 'code name level')
+      .populate('department', 'name code')
+      .sort({ fullName: 1 })
+      .limit(500);
+  },
+
   count(filter: Record<string, unknown>) {
     return UserModel.countDocuments(filter);
+  },
+
+  countByDepartmentIds(departmentIds: string[]) {
+    if (departmentIds.length === 0) return Promise.resolve([] as Array<{ _id: Types.ObjectId; count: number }>);
+
+    return UserModel.aggregate<{ _id: Types.ObjectId; count: number }>([
+      { $match: { department: { $in: departmentIds.map((id) => new Types.ObjectId(id)) } } },
+      { $group: { _id: '$department', count: { $sum: 1 } } },
+    ]);
   },
 
   findPublicById(id: string) {
@@ -49,7 +68,7 @@ export const userRepository = {
 
   findAuthById(id: string) {
     return UserModel.findById(id)
-      .select('username fullName email status role organization department')
+      .select('username fullName position email status role organization department')
       .populate('role', 'code name level')
       .populate('department', '_id');
   },

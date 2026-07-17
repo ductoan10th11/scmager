@@ -17,6 +17,7 @@ const toAuthUser = (user: any): AuthUser | null => {
     email: user.email,
     username: user.username,
     fullName: user.fullName,
+    position: user.position ?? null,
     role: {
       id: String(role._id),
       code: role.code,

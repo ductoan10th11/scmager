@@ -24,6 +24,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
+import AppBreadcrumb from '@/components/ui/breadcrumb/AppBreadcrumb.vue'
 import {
   ArrowLeft, Building2, Search, Plus, User as UserIcon, Loader2,
   Mail, Shield, Trash2, Edit2, ChevronLeft, ChevronRight, Briefcase
@@ -105,6 +106,7 @@ const fetchUsers = async () => {
       limit: userLimit.value,
       page: userPage.value,
       search: searchUsers.value,
+      organization: props.organizationId,
       department: props.departmentId
     })
     if (res?.data) {
@@ -191,6 +193,11 @@ const taskAssigneeName = (task) => task.assignedTo?.fullName ?? 'Chưa giao'
       <!-- Row 1: back + dept info -->
       <div class="flex items-start justify-between gap-4">
         <div class="min-w-0">
+          <AppBreadcrumb :items="[
+            { label: 'Tổ chức', to: '/organizations' },
+            { label: 'Phòng ban', to: `/organizations/${organizationId}/departments` },
+            { label: department?.name || 'Chi tiết' },
+          ]" />
           <Button variant="ghost" class="h-9 rounded-full px-3 text-zinc-500 hover:text-zinc-900 -ml-3 mb-2" @click="goBack">
             <ArrowLeft class="w-4 h-4 mr-2" />
             Phòng ban
@@ -285,6 +292,7 @@ const taskAssigneeName = (task) => task.assignedTo?.fullName ?? 'Chưa giao'
                     </div>
                     <div class="min-w-0 flex flex-col items-start gap-0.5">
                       <p class="text-sm font-bold text-zinc-900 truncate leading-tight">{{ user.fullName || '—' }}</p>
+                      <p class="max-w-[180px] truncate text-xs font-medium text-zinc-500">{{ user.position || 'Chưa có chức vụ' }}</p>
                       <span class="text-[8px] font-bold uppercase tracking-wider px-2 py-[1px] rounded-full border shrink-0" :class="[getRoleConfig(user.role?.code).bg, getRoleConfig(user.role?.code).text, getRoleConfig(user.role?.code).border]">
                         {{ getRoleConfig(user.role?.code, user.role?.name).label }}
                       </span>

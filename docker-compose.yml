@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # 1. MongoDB Database
   mongodb:
@@ -42,7 +40,7 @@ services:
     volumes:
       - valkey_data:/data
 
-  # 4. Backend API Service (Development Mode)
+  # 4. Backend API Service
   api:
     image: node:20-slim
     container_name: sc-api
@@ -51,17 +49,30 @@ services:
     ports:
       - "8004:8004"
     environment:
-      - NODE_ENV=development
+      - NODE_ENV=production
       - MONGO_URI=${MONGO_URI}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
+      - DOCUMENT_ASSIGN_USER_SLA_HOURS=${DOCUMENT_ASSIGN_USER_SLA_HOURS:-4}
+      - SLA_MONITOR_INTERVAL_MS=${SLA_MONITOR_INTERVAL_MS:-300000}
+      - WORK_TIMEZONE_OFFSET_MINUTES=${WORK_TIMEZONE_OFFSET_MINUTES:-420}
+      - ASSIGNMENT_AI_URL=${ASSIGNMENT_AI_URL:-http://100.94.148.68:8000/v1/chat/completions}
+      - ASSIGNMENT_AI_MODEL=${ASSIGNMENT_AI_MODEL:-qwen3.6-27b}
+      - UPLOAD_DIR=/app/apps/api/uploads
     volumes:
       - .:/app
-    # Keep container running to allow docker compose exec
-    command: tail -f /dev/null
+    command: sh -c "npm run build && npm run start"
+    init: true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8004/api/ping').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     depends_on:
       - mongodb
       - valkey
 
-  # 5. Frontend Web Service (Development Mode)
+  # 5. Frontend Web Service
   web:
     image: node:20-slim
     container_name: sc-web
@@ -70,11 +81,17 @@ services:
     ports:
       - "8005:8005"
     environment:
-      - NODE_ENV=development
+      - NODE_ENV=production
     volumes:
       - .:/app
-    # Keep container running to allow docker compose exec
-    command: tail -f /dev/null
+    command: sh -c "npm run build && npm run start"
+    init: true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8005').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
 volumes:
   mongodb_data:

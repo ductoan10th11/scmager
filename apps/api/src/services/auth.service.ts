@@ -37,6 +37,7 @@ const toSafeUser = (user: any) => {
     _id: String(user._id),
     username: user.username,
     fullName: user.fullName,
+    position: user.position ?? null,
     email: user.email,
     phone: user.phone,
     avatarUrl: user.avatarUrl,
@@ -102,6 +103,7 @@ export const authService = {
       _id: currentUser.id,
       username: currentUser.username,
       fullName: currentUser.fullName,
+      position: currentUser.position ?? null,
       email: currentUser.email,
       role: {
         _id: currentUser.role.id,

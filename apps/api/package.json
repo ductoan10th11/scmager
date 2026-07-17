@@ -8,17 +8,24 @@
   "main": "index.js",
   "scripts": {
     "dev": "nodemon --exec tsx server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
     "@types/multer": "^2.2.0",
+    "axios": "^1.18.1",
+    "axios-cookiejar-support": "^7.0.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.7.3",
     "multer": "^2.2.0",
-    "nodemon": "^3.1.14"
+    "nodemon": "^3.1.14",
+    "playwright": "^1.61.1",
+    "socket.io": "^4.8.3",
+    "tough-cookie": "^6.0.2"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",

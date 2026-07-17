@@ -48,6 +48,7 @@ const togglingId = ref(null)
 const formData = ref({
   username: '',
   fullName: '',
+  position: '',
   email: '',
   password: '',
   roleCode: 'SPECIALIST',
@@ -92,7 +93,7 @@ const handleSearch = () => {
 const openCreateDialog = () => {
   dialogMode.value = 'create'
   errorMessage.value = ''
-  formData.value = { username: '', fullName: '', email: '', password: '', roleCode: 'SPECIALIST' }
+  formData.value = { username: '', fullName: '', position: '', email: '', password: '', roleCode: 'SPECIALIST' }
   isDialogOpen.value = true
 }
 
@@ -103,6 +104,7 @@ const openEditDialog = (user) => {
   formData.value = {
     username: user.username,
     fullName: user.fullName,
+    position: user.position || '',
     email: user.email,
     password: '',
     roleCode: user.role?.code || 'SPECIALIST',
@@ -264,6 +266,7 @@ const getRoleConfig = (code, name) => {
                     </div>
                     <div class="min-w-0 flex flex-col items-start gap-0.5">
                       <p class="text-sm font-bold text-zinc-900 truncate leading-tight">{{ user.fullName || '—' }}</p>
+                      <p class="max-w-[180px] truncate text-xs font-medium text-zinc-500">{{ user.position || 'Chưa có chức vụ' }}</p>
                       <span class="text-[8px] font-bold uppercase tracking-wider px-2 py-[1px] rounded-full border shrink-0" :class="[getRoleConfig(user.role?.code).bg, getRoleConfig(user.role?.code).text, getRoleConfig(user.role?.code).border]">
                         {{ getRoleConfig(user.role?.code, user.role?.name).label }}
                       </span>
@@ -290,6 +293,9 @@ const getRoleConfig = (code, name) => {
                 <!-- Column 4: Status -->
                 <TableCell class="px-4 py-2">
                   <div class="flex items-center gap-2">
+                    <span class="whitespace-nowrap text-xs font-semibold" :class="user.status === 'ACTIVE' ? 'text-emerald-600' : 'text-zinc-400'">
+                      {{ user.status === 'ACTIVE' ? 'Hoạt động' : 'Đã ngưng' }}
+                    </span>
                     <button
                       :disabled="togglingId === user._id || user.role?.code === 'ADMIN'"
                       :class="[
@@ -399,6 +405,11 @@ const getRoleConfig = (code, name) => {
           </div>
 
           <div class="flex flex-col gap-1.5">
+            <label class="text-[11px] font-bold text-zinc-500 uppercase tracking-wider pl-1">Chức vụ</label>
+            <Input v-model="formData.position" placeholder="Ví dụ: Chủ tịch, Công chức văn phòng..." class="h-10 rounded-xl bg-white border-zinc-200 focus:border-blue-500" />
+          </div>
+
+          <div class="flex flex-col gap-1.5">
             <label class="text-[11px] font-bold text-zinc-500 uppercase tracking-wider pl-1">Email liên hệ</label>
             <Input v-model="formData.email" type="email" placeholder="email@scmager.local" class="h-10 rounded-xl bg-white border-zinc-200 focus:border-blue-500" />
           </div>
@@ -411,16 +422,18 @@ const getRoleConfig = (code, name) => {
           </div>
 
           <div class="flex flex-col gap-1.5">
-            <label class="text-[11px] font-bold text-zinc-500 uppercase tracking-wider pl-1">Chức vụ / Quyền</label>
-            <select
-              v-model="formData.roleCode"
-              class="h-10 rounded-xl bg-white border border-zinc-200 focus:border-blue-500 text-sm font-medium px-3 outline-none"
-            >
-              <option value="SPECIALIST">Chuyên viên</option>
-              <option value="DEPARTMENT_LEADER">Trưởng phòng</option>
-              <option value="COMMUNE_LEADER">Lãnh đạo xã</option>
-              <option value="OFFICE_CHIEF">Chánh văn phòng</option>
-            </select>
+            <label class="text-[11px] font-bold text-zinc-500 uppercase tracking-wider pl-1">Vai trò hệ thống</label>
+            <Select v-model="formData.roleCode">
+              <SelectTrigger class="h-10 rounded-xl bg-white border-zinc-200">
+                <SelectValue placeholder="Chọn vai trò" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="SPECIALIST">Chuyên viên</SelectItem>
+                <SelectItem value="DEPARTMENT_LEADER">Trưởng phòng</SelectItem>
+                <SelectItem value="COMMUNE_LEADER">Lãnh đạo xã</SelectItem>
+                <SelectItem value="OFFICE_CHIEF">Chánh văn phòng</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </div>
 

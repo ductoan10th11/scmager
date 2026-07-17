@@ -29,7 +29,12 @@ const storage = multer.diskStorage({
   },
 });
 
-const fileFilter: multer.Options['fileFilter'] = (_req, file, cb) => {
+const fileFilter: multer.Options['fileFilter'] = (req, file, cb) => {
+  const roleCode = (req as any).currentUser?.role?.code;
+  if (!['ADMIN', 'OFFICE_CHIEF'].includes(roleCode)) {
+    cb(new HttpError(403, 'Only ADMIN or OFFICE_CHIEF can upload document attachments.'));
+    return;
+  }
   const isImage = file.mimetype.startsWith('image/');
   if (isImage || ALLOWED_MIME_TYPES.has(file.mimetype)) {
     cb(null, true);

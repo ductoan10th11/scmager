@@ -68,7 +68,25 @@ const assertBoolean = (value: unknown, field: string) => {
   throw badRequest(`${field} must be a boolean.`);
 };
 
-const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const normalizeSearchText = (value: unknown) => String(value ?? '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/đ/g, 'd')
+  .replace(/Đ/g, 'D')
+  .toLowerCase();
+
+const matchesDepartmentSearch = (department: any, search: string) => {
+  const raw = typeof department?.toObject === 'function' ? department.toObject() : department;
+  const haystack = normalizeSearchText([
+    raw?.name,
+    raw?.code,
+    raw?.description,
+    raw?.parent?.name,
+    raw?.leader?.fullName,
+  ].filter(Boolean).join(' '));
+
+  return haystack.includes(normalizeSearchText(search));
+};
 
 const isDuplicateKeyError = (error: unknown) => (
   typeof error === 'object'
@@ -77,26 +95,26 @@ const isDuplicateKeyError = (error: unknown) => (
   && (error as { code?: number }).code === 11000
 );
 
+const objectIdOf = (value: unknown) => {
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'object' && '_id' in value) {
+    return String((value as { _id?: unknown })._id ?? '');
+  }
+  return String(value);
+};
+
 const ensureCanManageDepartments = (actor: AuthUser) => {
   if (actor.role.level <= 1) return;
   throw forbidden('You cannot manage departments.');
 };
 
-const toSafeDepartment = (department: any) => {
+const toSafeDepartment = (department: any, memberCount = 0) => {
   if (!department) return null;
   const raw = typeof department.toObject === 'function' ? department.toObject() : department;
 
   return {
     _id: String(raw._id),
-    organization: raw.organization
-      ? {
-        _id: String(raw.organization._id),
-        name: raw.organization.name,
-        code: raw.organization.code,
-        type: raw.organization.type,
-        isActive: raw.organization.isActive,
-      }
-      : null,
     parent: raw.parent
       ? {
         _id: String(raw.parent._id),
@@ -110,6 +128,7 @@ const toSafeDepartment = (department: any) => {
         _id: String(raw.leader._id),
         username: raw.leader.username,
         fullName: raw.leader.fullName,
+        position: raw.leader.position ?? null,
         email: raw.leader.email,
       }
       : null,
@@ -118,6 +137,7 @@ const toSafeDepartment = (department: any) => {
     description: raw.description,
     isOffice: raw.isOffice,
     isActive: raw.isActive,
+    memberCount,
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
   };
@@ -149,23 +169,63 @@ const resolveParentId = async (value: unknown, organizationId: string, targetId?
   return parentId;
 };
 
-const resolveLeaderId = async (value: unknown) => {
+const resolveLeaderId = async (value: unknown, organizationId: string, departmentId: string) => {
   const leaderId = assertObjectId(value, 'leader');
   if (!leaderId) return null;
 
   const leader = await userRepository.findPublicById(leaderId);
   if (!leader) throw badRequest('leader does not exist.');
+  if (objectIdOf((leader as any).organization) !== organizationId) {
+    throw badRequest('leader must belong to the same organization.');
+  }
+  if (objectIdOf((leader as any).department) !== departmentId) {
+    throw badRequest('leader must belong to this department.');
+  }
+  if ((leader as any).status !== 'ACTIVE') {
+    throw badRequest('leader must be active.');
+  }
   return leaderId;
+};
+
+const ensureOrganizationAccess = (actor: AuthUser, organizationId: string) => {
+  if (actor.role.code === 'ADMIN') return;
+  if (!actor.organization || actor.organization !== organizationId) {
+    throw forbidden('Access denied.');
+  }
 };
 
 const organizationFrom = (params: DepartmentRouteParams, queryOrPayload: { organization?: unknown }) => (
   params.organizationId ?? queryOrPayload.organization
 );
 
+const withMemberCounts = async (departments: any[]) => {
+  const counts = await userRepository.countByDepartmentIds(
+    departments.map((department) => String(department._id)),
+  );
+  const countByDepartmentId = new Map(counts.map(({ _id, count }) => [String(_id), count]));
+
+  return departments
+    .map((department) => toSafeDepartment(department, countByDepartmentId.get(String(department._id)) ?? 0))
+    .filter(Boolean);
+};
+
 export const departmentService = {
   async listDepartments(actor: AuthUser, params: DepartmentRouteParams, query: ListDepartmentsQuery) {
     const { page, limit, skip } = parsePagination(query);
-    const organization = await resolveOrganizationId(organizationFrom(params, query), false);
+    const requestedOrganization = await resolveOrganizationId(organizationFrom(params, query), false);
+    if (actor.role.code !== 'ADMIN' && !actor.organization) {
+      throw forbidden('User has no organization assigned.');
+    }
+    if (
+      actor.role.code !== 'ADMIN'
+      && requestedOrganization
+      && requestedOrganization !== actor.organization
+    ) {
+      throw forbidden('Access denied.');
+    }
+    const organization = actor.role.code === 'ADMIN'
+      ? requestedOrganization
+      : actor.organization;
     const parent = assertObjectId(query.parent, 'parent');
     const leader = assertObjectId(query.leader, 'leader');
     const isOffice = assertBoolean(query.isOffice, 'isOffice');
@@ -178,18 +238,23 @@ export const departmentService = {
     if (leader) filter.leader = leader;
     if (isOffice !== undefined) filter.isOffice = isOffice;
     if (isActive !== undefined) filter.isActive = isActive;
+
+    let items;
+    let total;
     if (search) {
-      const regex = new RegExp(escapeRegex(search), 'i');
-      filter.$or = [{ name: regex }, { code: regex }, { description: regex }];
+      const allItems = await departmentRepository.findAll(filter);
+      const filteredItems = allItems.filter((item: any) => matchesDepartmentSearch(item, search));
+      total = filteredItems.length;
+      items = filteredItems.slice(skip, skip + limit);
+    } else {
+      [items, total] = await Promise.all([
+        departmentRepository.findMany(filter, skip, limit),
+        departmentRepository.count(filter),
+      ]);
     }
 
-    const [items, total] = await Promise.all([
-      departmentRepository.findMany(filter, skip, limit),
-      departmentRepository.count(filter),
-    ]);
-
     return {
-      data: items.map(toSafeDepartment).filter(Boolean),
+      data: await withMemberCounts(items),
       meta: {
         page,
         limit,
@@ -203,21 +268,35 @@ export const departmentService = {
     const departmentId = assertObjectId(id, 'id');
     const department = await departmentRepository.findById(departmentId as string);
     if (!department) throw notFound('Department not found.');
-    return { data: toSafeDepartment(department) };
+    if (
+      actor.role.code !== 'ADMIN'
+      && (
+        !actor.organization
+        || objectIdOf((department as any).organization) !== actor.organization
+      )
+    ) {
+      throw forbidden('Access denied.');
+    }
+    const [safeDepartment] = await withMemberCounts([department]);
+    return { data: safeDepartment };
   },
 
   async createDepartment(actor: AuthUser, params: DepartmentRouteParams, payload: CreateDepartmentPayload) {
     ensureCanManageDepartments(actor);
 
     const organizationId = await resolveOrganizationId(organizationFrom(params, payload));
+    ensureOrganizationAccess(actor, organizationId as string);
     const name = normalizeText(payload.name, 'name', true);
     const code = normalizeText(payload.code, 'code', true)?.toUpperCase();
+    if (assertObjectId(payload.leader, 'leader')) {
+      throw badRequest('leader can only be assigned after the department is created.');
+    }
 
     try {
       const department = await departmentRepository.create({
         organization: organizationId,
         parent: await resolveParentId(payload.parent, organizationId as string),
-        leader: await resolveLeaderId(payload.leader),
+        leader: null,
         name,
         code,
         description: normalizeText(payload.description, 'description'),
@@ -238,10 +317,12 @@ export const departmentService = {
     const departmentId = assertObjectId(id, 'id');
     const department = await departmentRepository.findRawById(departmentId as string);
     if (!department) throw notFound('Department not found.');
+    ensureOrganizationAccess(actor, String((department as any).organization));
 
     let organizationId = String((department as any).organization);
     if (payload.organization !== undefined) {
       organizationId = await resolveOrganizationId(payload.organization) as string;
+      ensureOrganizationAccess(actor, organizationId);
       (department as any).organization = organizationId;
     }
 
@@ -249,7 +330,7 @@ export const departmentService = {
       (department as any).parent = await resolveParentId(payload.parent, organizationId, departmentId as string);
     }
     if (payload.leader !== undefined) {
-      (department as any).leader = await resolveLeaderId(payload.leader);
+      (department as any).leader = await resolveLeaderId(payload.leader, organizationId, departmentId as string);
     }
 
     const name = normalizeText(payload.name, 'name');
@@ -285,6 +366,7 @@ export const departmentService = {
     const departmentId = assertObjectId(id, 'id');
     const department = await departmentRepository.findRawById(departmentId as string);
     if (!department) throw notFound('Department not found.');
+    ensureOrganizationAccess(actor, String((department as any).organization));
 
     (department as any).isActive = false;
     await departmentRepository.save(department);

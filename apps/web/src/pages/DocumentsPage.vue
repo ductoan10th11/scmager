@@ -1,7 +1,7 @@
 <script setup>
-import IncomingDocumentFeature from '@/features/documents/IncomingDocumentFeature.vue'
+import IngestDocumentsFeature from '@/features/ingest/IngestDocumentsFeature.vue'
 </script>
 
 <template>
-  <IncomingDocumentFeature />
+  <IngestDocumentsFeature context="documents" />
 </template>

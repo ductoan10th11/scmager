@@ -162,7 +162,7 @@ const handleLogin = async () => {
               />
               <label for="remember" class="text-xs text-zinc-500 font-semibold cursor-pointer select-none">Ghi nhớ đăng nhập</label>
             </div>
-            <a href="#" class="text-xs font-bold text-blue-600 hover:text-blue-500 transition-colors">Quên mật khẩu?</a>
+            <span class="text-xs font-semibold text-zinc-400">Liên hệ quản trị viên khi quên mật khẩu</span>
           </div>
 
           <!-- Error Alert (Smooth transition height/opacity) -->

@@ -3,6 +3,7 @@ export type AuthUser = {
   email: string;
   username: string;
   fullName: string;
+  position?: string | null;
   role: {
     id: string;
     code: string;
