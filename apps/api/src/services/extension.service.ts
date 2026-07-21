@@ -11,7 +11,7 @@ const isSpecialist = (actor: AuthUser) => actor.role.code === 'SPECIALIST';
 const parseLimit = (value: unknown) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return 5;
-  return Math.min(Math.max(parsed, 0), 20);
+  return Math.min(Math.max(parsed, 0), 50);
 };
 
 const scopedWorkFilter = (actor: AuthUser) => {
@@ -75,23 +75,47 @@ const toWorkItem = (work: any) => ({
     : null,
 });
 
+const trackLogTimestamp = (trackLog: any) => {
+  const value = trackLog?.completedAt ?? trackLog?.processingAt ?? trackLog?.receivedAt;
+  const match = String(value ?? '').match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2}))?$/);
+  if (!match) return Number.NEGATIVE_INFINITY;
+
+  const [, day, month, year, hour = '00', minute = '00'] = match;
+  return Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute));
+};
+
+const latestTrackLogOf = (trackLogs: any[] = []) => trackLogs.reduce<any | null>((latest, candidate) => {
+  if (!latest || trackLogTimestamp(candidate) >= trackLogTimestamp(latest)) return candidate;
+  return latest;
+}, null);
+
 const toIngestDocumentItem = (doc: any) => ({
+  latestTrackLog: (() => {
+    const trackLog = latestTrackLogOf(doc.trackLogs);
+    if (!trackLog) return null;
+
+    return {
+      content: trackLog.content || '',
+      sender: trackLog.sender
+        ? { username: trackLog.sender.username || '', fullName: trackLog.sender.fullName || '' }
+        : null,
+      receivedAt: trackLog.receivedAt ?? null,
+      processingAt: trackLog.processingAt ?? null,
+      completedAt: trackLog.completedAt ?? null,
+    };
+  })(),
   id: idOf(doc),
   documentId: doc.documentId,
-  soDen: doc.soDen,
   soKyHieu: doc.soKyHieu,
   trichYeu: doc.trichYeu,
-  donViBanHanh: doc.donViBanHanh,
   ngayDen: doc.ngayDen,
   deadline: doc.deadline ?? null,
   point: doc.point ?? null,
-  pointSource: doc.pointSource?.comment ?? null,
   doKhan: doc.doKhan,
-  doMat: doc.doMat,
+  nguoiXuLy: doc.nguoiXuLy,
   completed: Boolean(doc.ingest?.completed),
   deadLetter: Boolean(doc.ingest?.deadLetter),
   lastError: doc.ingest?.lastError || '',
-  detailFetchedAt: doc.ingest?.detailFetchedAt ?? null,
   processingStatus: doc.processing?.status ?? 'UNASSIGNED',
   currentAssignee: doc.processing?.currentAssignee ?? null,
   updatedAt: doc.updatedAt,
@@ -228,7 +252,7 @@ export const extensionOverviewService = async (actor: AuthUser, query: Record<st
       ? DocumentModel.find(taskDocumentScope)
         .sort({ deadline: 1, updatedAt: -1 })
         .limit(limit)
-        .select('documentId soDen soKyHieu trichYeu donViBanHanh ngayDen deadline point pointSource doKhan doMat ingest processing updatedAt')
+        .select('documentId soKyHieu trichYeu ngayDen deadline point doKhan nguoiXuLy ingest processing trackLogs updatedAt')
       : Promise.resolve([]),
   ]);
   const pointStats = Array.isArray(ingestPointStats) && ingestPointStats[0]

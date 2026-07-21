@@ -1,40 +1,21 @@
 import { Schema, model, models } from 'mongoose';
 
-const trackLogSchema = new Schema(
+const personSchema = new Schema(
   {
-    id: { type: String, trim: true },
-    sender: {
-      username: { type: String, trim: true, default: '' },
-      fullName: { type: String, trim: true, default: '' },
-    },
-    receiver: {
-      username: { type: String, trim: true, default: '' },
-      fullName: { type: String, trim: true, default: '' },
-    },
-    action: { type: String, trim: true, default: '' },
-    comment: { type: String, trim: true, default: '' },
-    receivedAt: { type: String, default: null },
-    processingAt: { type: String, default: null },
-    completedAt: { type: String, default: null },
+    username: { type: String, trim: true, default: '' },
+    fullName: { type: String, trim: true, default: '' },
   },
   { _id: false },
 );
 
-const ingestSchema = new Schema(
+const trackLogSchema = new Schema(
   {
-    source: { type: String, default: 'LANGSON_DWR', index: true },
-    listFetchedAt: { type: Date, default: null },
-    detailFetchedAt: { type: Date, default: null },
-    trackLogFetchedAt: { type: Date, default: null },
-    completed: { type: Boolean, default: false, index: true },
-    completedRule: { type: String, trim: true, default: '' },
-    attempts: { type: Number, min: 0, default: 0 },
-    lastAttemptAt: { type: Date, default: null },
-    nextRetryAt: { type: Date, default: null, index: true },
-    lastError: { type: String, trim: true, default: '' },
-    deadLetter: { type: Boolean, default: false, index: true },
-    deadLetterAt: { type: Date, default: null },
-    deadLetterReason: { type: String, trim: true, default: '' },
+    sender: { type: personSchema, default: () => ({}) },
+    content: { type: String, trim: true, default: '' },
+    receivedAt: { type: String, default: null },
+    processingAt: { type: String, default: null },
+    completedAt: { type: String, default: null },
+    updatedAt: { type: String, default: null },
   },
   { _id: false },
 );
@@ -73,47 +54,49 @@ const processingSchema = new Schema(
   { _id: false },
 );
 
+const ingestSchema = new Schema(
+  {
+    source: { type: String, default: 'LANGSON_DWR', index: true },
+    listFetchedAt: { type: Date, default: null },
+    trackLogFetchedAt: { type: Date, default: null },
+    outgoingDocumentsFetchedAt: { type: Date, default: null },
+    outgoingDocumentCount: { type: Number, min: 0, default: 0 },
+    completed: { type: Boolean, default: false, index: true },
+    completedRule: { type: String, trim: true, default: '' },
+    attempts: { type: Number, min: 0, default: 0 },
+    lastAttemptAt: { type: Date, default: null },
+    nextRetryAt: { type: Date, default: null, index: true },
+    lastError: { type: String, trim: true, default: '' },
+    deadLetter: { type: Boolean, default: false, index: true },
+    deadLetterAt: { type: Date, default: null },
+    deadLetterReason: { type: String, trim: true, default: '' },
+  },
+  { _id: false },
+);
+
 const documentSchema = new Schema(
   {
     documentId: { type: String, required: true, trim: true, unique: true, index: true },
-    processKey: { type: String, trim: true, default: '' },
-
-    soDen: { type: String, required: true, trim: true, index: true },
-    soKyHieu: { type: String, trim: true, default: '' },
+    soKyHieu: { type: String, trim: true, default: '', index: true },
     trichYeu: { type: String, trim: true, default: '', index: 'text' },
-    donViBanHanh: { type: String, trim: true, default: '' },
-    hinhThuc: { type: String, trim: true, default: '' },
-
-    ngayVanBan: { type: String, trim: true, default: '' },
-    ngayDen: { type: String, trim: true, default: '' },
+    ngayDen: { type: String, trim: true, default: '', index: true },
     doKhan: { type: String, trim: true, default: '' },
-    doMat: { type: String, trim: true, default: '' },
-
     nguoiXuLy: { type: String, trim: true, default: '' },
-    nguoiSoan: { type: String, trim: true, default: '' },
-    nguoiKy: { type: String, trim: true, default: '' },
-    trangThai: { type: Number, default: null },
-    deadline: { type: Date, default: null },
+    deadline: { type: Date, required: true, index: true },
     point: { type: Number, default: 0 },
-    pointSource: {
-      trackLogId: { type: String, trim: true, default: null },
-      comment: { type: String, trim: true, default: null },
-      extractedAt: { type: Date, default: null },
-    },
-
-    processing: { type: processingSchema, default: () => ({}) },
-
     trackLogs: { type: [trackLogSchema], default: [] },
+    // Processing is derived locally from source tracklogs; it is not a copied
+    // eOffice detail payload and remains necessary for access scopes/KPI.
+    processing: { type: processingSchema, default: () => ({}) },
     ingest: { type: ingestSchema, default: () => ({}) },
   },
   { timestamps: true },
 );
 
-documentSchema.index({ 'ingest.completed': 1, updatedAt: -1 });
+documentSchema.index({ ngayDen: 1, deadline: 1 });
 documentSchema.index({ 'ingest.completed': 1, 'ingest.deadLetter': 1, 'ingest.nextRetryAt': 1, updatedAt: 1 });
 documentSchema.index({ 'processing.currentAssignee.userId': 1, deadline: 1 });
 documentSchema.index({ 'processing.assignees.userId': 1, updatedAt: -1 });
-documentSchema.index({ 'processing.manual.processedBy': 1, 'processing.manual.processedAt': -1 });
 
 export const DocumentModel = models.Document || model('Document', documentSchema);
 export default DocumentModel;

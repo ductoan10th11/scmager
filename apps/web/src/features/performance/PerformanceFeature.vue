@@ -202,7 +202,7 @@ onMounted(fetchData)
               >
                 <span class="mt-0.5 rounded-full border px-2 py-1 text-[11px] font-bold" :class="documentStatusClass(doc)">{{ documentStatusLabel(doc) }}</span>
                 <span class="min-w-0 flex-1">
-                  <span class="block truncate text-sm font-bold text-zinc-900">{{ doc.soKyHieu || `SĐ ${doc.soDen}` }}</span>
+                  <span class="block truncate text-sm font-bold text-zinc-900">{{ doc.soKyHieu || 'Văn bản đến' }}</span>
                   <span class="mt-0.5 line-clamp-2 block text-xs leading-5 text-zinc-500">{{ doc.trichYeu || doc.donViBanHanh || 'Không có trích yếu.' }}</span>
                   <span class="mt-1 block text-[11px] font-semibold text-zinc-400">Hạn {{ formatDateTime(doc.deadline) }} · {{ formatNumber(doc.point) }} điểm</span>
                 </span>
@@ -281,7 +281,7 @@ onMounted(fetchData)
               @click="openDocument(doc)"
             >
               <div class="flex items-start justify-between gap-3">
-                <p class="min-w-0 truncate text-sm font-bold text-zinc-900">{{ doc.soKyHieu || `SĐ ${doc.soDen}` }}</p>
+                <p class="min-w-0 truncate text-sm font-bold text-zinc-900">{{ doc.soKyHieu || 'Văn bản đến' }}</p>
                 <span class="shrink-0 rounded-full bg-blue-50 px-2 py-1 text-[11px] font-bold text-blue-700">{{ formatNumber(doc.point) }} điểm</span>
               </div>
               <p class="mt-1 line-clamp-2 text-xs leading-5 text-zinc-500">{{ doc.trichYeu || doc.donViBanHanh || 'Không có trích yếu.' }}</p>

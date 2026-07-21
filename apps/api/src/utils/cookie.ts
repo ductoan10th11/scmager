@@ -18,10 +18,14 @@ export const parseCookies = (cookieHeader?: string) => {
   return cookies;
 };
 
+const isProduction = process.env.NODE_ENV === 'production';
+
 export const getAuthCookieOptions = (maxAgeMs?: number) => ({
   httpOnly: true,
-  sameSite: 'lax' as const,
-  secure: process.env.NODE_ENV === 'production',
+  // The extension renders the compact workspace in an eWork iframe. Production
+  // needs a cross-site cookie for that embedded, HTTPS-only context.
+  sameSite: isProduction ? 'none' as const : 'lax' as const,
+  secure: isProduction,
   path: '/',
   ...(maxAgeMs ? { maxAge: maxAgeMs } : {}),
 });

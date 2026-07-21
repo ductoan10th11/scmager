@@ -1,14 +1,26 @@
 import { randomUUID } from 'crypto';
 import AiTaskDraftModel from '../models/ai-task-draft.model';
+import { DocumentModel, UserModel, WorkDeclarationModel } from '../models';
 import { AuthUser } from '../types/auth';
 import { badRequest, conflict, forbidden, notFound } from '../utils/http-error';
 import {
   createWorkDeclarationService,
   submitWorkDeclarationService,
 } from './work-declaration.service';
+import { documentWorkflowFiltersFor } from './document-workflow.service';
+import {
+  appendChatContent,
+  cancelPendingTaskProposals,
+  getChatMemory,
+  getLatestTaskDraft,
+  getOrCreatePrimaryChatSession,
+  replacePendingTaskProposals,
+  updateTaskProposal,
+} from './chat-session.service';
 
 type ChatMessage = { role: 'user' | 'assistant'; content: string };
 type TaskExtraction = {
+  intent?: 'TASK' | 'QUESTION' | string | null;
   title?: string | null;
   description?: string | null;
   date?: string | null;
@@ -36,6 +48,9 @@ const CONFIRMATIONS = new Set([
 const CANCELLATIONS = new Set([
   'huy', 'cancel', 'thoi', 'bo qua', 'khong tao', 'khong tao nua', 'dung lai', 'huy task', 'huy viec',
 ]);
+const CONTEXT_EMPLOYEE_LIMIT = 80;
+const CONTEXT_WORK_LIMIT = 50;
+const CONTEXT_DOCUMENT_LIMIT = 30;
 
 const normalizeConfirmation = (value: unknown) => String(value ?? '')
   .normalize('NFD')
@@ -60,37 +75,129 @@ const vietnamNow = () => new Intl.DateTimeFormat('vi-VN', {
   hourCycle: 'h23',
 }).format(new Date());
 
-const systemPrompt = (actor: AuthUser, currentDraft: unknown) => `Bạn là trợ lý khai báo công việc của eWork và phải tự hiểu toàn bộ ngôn ngữ tự nhiên của người dùng.
+const isAdmin = (actor: AuthUser) => actor.role.code === 'ADMIN';
+const isSpecialist = (actor: AuthUser) => actor.role.code === 'SPECIALIST';
+const isDepartmentLeader = (actor: AuthUser) => actor.role.code === 'DEPARTMENT_LEADER';
+
+const scopedEmployeeFilter = (actor: AuthUser) => {
+  const filter: Record<string, unknown> = { status: 'ACTIVE' };
+  if (!isAdmin(actor)) filter.organization = actor.organization;
+  if (isSpecialist(actor)) filter._id = actor.id;
+  if (isDepartmentLeader(actor)) filter.department = actor.department;
+  return filter;
+};
+
+const scopedWorkFilter = (actor: AuthUser) => {
+  const filter: Record<string, unknown> = { status: { $ne: 'CANCELLED' } };
+  if (!isAdmin(actor)) filter.organization = actor.organization;
+  if (isSpecialist(actor)) filter.createdBy = actor.id;
+  if (isDepartmentLeader(actor)) {
+    filter.$or = [
+      { department: actor.department },
+      { createdBy: actor.id },
+      { 'approval.currentApprover': actor.id },
+    ];
+  }
+  return filter;
+};
+
+const buildWorkspaceContext = async (actor: AuthUser) => {
+  const documentScope = await documentWorkflowFiltersFor(actor);
+  const [employees, workDeclarations, documents] = await Promise.all([
+    UserModel.find(scopedEmployeeFilter(actor))
+      .select('username fullName position department role')
+      .populate('department', 'name code')
+      .populate('role', 'code name level')
+      .sort({ fullName: 1 })
+      .limit(CONTEXT_EMPLOYEE_LIMIT)
+      .lean(),
+    WorkDeclarationModel.find(scopedWorkFilter(actor))
+      .select('title description workStartAt workEndAt durationMinutes declaredPoint status createdBy department approval')
+      .populate('createdBy', 'username fullName position')
+      .populate('department', 'name code')
+      .populate('approval.currentApprover', 'username fullName position')
+      .sort({ workStartAt: 1, updatedAt: -1 })
+      .limit(CONTEXT_WORK_LIMIT)
+      .lean(),
+    DocumentModel.find({
+      deadline: { $ne: null },
+      ...documentScope.participant,
+    })
+      .select('soKyHieu trichYeu deadline point ingest.completed processing')
+      .sort({ deadline: 1, updatedAt: -1 })
+      .limit(CONTEXT_DOCUMENT_LIMIT)
+      .lean(),
+  ]);
+
+  return {
+    scope: isSpecialist(actor)
+      ? 'Chỉ dữ liệu của người dùng hiện tại.'
+      : isDepartmentLeader(actor)
+        ? 'Dữ liệu trong phòng ban, công việc của người dùng và việc đang chờ người dùng duyệt.'
+        : 'Dữ liệu trong phạm vi tổ chức mà người dùng được phép xem.',
+    employees: employees.map((employee: any) => ({
+      username: employee.username,
+      fullName: employee.fullName,
+      position: employee.position ?? null,
+      role: employee.role ? { code: employee.role.code, name: employee.role.name } : null,
+      department: employee.department ? { name: employee.department.name, code: employee.department.code } : null,
+    })),
+    workDeclarations: workDeclarations.map((work: any) => ({
+      title: work.title,
+      description: String(work.description || '').slice(0, 280),
+      startAt: work.workStartAt,
+      endAt: work.workEndAt,
+      durationMinutes: work.durationMinutes,
+      point: work.declaredPoint,
+      status: work.status,
+      owner: work.createdBy ? { username: work.createdBy.username, fullName: work.createdBy.fullName, position: work.createdBy.position ?? null } : null,
+      department: work.department ? work.department.name : null,
+      currentApprover: work.approval?.currentApprover
+        ? { username: work.approval.currentApprover.username, fullName: work.approval.currentApprover.fullName }
+        : null,
+    })),
+    documents: documents.map((document: any) => ({
+      soKyHieu: document.soKyHieu,
+      trichYeu: String(document.trichYeu || '').slice(0, 320),
+      deadline: document.deadline,
+      point: document.point ?? 0,
+      completed: Boolean(document.ingest?.completed) || ['COMPLETED', 'MANUALLY_PROCESSED'].includes(document.processing?.status),
+      processingStatus: document.processing?.status ?? 'UNASSIGNED',
+      currentAssignee: document.processing?.currentAssignee
+        ? { username: document.processing.currentAssignee.username, fullName: document.processing.currentAssignee.fullName }
+        : null,
+    })),
+  };
+};
+
+const systemPrompt = (actor: AuthUser, currentDraft: unknown, workspaceContext: unknown) => `Bạn là trợ lý vận hành eWork. Bạn vừa có thể khai báo công việc, vừa trả lời câu hỏi về nhân sự, công việc và văn bản mà người dùng được phép xem.
 Người dùng hiện tại: ${actor.fullName}.
 Thời gian hiện tại tại Asia/Ho_Chi_Minh: ${vietnamNow()}.
 Draft đã ghi nhận từ các lượt trước: ${JSON.stringify(currentDraft ?? {})}.
+Dữ liệu hệ thống đã phân quyền, là nguồn sự thật duy nhất để trả lời tra cứu: ${JSON.stringify(workspaceContext)}.
 
-Mục tiêu là thu thập chính xác các trường bắt buộc: title, date, startTime, endTime và point. description và durationMinutes là tùy chọn.
+Phân loại ý định:
+- QUESTION: người dùng hỏi về nhân viên, ai đang làm gì, lịch, task, tiến độ, người duyệt, điểm hoặc văn bản. Chỉ trả lời bằng dữ liệu trong context. Nếu context không đủ hoặc không có dữ liệu, nói rõ không có dữ liệu trong phạm vi được phép xem; không suy đoán.
+- TASK: người dùng muốn tạo, sửa hoặc tiếp tục khai báo một công việc. Chỉ intent này mới cần thu thập trường tạo việc và có thể đề nghị xác nhận.
+
+Khi intent là TASK, mục tiêu là thu thập chính xác các trường bắt buộc: title, date, startTime, endTime và point. description và durationMinutes là tùy chọn.
 - Tự suy luận tên công việc ngắn gọn từ hành động, không chép nguyên cả câu yêu cầu. Ví dụ "Xin cho tôi đi mua cafe 15p" có title là "Đi mua cafe".
 - Hiểu ngày tương đối theo giờ Việt Nam, các cách nói giờ tự nhiên và thời lượng bằng giờ/phút hoặc ký hiệu p.
 - Khi có giờ bắt đầu và thời lượng, tự tính endTime. Khi người dùng nói "bây giờ" hoặc "giờ", dùng thời gian hiện tại.
 - Point phải là số không âm. Chỉ để null khi hội thoại thực sự chưa cung cấp và không thể suy ra.
 - Mỗi lượt phải tổng hợp lại đầy đủ trạng thái mới nhất từ toàn bộ hội thoại và draft, không chỉ trả các trường vừa thay đổi.
 
-Phần reply là câu trả lời cuối cùng hiển thị trực tiếp cho người dùng. Viết tự nhiên, lịch sự, ngắn gọn bằng tiếng Việt. Mỗi đầu mục phải nằm trên một dòng riêng bắt đầu bằng "- ". Không dùng nội dung trong ngoặc, không dùng placeholder như HH:mm, không đánh số danh sách.
+Phần reply là câu trả lời cuối cùng hiển thị trực tiếp cho người dùng. Viết tự nhiên, lịch sự, ngắn gọn bằng tiếng Việt. Với dữ liệu có nhiều mục, mỗi đầu mục nằm trên một dòng riêng bắt đầu bằng "- ". Không dùng nội dung trong ngoặc, không dùng placeholder như HH:mm, không đánh số danh sách.
+- Với intent QUESTION, trả lời thẳng vào câu hỏi, nêu tên, thời gian, trạng thái và số điểm khi context có. Không hỏi các trường của form tạo việc.
 - Nếu đủ dữ liệu: liệt kê Tên công việc, Mô tả nếu có, Ngày thực hiện theo dd/MM/yyyy, Giờ bắt đầu, Giờ kết thúc, Số điểm; sau đó đề nghị người dùng kiểm tra và xác nhận.
 - Nếu thiếu dữ liệu: liệt kê riêng những gì đã ghi nhận, rồi liệt kê riêng từng trường còn thiếu để người dùng bổ sung.
 
-Phần task là JSON máy đọc. date dùng YYYY-MM-DD; thời gian dùng HH:mm; durationMinutes và point là số. missingFields chứa đúng các trường bắt buộc còn thiếu.
+Phần task là JSON máy đọc. intent là QUESTION hoặc TASK. date dùng YYYY-MM-DD; thời gian dùng HH:mm; durationMinutes và point là số. missingFields chứa đúng các trường bắt buộc còn thiếu. Với QUESTION, đặt toàn bộ trường công việc là null/rỗng và missingFields là [].
 Ví dụ câu "8h sáng mai tôi phải tiếp dân tầm 2 tiếng, được 2 điểm" phải cho title "Tiếp dân", startTime "08:00", endTime "10:00", durationMinutes 120 và point 2.
 
 Luôn trả đúng hai thẻ sau và không thêm bất kỳ nội dung nào ngoài chúng:
 <reply>Nội dung trả lời hoàn chỉnh cho người dùng</reply>
-<task>{"title":null,"description":"","date":null,"startTime":null,"endTime":null,"durationMinutes":null,"point":null,"missingFields":[]}</task>`;
-
-const sanitizeMessages = (value: unknown): ChatMessage[] => {
-  if (!Array.isArray(value)) return [];
-  return value.slice(-20).flatMap((item: any) => {
-    if (!item || !['user', 'assistant'].includes(item.role)) return [];
-    const content = String(item.content ?? '').normalize('NFC').trim().slice(0, 1500);
-    return content ? [{ role: item.role, content } as ChatMessage] : [];
-  });
-};
+<task>{"intent":"QUESTION","title":null,"description":"","date":null,"startTime":null,"endTime":null,"durationMinutes":null,"point":null,"missingFields":[]}</task>`;
 
 const sanitizeCurrentDraft = (value: unknown): TaskExtraction => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -193,6 +300,7 @@ const readModelStream = async (
   messages: ChatMessage[],
   actor: AuthUser,
   currentDraft: unknown,
+  workspaceContext: unknown,
   handlers: StreamHandlers,
 ) => {
   const timeout = new AbortController();
@@ -207,7 +315,7 @@ const readModelStream = async (
       body: JSON.stringify({
         model: MODEL_NAME,
         messages: [
-          { role: 'system', content: systemPrompt(actor, currentDraft) },
+          { role: 'system', content: systemPrompt(actor, currentDraft, workspaceContext) },
           ...messages,
         ],
         temperature: 0,
@@ -219,7 +327,11 @@ const readModelStream = async (
     });
     if (!response.ok || !response.body) throw new Error('AI model is unavailable.');
 
-    const parser = new TaggedOutputParser(handlers.delta);
+    let reply = '';
+    const parser = new TaggedOutputParser((text) => {
+      reply += text;
+      handlers.delta(text);
+    });
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let pending = '';
@@ -238,7 +350,7 @@ const readModelStream = async (
       }
       if (done) break;
     }
-    return parser.finish();
+    return { raw: parser.finish(), reply };
   } finally {
     clearTimeout(timer);
     handlers.signal?.removeEventListener('abort', abort);
@@ -246,6 +358,7 @@ const readModelStream = async (
 };
 
 const normalizeExtraction = (raw: TaskExtraction) => {
+  const intent = raw.intent === 'QUESTION' ? 'QUESTION' : 'TASK';
   const title = typeof raw.title === 'string' ? raw.title.normalize('NFC').trim() : '';
   const description = typeof raw.description === 'string' ? raw.description.normalize('NFC').trim() : '';
   const date = typeof raw.date === 'string' ? raw.date.trim() : '';
@@ -279,6 +392,7 @@ const normalizeExtraction = (raw: TaskExtraction) => {
   }
 
   return {
+    intent,
     title,
     description,
     date,
@@ -287,7 +401,7 @@ const normalizeExtraction = (raw: TaskExtraction) => {
     durationMinutes,
     point,
     missingFields: [...new Set(missingFields)],
-    complete: missingFields.length === 0 && Boolean(workStartAt && workEndAt),
+    complete: intent === 'TASK' && missingFields.length === 0 && Boolean(workStartAt && workEndAt),
     workStartAt,
     workEndAt,
   };
@@ -379,6 +493,16 @@ const cancelDraft = async (actor: AuthUser, token: unknown) => {
   };
 };
 
+const confirmationReply = (result: Record<string, any>) => {
+  if (result.alreadyConfirmed) return 'Công việc này đã được xác nhận trước đó.';
+  if (result.submissionError) return `Đã tạo công việc, nhưng chưa thể gửi duyệt: ${result.submissionError}`;
+  return 'Đã xác nhận công việc.';
+};
+
+const cancellationReply = (result: Record<string, unknown>) => (
+  result.cancelled ? 'Đã hủy yêu cầu tạo công việc.' : 'Hiện không có công việc nào chờ xác nhận.'
+);
+
 export const streamAssignmentAiChat = async (
   actor: AuthUser,
   body: Record<string, unknown>,
@@ -388,40 +512,61 @@ export const streamAssignmentAiChat = async (
   const message = String(body.message ?? '').normalize('NFC').trim();
   if (!message || message.length > 1500) throw badRequest('message is required and must not exceed 1500 characters.');
   const proposalToken = body.proposalToken ?? body.confirmationToken;
+  const session = await getOrCreatePrimaryChatSession(actor.id);
+  const sessionId = String((session as any)._id);
+  await appendChatContent(sessionId, 'USER', message);
 
   if (isAiCancellation(message)) {
-    handlers.cancelled(await cancelDraft(actor, proposalToken));
+    const result = await cancelDraft(actor, proposalToken);
+    await cancelPendingTaskProposals(sessionId, String(proposalToken ?? '') || undefined);
+    await appendChatContent(sessionId, 'ASSISTANT', cancellationReply(result), {
+      kind: 'CANCELLATION',
+      proposalToken: result.proposalToken,
+      cancelled: result.cancelled,
+    });
+    handlers.cancelled({ ...result, message: cancellationReply(result) });
     return;
   }
 
   if (isAiConfirmation(message) && proposalToken) {
     const result = await confirmDraft(actor, proposalToken);
-    handlers.confirmed(result);
+    await updateTaskProposal(sessionId, String(proposalToken), 'CONFIRMED', {
+      declarationId: result.declarationId ?? null,
+    });
+    await appendChatContent(sessionId, 'ASSISTANT', confirmationReply(result), {
+      kind: 'CONFIRMATION',
+      proposalToken: String(proposalToken),
+      declarationId: result.declarationId ?? null,
+      alreadyConfirmed: Boolean(result.alreadyConfirmed),
+    });
+    handlers.confirmed({ ...result, message: confirmationReply(result) });
     return;
   }
 
-  // Any new instruction supersedes the last proposal. This keeps stale tokens
-  // unusable even if a client attempts to submit an older confirmation button.
-  await AiTaskDraftModel.updateMany(
-    { user: actor.id, status: 'PENDING' },
-    { $set: { status: 'EXPIRED' } },
-  );
-
-  const messages = sanitizeMessages(body.messages);
-  if (!messages.length || messages[messages.length - 1].content !== message) {
-    messages.push({ role: 'user', content: message });
-  }
-  const currentDraft = sanitizeCurrentDraft(body.currentDraft);
-  const raw = await readModelStream(messages, actor, currentDraft, handlers);
+  const messages: ChatMessage[] = await getChatMemory(sessionId);
+  const currentDraft = sanitizeCurrentDraft(await getLatestTaskDraft(sessionId));
+  const workspaceContext = await buildWorkspaceContext(actor);
+  const { raw, reply } = await readModelStream(messages, actor, currentDraft, workspaceContext, handlers);
   const extraction = normalizeExtraction(raw);
   if (handlers.signal?.aborted) return;
+
+  // A factual question must not discard a pending create-work proposal. A new
+  // task instruction does supersede it, even when it is still missing fields.
+  if (extraction.intent === 'TASK') {
+    await AiTaskDraftModel.updateMany(
+      { user: actor.id, status: 'PENDING' },
+      { $set: { status: 'EXPIRED' } },
+    );
+    await replacePendingTaskProposals(sessionId);
+  }
 
   let confirmationToken: string | null = null;
   if (extraction.complete) {
     const draft = await createConfirmationDraft(actor, extraction);
     confirmationToken = String((draft as any).token);
   }
-  handlers.draft({
+  const draftPayload = {
+    intent: extraction.intent,
     title: extraction.title || null,
     description: extraction.description,
     date: extraction.date || null,
@@ -432,5 +577,14 @@ export const streamAssignmentAiChat = async (
     missingFields: extraction.missingFields,
     complete: extraction.complete,
     confirmationToken,
+  };
+  await appendChatContent(sessionId, 'ASSISTANT', reply, {
+    kind: extraction.complete ? 'TASK_PROPOSAL' : 'TEXT',
+    intent: extraction.intent,
+    draft: draftPayload,
+    ...(extraction.complete ? {
+      proposal: { ...draftPayload, status: 'PENDING' },
+    } : {}),
   });
+  handlers.draft(draftPayload);
 };

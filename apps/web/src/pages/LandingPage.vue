@@ -14,9 +14,12 @@ const router = useRouter()
       <p class="text-lg text-zinc-500 leading-relaxed">
         Hệ thống Quản lý Lịch công tác và Theo dõi Nhiệm vụ Cơ quan.
       </p>
-      <div class="pt-4 flex gap-4 justify-center">
-        <Button @click="router.push('/dashboard')" size="lg" class="font-medium px-8 cursor-pointer">
+      <div class="pt-4 flex flex-col sm:flex-row gap-3 justify-center items-center">
+        <Button @click="router.push('/dashboard')" size="lg" class="font-medium px-8 cursor-pointer rounded-full">
           Vào Dashboard
+        </Button>
+        <Button @click="router.push('/privacy-policy')" variant="outline" size="lg" class="font-medium px-6 cursor-pointer rounded-full">
+          Chính sách quyền riêng tư
         </Button>
       </div>
     </div>

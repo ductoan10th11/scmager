@@ -5,7 +5,7 @@ const POPULATE_WORK_DECLARATION = [
   { path: 'organization', select: '_id name code' },
   { path: 'department', select: '_id name code' },
   { path: 'createdBy', select: '_id username fullName position email role department' },
-  { path: 'sourceDocument', select: '_id documentId soDen soKyHieu trichYeu deadline point processing.status' },
+  { path: 'sourceDocument', select: '_id documentId soKyHieu trichYeu deadline point processing.status' },
   { path: 'approval.currentApprover', select: '_id username fullName position email role department' },
   { path: 'approval.history.actor', select: '_id username fullName position email' },
   { path: 'approval.history.fromApprover', select: '_id username fullName position email' },

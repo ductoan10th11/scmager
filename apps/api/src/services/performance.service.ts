@@ -65,10 +65,8 @@ const toNumber = (value: unknown) => Number(value ?? 0) || 0;
 
 const toDocumentItem = (doc: any) => ({
   id: idOf(doc),
-  soDen: doc.soDen,
   soKyHieu: doc.soKyHieu,
   trichYeu: doc.trichYeu,
-  donViBanHanh: doc.donViBanHanh,
   deadline: doc.deadline,
   point: doc.point ?? 0,
   doKhan: doc.doKhan,
@@ -176,17 +174,17 @@ export const performanceOverviewService = async (actor: AuthUser) => {
       ])
       : Promise.resolve([]),
     DocumentModel.find({ ...documentFilter, deadline: { $ne: null, $lt: now }, 'ingest.completed': { $ne: true }, 'processing.status': { $nin: ['COMPLETED', 'MANUALLY_PROCESSED'] } })
-      .select('soDen soKyHieu trichYeu donViBanHanh deadline point doKhan ingest processing')
+      .select('soKyHieu trichYeu deadline point doKhan ingest processing')
       .sort({ deadline: 1, point: -1 })
       .limit(12)
       .lean(),
     DocumentModel.find({ ...documentFilter, deadline: { $gte: now, $lte: in3d }, 'ingest.completed': { $ne: true }, 'processing.status': { $nin: ['COMPLETED', 'MANUALLY_PROCESSED'] } })
-      .select('soDen soKyHieu trichYeu donViBanHanh deadline point doKhan ingest processing')
+      .select('soKyHieu trichYeu deadline point doKhan ingest processing')
       .sort({ deadline: 1, point: -1 })
       .limit(12)
       .lean(),
     DocumentModel.find(documentFilter)
-      .select('soDen soKyHieu trichYeu donViBanHanh deadline point doKhan ingest processing')
+      .select('soKyHieu trichYeu deadline point doKhan ingest processing')
       .sort({ point: -1, deadline: 1 })
       .limit(12)
       .lean(),

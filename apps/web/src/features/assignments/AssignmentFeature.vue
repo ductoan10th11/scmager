@@ -171,12 +171,12 @@ const changeTimelineDay = async (days) => {
 
 onMounted(async () => {
   window.addEventListener('work-declaration:changed', handleDeclarationChange)
-  await refreshResources()
+  await Promise.all([refreshResources(), loadAiChatHistory()])
   if (!route.query.sourceDocument) return
   try {
     const result = await http(`/api/ingest-documents/${route.query.sourceDocument}`)
     const document = result.data
-    formTitle.value = `Xử lý văn bản ${document.soKyHieu || `SĐ ${document.soDen}`}`
+    formTitle.value = `Xử lý văn bản ${document.soKyHieu || 'đến'}`
     formDesc.value = document.trichYeu || ''
     formPoint.value = String(document.point ?? 0)
     formSourceDocument.value = document._id
@@ -989,6 +989,7 @@ watch(approvalItems, (items) => {
 // --- AI CHAT STATE ---
 const aiInputText = ref('')
 const isAiTyping = ref(false)
+const isAiHistoryLoading = ref(false)
 const isRecordingVoice = ref(false)
 const aiCurrentDraft = ref(null)
 const activeAiConfirmationToken = ref('')
@@ -998,14 +999,71 @@ const cancelledAiTokens = ref([])
 const aiChatScroll = ref(null)
 let aiAbortController = null
 let aiScrollFrame = null
+let aiHistoryPromise = null
+const initialAiMessage = () => ({
+  id: 'welcome',
+  role: 'ai',
+  type: 'text',
+  content: 'Mình có thể giúp bạn khai báo công việc hoặc tra cứu nhân sự, công việc và văn bản trong phạm vi bạn được phép xem.',
+})
 const aiMessages = ref([
   {
-    id: 1,
-    role: 'ai',
-    type: 'text',
-    content: 'Mình có thể giúp bạn khai báo công việc. Bạn chỉ cần cho biết:\n- Tên công việc\n- Ngày thực hiện\n- Giờ bắt đầu\n- Giờ kết thúc\n- Số điểm',
+    ...initialAiMessage(),
   }
 ])
+
+const aiMessageFromHistory = (item) => {
+  const metadata = item?.metadata ?? {}
+  const message = {
+    id: item?._id,
+    role: item?.role === 'user' ? 'user' : 'ai',
+    type: 'text',
+    content: String(item?.content ?? ''),
+    metadata,
+  }
+  if (message.role === 'ai' && metadata.kind === 'TASK_PROPOSAL' && metadata.proposal) {
+    message.type = 'proposal'
+    message.proposal = metadata.proposal
+  }
+  return message
+}
+
+const restoreAiChatState = (messages) => {
+  const latestTaskMessage = [...messages].reverse().find((message) => (
+    message.role === 'ai'
+      && message.metadata?.intent === 'TASK'
+      && message.metadata?.draft
+      && (message.proposal?.status === 'PENDING' || message.metadata.draft.complete === false)
+  ))
+  const pendingProposal = [...messages].reverse().find((message) => (
+    message.role === 'ai' && message.proposal?.status === 'PENDING' && message.proposal?.confirmationToken
+  ))
+  aiCurrentDraft.value = latestTaskMessage?.metadata?.draft ?? null
+  activeAiConfirmationToken.value = pendingProposal?.proposal?.confirmationToken ?? ''
+  aiConfirmingToken.value = ''
+}
+
+const loadAiChatHistory = async () => {
+  if (isAiTyping.value) return
+  if (aiHistoryPromise) return aiHistoryPromise
+  isAiHistoryLoading.value = true
+  aiHistoryPromise = AssignmentService.getAiChatSession()
+    .then((result) => {
+      const contents = result?.data?.contents ?? []
+      const messages = contents.map(aiMessageFromHistory)
+      aiMessages.value = messages.length ? messages : [initialAiMessage()]
+      restoreAiChatState(aiMessages.value)
+      scrollAiChatToBottom()
+    })
+    .catch(() => {
+      // The assistant remains usable when history cannot be loaded.
+    })
+    .finally(() => {
+      isAiHistoryLoading.value = false
+      aiHistoryPromise = null
+    })
+  return aiHistoryPromise
+}
 
 const scrollAiChatToBottom = () => {
   if (aiScrollFrame) return
@@ -1022,6 +1080,7 @@ const openAiModal = () => {
   isRecordingVoice.value = false
   isAiTyping.value = false
   isAiModalOpen.value = true
+  if (!isAiTyping.value) void loadAiChatHistory()
   scrollAiChatToBottom()
 }
 
@@ -1096,7 +1155,8 @@ const formatAiConfirmedMessage = (data, draft) => {
 
 const isAiProposalDisabled = (message) => {
   const token = message?.proposal?.confirmationToken
-  return isAiTyping.value
+  return message?.proposal?.status && message.proposal.status !== 'PENDING'
+    || isAiTyping.value
     || !token
     || token !== activeAiConfirmationToken.value
     || token === aiConfirmingToken.value
@@ -1106,6 +1166,9 @@ const isAiProposalDisabled = (message) => {
 
 const aiProposalActionLabel = (message) => {
   const token = message?.proposal?.confirmationToken
+  if (message?.proposal?.status === 'CANCELLED') return 'Đã hủy'
+  if (message?.proposal?.status === 'REPLACED') return 'Đã thay thế'
+  if (message?.proposal?.status === 'CONFIRMED') return 'Đã xác nhận'
   if (cancelledAiTokens.value.includes(token)) return 'Đã hủy'
   if (confirmedAiTokens.value.includes(token)) return 'Đã xác nhận'
   if (aiConfirmingToken.value === token) return 'Đang xác nhận...'
@@ -1115,16 +1178,7 @@ const aiProposalActionLabel = (message) => {
 
 const sendAiMessage = async (text, confirmationToken = '') => {
   const content = String(text ?? '').trim()
-  if (!content || isAiTyping.value) return
-
-  if (!confirmationToken) {
-    activeAiConfirmationToken.value = ''
-    aiConfirmingToken.value = ''
-  }
-
-  const history = aiMessages.value
-    .filter((message) => message.content)
-    .map((message) => ({ role: message.role === 'user' ? 'user' : 'assistant', content: message.content }))
+  if (!content || isAiTyping.value || isAiHistoryLoading.value) return
   const userMessage = { id: Date.now(), role: 'user', type: 'text', content }
   const assistantMessage = reactive({
     id: Date.now() + 1,
@@ -1143,19 +1197,21 @@ const sendAiMessage = async (text, confirmationToken = '') => {
   try {
     await AssignmentService.streamAiChat({
       message: content,
-      messages: [...history, { role: 'user', content }],
-      currentDraft: aiCurrentDraft.value,
       proposalToken: confirmationToken || undefined,
     }, (event, data) => {
       if (event === 'delta') {
         assistantMessage.content += data.text ?? ''
         scrollAiChatToBottom()
       } else if (event === 'draft') {
-        aiCurrentDraft.value = data
-        if (data.complete && data.confirmationToken) {
-          activeAiConfirmationToken.value = data.confirmationToken
-          assistantMessage.type = 'proposal'
-          assistantMessage.proposal = data
+        if (data.intent === 'TASK') {
+          aiCurrentDraft.value = data
+          if (data.complete && data.confirmationToken) {
+            activeAiConfirmationToken.value = data.confirmationToken
+            assistantMessage.type = 'proposal'
+            assistantMessage.proposal = { ...data, status: 'PENDING' }
+          } else {
+            activeAiConfirmationToken.value = ''
+          }
         }
         scrollAiChatToBottom()
       } else if (event === 'confirmed') {
@@ -1164,7 +1220,9 @@ const sendAiMessage = async (text, confirmationToken = '') => {
         if (token && !confirmedAiTokens.value.includes(token)) confirmedAiTokens.value.push(token)
         activeAiConfirmationToken.value = ''
         aiCurrentDraft.value = null
-        assistantMessage.content = formatAiConfirmedMessage(data, confirmedDraft)
+        const proposalMessage = aiMessages.value.find((message) => message.proposal?.confirmationToken === token)
+        if (proposalMessage?.proposal) proposalMessage.proposal.status = 'CONFIRMED'
+        assistantMessage.content = data.message || formatAiConfirmedMessage(data, confirmedDraft)
         refreshResources()
         scrollAiChatToBottom()
       } else if (event === 'cancelled') {
@@ -1172,9 +1230,14 @@ const sendAiMessage = async (text, confirmationToken = '') => {
         if (token && !cancelledAiTokens.value.includes(token)) cancelledAiTokens.value.push(token)
         activeAiConfirmationToken.value = ''
         aiCurrentDraft.value = null
-        assistantMessage.content = data.cancelled
+        aiMessages.value.forEach((message) => {
+          if (message.proposal?.status === 'PENDING' && (!token || message.proposal.confirmationToken === token)) {
+            message.proposal.status = 'CANCELLED'
+          }
+        })
+        assistantMessage.content = data.message || (data.cancelled
           ? 'Đã hủy yêu cầu tạo công việc.'
-          : 'Hiện không có công việc nào chờ xác nhận.'
+          : 'Hiện không có công việc nào chờ xác nhận.')
         scrollAiChatToBottom()
       } else if (event === 'error') {
         streamError = new Error(data.message || 'Trợ lý AI gặp lỗi.')
@@ -1896,7 +1959,7 @@ onBeforeUnmount(() => {
 
           <div v-if="taskTimeTarget?.task?.sourceDocument" class="mt-4 rounded-lg border border-blue-100 bg-blue-50/60 px-4 py-3">
             <p class="text-[10px] font-bold uppercase text-blue-500">Văn bản liên quan</p>
-            <p class="mt-1 text-sm font-bold text-blue-900">{{ taskTimeTarget.task.sourceDocument.soKyHieu || `Số đến ${taskTimeTarget.task.sourceDocument.soDen}` }}</p>
+            <p class="mt-1 text-sm font-bold text-blue-900">{{ taskTimeTarget.task.sourceDocument.soKyHieu || 'Văn bản đến' }}</p>
             <p class="mt-1 line-clamp-2 text-xs text-blue-800/70">{{ taskTimeTarget.task.sourceDocument.trichYeu }}</p>
           </div>
 

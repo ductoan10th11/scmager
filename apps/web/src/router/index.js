@@ -2,10 +2,12 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { useAuth } from '@/features/auth/composables/useAuth'
 import LandingPage from '../pages/LandingPage.vue'
 import LoginPage from '../pages/LoginPage.vue'
+import ExtensionWebViewPage from '../pages/ExtensionWebViewPage.vue'
 import DashboardPage from '../pages/DashboardPage.vue'
 import MainLayout from '../layouts/MainLayout.vue'
 import {
   DocumentsPage,
+  OutgoingDocumentsPage,
   IngestDocumentsPage,
   IngestMonitorPage,
   OrganizationDepartmentsPage,
@@ -16,6 +18,7 @@ import {
   AssignmentPage,
   PerformancePage,
   UsersPage,
+  PrivacyPolicyPage,
 } from './page-loaders'
 
 const routes = [
@@ -30,6 +33,22 @@ const routes = [
     name: 'Login',
     component: LoginPage,
     meta: { public: true },
+  },
+  {
+    path: '/extension',
+    name: 'ExtensionWebView',
+    component: ExtensionWebViewPage,
+    meta: { public: true },
+  },
+  {
+    path: '/privacy-policy',
+    name: 'PrivacyPolicy',
+    component: PrivacyPolicyPage,
+    meta: { public: true },
+  },
+  {
+    path: '/privacy',
+    redirect: '/privacy-policy',
   },
   {
     path: '/',
@@ -115,6 +134,12 @@ const routes = [
         path: 'documents',
         name: 'Documents',
         component: DocumentsPage,
+        meta: { requiresAuth: true, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
+      },
+      {
+        path: 'outgoing-documents',
+        name: 'OutgoingDocuments',
+        component: OutgoingDocumentsPage,
         meta: { requiresAuth: true, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
       },
       {

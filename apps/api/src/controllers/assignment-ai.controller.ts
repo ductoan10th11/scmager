@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from 'express';
 import { streamAssignmentAiChat } from '../services/assignment-ai.service';
+import { getChatSessionHistory } from '../services/chat-session.service';
 
 const writeEvent = (res: Response, event: string, data: unknown) => {
   if (res.writableEnded) return;
@@ -38,5 +39,14 @@ export const chatAssignmentAi = async (req: Request, res: Response, next: NextFu
         : 'Trợ lý AI hiện không phản hồi. Vui lòng thử lại.',
     });
     res.end();
+  }
+};
+
+export const getAssignmentAiSession = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const result = await getChatSessionHistory((req as any).currentUser.id, Number(req.query.limit));
+    res.json({ data: result });
+  } catch (error) {
+    next(error);
   }
 };

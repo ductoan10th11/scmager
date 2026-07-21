@@ -51,12 +51,44 @@ export interface DwrCallOptions {
   csrfToken?: string;
 }
 
+function decodeDwrJavaScriptString(value: string): string {
+  return value
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)))
+    .replace(/\\x([0-9a-fA-F]{2})/g, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)))
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t')
+    .replace(/\\"/g, '"')
+    .replace(/\\'/g, "'")
+    .replace(/\\\\/g, '\\');
+}
+
+/**
+ * Decode the JavaScript string assigned to DWR's `var s0` without executing it.
+ * DWR also emits `\'`, which is valid in JavaScript but invalid JSON.
+ */
+export function extractDwrS0String(raw: string): string | null {
+  const start = raw.indexOf('var s0="');
+  if (start === -1) return null;
+
+  const responseMarker = raw.indexOf('DWREngine._handleResponse', start);
+  if (responseMarker === -1) return null;
+
+  const end = raw.lastIndexOf('"', responseMarker);
+  const contentStart = start + 'var s0="'.length;
+  if (end <= contentStart) return null;
+
+  return decodeDwrJavaScriptString(raw.slice(contentStart, end));
+}
+
 /** Parse the JSON array from a DWR `var s0="..."` response. */
 export function parseDwrS0<T = unknown>(raw: string): T[] {
-  const m = raw.match(/var s0="([\s\S]+?)";\s*DWR/);
-  if (!m?.[1]) return [];
+  const decoded = extractDwrS0String(raw);
+  if (!decoded) return [];
+
   try {
-    return JSON.parse(m[1].replace(/\\"/g, '"')) as T[];
+    const parsed = JSON.parse(decoded) as unknown;
+    return Array.isArray(parsed) ? parsed as T[] : [];
   } catch {
     return [];
   }
@@ -203,6 +235,19 @@ export function newestNgayDenFilter(overrides: Record<string, unknown> = {}): Re
 }
 
 /**
+ * Incoming-document query sorted by the processing deadline, latest first.
+ * Callers can pass the arrival-date range through `txt_start_date_ngayden`
+ * and `txt_end_date_ngayden`.
+ */
+export function deadlineDescendingFilter(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return newestNgayDenFilter({
+    fieldSort: 'sortHanXuLy',
+    sort: 'desc',
+    ...overrides,
+  });
+}
+
+/**
  * Get total document count and page count for a given filter.
  * Calls qlvb.van_ban_den.getTraCuuVanBanPaging (see docs/flow-crawl.md §3.1).
  */
@@ -258,6 +303,7 @@ function decodeHtmlEntities(s: string): string {
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
+    .replace(/&nbsp;/gi, ' ')
     .replace(/&comma;/g, ',');
 }
 
@@ -372,9 +418,13 @@ export function parseDocListHtml(raw: string): DocumentListItem[] {
     if (!soDen) continue; // User request: bỏ qua nếu không có số đến
 
     const cells = extractTdCells(trContent);
-    const nguoiXuLyMatches = [...trContent.matchAll(/<td[^>]*style="[^"]*text-align:\s*center[^"]*"[^>]*>([\s\S]*?)<\/td>/gi)]
-      .filter((m) => !m[1].includes('<a '));
-    const nguoiXuLy = stripHtmlText(nguoiXuLyMatches.at(-1)?.[1] ?? '');
+    // XLC is the final non-empty centered cell before the actions column. The
+    // table ends with an empty hidden sort cell, so selecting the last centered
+    // cell directly would otherwise lose the current main processor.
+    const nguoiXuLy = cells
+      .filter((cell) => /text-align\s*:\s*center/i.test(trAttr(cell.tag, 'style')))
+      .filter((cell) => !/<a\b/i.test(cell.html) && Boolean(cell.text))
+      .at(-1)?.text ?? '';
 
     results.push({
       documentId,
@@ -457,18 +507,78 @@ export interface DocDetailResult {
   nguoiKy: string;
 }
 
+export type DocumentDirection = 'incoming' | 'outgoing' | 'unknown';
+
+export interface RelatedDocumentSummary {
+  documentId: string;
+  documentDirection: DocumentDirection;
+  congvanDendi: string | null;
+  documentNumber: string | null;
+  symbol: string | null;
+  summary: string | null;
+  documentDate: string | null;
+  createdAt: string | null;
+  createdBy: string | null;
+}
+
+export interface RelatedDocumentFile {
+  id: string | null;
+  name: string | null;
+  isPrimary: boolean;
+  uploadedBy: string | null;
+}
+
+export interface RelatedDocumentDetail {
+  parentId: string | null;
+  originalDocumentIds: string[];
+  identifier: string | null;
+  issuedDate: string | null;
+  createdDate: string | null;
+  issuingOrganization: string | null;
+  draftingOrganization: string | null;
+  originalStorageUnit: string | null;
+  documentType: string | null;
+  documentTypeCode: string | null;
+  businessDocumentType: string | null;
+  priority: string | null;
+  priorityCode: string | null;
+  securityLevel: string | null;
+  drafter: { username: string | null; fullName: string | null };
+  signer: { username: string | null; fullName: string | null; position: string | null };
+  enteredBy: string | null;
+  assigner: string | null;
+  pageCount: number | null;
+  copyCount: number | null;
+  status: string | null;
+  processingStatus: string | null;
+  processKey: string | null;
+  processInstanceId: string | null;
+  taskId: string | null;
+  files: RelatedDocumentFile[];
+}
+
+export interface RelatedDocumentResult extends RelatedDocumentSummary {
+  detail: RelatedDocumentDetail;
+  trackLogs: TrackLogItem[];
+}
+
 export interface TrackLogItem {
   id: string;
+  sequence?: number | null;
   sender: { username: string; fullName: string };
   receiver: { username: string; fullName: string };
+  recipients?: Array<{ username: string; fullName: string }>;
   action: string;
   comment: string;
+  content: string;
   receivedAt: string | null;
   processingAt: string | null;
   completedAt: string | null;
+  updatedAt?: string | null;
 }
 
-const COMPLETED_SENDER = 'Văn thư xã Thiện Tân (vanthu-xathientan)';
+const COMPLETED_SENDER_USERNAME = 'vanthu-xathientan';
+const COMPLETED_SENDER_FULL_NAME = 'Văn thư xã Thiện Tân';
 const COMPLETED_ACTION = 'Đã tạo phúc đáp';
 export const LANGSON_COMPLETED_RULE = 'LATEST_TRACKLOG_VANTHU_TAO_PHUC_DAP';
 
@@ -517,10 +627,14 @@ export type ExtractedTrackLogPoint = {
   comment: string;
 };
 
-const TRACK_LOG_POINT_PATTERN = /(?:^|\s)\[p:(\d+)\]/i;
+const TRACK_LOG_POINT_PATTERNS = [
+  /\[\s*p\s*:\s*(\d+)\s*\]/i,
+  /(?:^|\s)điểm\s*:\s*(\d+)\b/iu,
+];
 
 /**
- * A point tag belongs to the latest tracklog that contains a valid `[p:<integer>]` marker.
+ * A point belongs to the latest tracklog that contains either `[p:<integer>]`
+ * or `Điểm: <integer>`.
  * This makes a later correction in eOffice supersede an earlier point declaration.
  */
 export function getLatestTrackLogPoint(trackLogs: TrackLogItem[]): ExtractedTrackLogPoint | null {
@@ -537,12 +651,15 @@ export function getLatestTrackLogPoint(trackLogs: TrackLogItem[]): ExtractedTrac
 
   for (const log of ordered) {
     const comment = String(log.comment ?? '').trim();
-    const match = comment.match(TRACK_LOG_POINT_PATTERN);
+    const content = String(log.content ?? comment).trim();
+    const match = TRACK_LOG_POINT_PATTERNS
+      .map((pattern) => content.match(pattern) ?? comment.match(pattern))
+      .find(Boolean);
     if (!match) continue;
 
     const point = Number(match[1]);
     if (Number.isSafeInteger(point)) {
-      return { point, trackLogId: String(log.id ?? ''), comment };
+      return { point, trackLogId: String(log.id ?? ''), comment: content };
     }
   }
 
@@ -553,7 +670,10 @@ export function isCompletedTrackLogItem(log: TrackLogItem | null): boolean {
   if (!log) return false;
 
   return (
-    normalizeText(log.sender.fullName) === normalizeText(COMPLETED_SENDER)
+    (
+      normalizeText(log.sender.username) === COMPLETED_SENDER_USERNAME
+      || normalizeText(log.sender.fullName) === normalizeText(COMPLETED_SENDER_FULL_NAME)
+    )
     && normalizeText(log.action) === normalizeText(COMPLETED_ACTION)
   );
 }
@@ -564,62 +684,321 @@ export function isCompletedDocumentTrackLog(trackLogs: TrackLogItem[]): boolean 
 
 /** Extract and unescape the HTML inside `var s0="..."` from a DWR response. */
 function extractS0Html(raw: string): string {
-  const s0start = raw.indexOf('var s0="');
-  if (s0start === -1) return '';
-  const dwrIdx = raw.indexOf('DWREngine._handleResponse', s0start);
-  if (dwrIdx === -1) return '';
-  const contentEnd = raw.lastIndexOf('"', dwrIdx);
-  const contentStart = s0start + 8;
-  if (contentEnd <= contentStart) return '';
-  return raw.slice(contentStart, contentEnd)
+  // Some DWR HTML payloads have a second escape layer for tag attributes.
+  return (extractDwrS0String(raw) ?? '')
     .replace(/\\"/g, '"')
     .replace(/\\'/g, "'")
     .replace(/\\n/g, '\n')
     .replace(/\\t/g, '\t')
-    .replace(/\\r/g, '')
-    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+    .replace(/\\r/g, '');
 }
 
 export function parseTrackLogHtmlResponse(raw: string): TrackLogItem[] {
   const html = extractS0Html(raw);
-
   const rows = [...html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)];
   const results: TrackLogItem[] = [];
 
+  const cleanHtml = (value: string) => decodeHtmlEntities(
+    value
+      .replace(/<br\s*\/?>/gi, ' ')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\s+/g, ' ')
+      .trim(),
+  );
+  const dateFromCell = (value: string): string | null => (
+    cleanHtml(value).match(/\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}/)?.[0] ?? null
+  );
+  const cleanUsername = (value: string) => value.trim().replace(/^\(/, '').replace(/\)$/, '') || '';
+  const personFromLabel = (value: string) => {
+    const cleaned = cleanHtml(value).replace(/[.;\s]+$/, '');
+    const match = cleaned.match(/^(.*?)\s*\(([^()]+)\)$/);
+    return {
+      fullName: (match?.[1] ?? cleaned).trim(),
+      username: cleanUsername(match?.[2] ?? ''),
+    };
+  };
+  const recipientsFromContent = (content: string, label: 'Chuyển tới' | 'Đồng xử lý') => {
+    const recipients: Array<{ username: string; fullName: string }> = [];
+    const paragraphs = [...content.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi)];
+    const labelPattern = label === 'Chuyển tới'
+      ? /^(chuyển tới|chuyen toi):/i
+      : /^(đồng xử lý|dong xu ly):/i;
+    for (const paragraph of paragraphs) {
+      if (!labelPattern.test(cleanHtml(paragraph[1]))) continue;
+      for (const span of paragraph[1].matchAll(/<span\b[^>]*>([\s\S]*?)<\/span>/gi)) {
+        const recipient = personFromLabel(span[1]);
+        if (recipient.fullName) recipients.push(recipient);
+      }
+    }
+    return recipients;
+  };
+  const withoutCoProcessingParagraphs = (content: string) => content.replace(
+    /<p\b[^>]*>([\s\S]*?)<\/p>/giu,
+    (paragraph, inner: string) => /^(đồng\s*xử\s*lý|dong\s*xu\s*ly)\s*:/iu.test(cleanHtml(inner))
+      ? ''
+      : paragraph,
+  );
+
   for (const row of rows) {
-    // Extract exact tds without completely stripping HTML so we can parse the last one.
+    const rowTag = row[0].match(/^<tr\b[^>]*>/i)?.[0] ?? '';
+    if (!/\blog_role_type_received\b/i.test(trAttr(rowTag, 'class'))) continue;
+
     const tds = [...row[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map((m) => m[1]);
-    if (tds.length < 8) continue; // skip header/empty rows
+    if (tds.length < 8) continue;
 
-    const clean = (str: string) => decodeHtmlEntities(str.replace(/<[^>]+>/g, '').trim());
+    const content = tds[7];
+    const primaryRecipients = recipientsFromContent(content, 'Chuyển tới');
+    // Keep the current incoming-document workflow compatible with manual co-processing.
+    const recipients = primaryRecipients.length ? primaryRecipients : recipientsFromContent(content, 'Đồng xử lý');
+    const actorCell = tds[1];
+    const senderUsername = cleanUsername(
+      trAttr(rowTag, 'updated_by')
+      || trAttr(actorCell.match(/<input\b[^>]*id=["']hid_lux_updated_by["'][^>]*>/i)?.[0] ?? '', 'value'),
+    );
+    const senderName = cleanHtml(
+      trAttr(actorCell.match(/<input\b[^>]*id=["']hid_lux_full_name["'][^>]*>/i)?.[0] ?? '', 'value')
+      || actorCell,
+    ).replace(/\s*\([^()]+\)\s*$/, '');
 
-    const noidungHtml = decodeHtmlEntities(tds[7]);
-
-    // A manual co-processing action uses the same person format under "Đồng xử lý:".
-    const receiverMatch = noidungHtml.match(/(?:Chuyển tới|Đồng xử lý):\s*<span[^>]*>([\s\S]*?)<\/span>/i);
-    const receiverText = clean(receiverMatch?.[1] ?? '');
-
-    // Extract action from: <span...>Thao tác:\n</span>Chuyển tiếp văn bản
-    const actionMatch = noidungHtml.match(/Thao tác:[\s\S]*?<\/span>\s*([\s\S]*?)(?:<div|$)/i);
-    const actionText = clean(actionMatch?.[1] ?? '');
-
-    // Extract comment from: <span seq='1' name="comment"...>Đ/c chí Tình tham mưu<br /></span>
-    const commentMatch = noidungHtml.match(/<span[^>]*name="comment"[^>]*>([\s\S]*?)<\/span>/i);
-    const commentText = clean(commentMatch?.[1] ?? '');
+    const actionElement = content.match(/<[^>]+class=["']([^"']*\blog-action-data\S*[^"']*)["'][^>]*>/i);
+    const actionClass = actionElement?.[1].split(/\s+/).find((name) => name.startsWith('log-action-data'));
+    const actionAfterLabel = cleanHtml(
+      content.match(/Thao\s+t(?:á|a)c:[\s\S]*?<\/span>\s*([\s\S]*?)(?:<div|$)/i)?.[1] ?? '',
+    );
+    const action = actionAfterLabel || actionClass?.slice('log-action-data'.length) || '';
+    const comment = cleanHtml(content.match(/<span\b[^>]*name=["']comment["'][^>]*>([\s\S]*?)<\/span>/i)?.[1] ?? '');
+    // The source folds direct recipients and co-processors into one routing block.
+    // Persist only the business comment/action; routing remains available above for
+    // workflow derivation and can never leak co-processor lists into a document.
+    const cleanedComment = cleanHtml(withoutCoProcessingParagraphs(
+      content.match(/<span\b[^>]*name=["']comment["'][^>]*>([\s\S]*?)<\/span>/i)?.[1] ?? '',
+    ));
+    const cleanedContent = cleanedComment || (action ? `Thao tác: ${action}` : '');
 
     results.push({
-      id: clean(tds[0]),
-      sender: { username: '', fullName: clean(tds[1]) },
-      receiver: { username: '', fullName: receiverText },
-      action: actionText,
-      comment: commentText,
-      receivedAt: clean(tds[3]) || null,
-      processingAt: clean(tds[4]) || null,
-      completedAt: clean(tds[5]) || null,
+      id: trAttr(rowTag, 'act_id') || cleanHtml(tds[0]),
+      sequence: parseOptionalInteger(trAttr(rowTag, 'stt') || cleanHtml(tds[0])),
+      sender: { username: senderUsername, fullName: senderName },
+      receiver: recipients[0] ?? { username: '', fullName: '' },
+      recipients,
+      action,
+      comment,
+      content: cleanedContent,
+      receivedAt: dateFromCell(tds[3]),
+      processingAt: dateFromCell(tds[4]),
+      completedAt: dateFromCell(tds[5]),
+      updatedAt: trAttr(rowTag, 'updated_date') || dateFromCell(tds[6]),
     });
   }
 
-  return results;
+  return results.sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
+}
+
+function nullableText(value: unknown): string | null {
+  const text = String(value ?? '').trim();
+  return text || null;
+}
+
+function parseOptionalInteger(value: unknown): number | null {
+  const text = nullableText(value);
+  if (!text) return null;
+
+  const parsed = Number.parseInt(text, 10);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function documentDirection(congvanDendi: unknown): DocumentDirection {
+  if (String(congvanDendi ?? '') === '1') return 'incoming';
+  if (String(congvanDendi ?? '') === '2') return 'outgoing';
+  return 'unknown';
+}
+
+function parseRelatedDocumentFiles(value: unknown): RelatedDocumentFile[] {
+  if (typeof value !== 'string') return [];
+
+  return value
+    .split('|')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const [id, name, primaryFlag, uploadedBy] = entry.split(';');
+      return {
+        id: nullableText(id),
+        name: nullableText(name),
+        isPrimary: primaryFlag === '1',
+        uploadedBy: nullableText(uploadedBy),
+      };
+    });
+}
+
+function parseRelatedDocumentSummary(item: Record<string, unknown>): RelatedDocumentSummary | null {
+  const decoded = (value: unknown) => nullableText(decodeHtmlEntities(String(value ?? '')));
+  const documentId = decoded(item.id);
+  if (!documentId) return null;
+
+  return {
+    documentId,
+    documentDirection: documentDirection(item.congvan_dendi),
+    congvanDendi: decoded(item.congvan_dendi),
+    documentNumber: decoded(item.so_den_di) ?? decoded(item.so_den),
+    symbol: decoded(item.so_kyhieu),
+    summary: decoded(item.trich_yeu),
+    documentDate: decoded(item.ngay_van_ban_full) ?? decoded(item.ngay_van_ban),
+    createdAt: decoded(item.create_time),
+    createdBy: decoded(item.create_by),
+  };
+}
+
+function emptyRelatedDocumentDetail(): RelatedDocumentDetail {
+  return {
+    parentId: null,
+    originalDocumentIds: [],
+    identifier: null,
+    issuedDate: null,
+    createdDate: null,
+    issuingOrganization: null,
+    draftingOrganization: null,
+    originalStorageUnit: null,
+    documentType: null,
+    documentTypeCode: null,
+    businessDocumentType: null,
+    priority: null,
+    priorityCode: null,
+    securityLevel: null,
+    drafter: { username: null, fullName: null },
+    signer: { username: null, fullName: null, position: null },
+    enteredBy: null,
+    assigner: null,
+    pageCount: null,
+    copyCount: null,
+    status: null,
+    processingStatus: null,
+    processKey: null,
+    processInstanceId: null,
+    taskId: null,
+    files: [],
+  };
+}
+
+function normalizeIncomingRelatedDocumentDetail(detail: DocDetailResult): RelatedDocumentDetail {
+  return {
+    ...emptyRelatedDocumentDetail(),
+    issuingOrganization: nullableText(detail.donViBanHanh),
+    documentType: nullableText(detail.hinhThuc),
+    documentTypeCode: nullableText(detail.hinhThuc),
+    priority: nullableText(detail.doKhan),
+    priorityCode: nullableText(detail.doKhan),
+    securityLevel: nullableText(detail.doMat),
+    drafter: { username: null, fullName: nullableText(detail.nguoiSoan) },
+    signer: { username: null, fullName: nullableText(detail.nguoiKy), position: null },
+  };
+}
+
+function normalizeOutgoingRelatedDocumentDetail(item: Record<string, unknown>): RelatedDocumentDetail {
+  const originalDocumentIds = String(item.ds_id_vanban_goc ?? '')
+    .split(';')
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  return {
+    ...emptyRelatedDocumentDetail(),
+    parentId: nullableText(item.parent_id),
+    originalDocumentIds,
+    identifier: nullableText(item.ma_dinh_danh),
+    issuedDate: nullableText(item.ngay_ban_hanh),
+    createdDate: nullableText(item.ngay_tao_doc),
+    issuingOrganization: nullableText(item.donvi_banhanh),
+    draftingOrganization: nullableText(item.donvi_soanthao),
+    originalStorageUnit: nullableText(item.donvi_luugoc),
+    documentType: nullableText(item.hinhthuc_vanban),
+    documentTypeCode: nullableText(item.dcmtype_code),
+    businessDocumentType: nullableText(item.bussiness_doc_type_name),
+    priority: nullableText(item.do_uutien),
+    priorityCode: nullableText(item.priority_code),
+    securityLevel: nullableText(item.domat) ?? nullableText(item.confidential_code),
+    drafter: {
+      username: nullableText(item.nguoi_soanthao),
+      fullName: nullableText(item.ten_nguoi_soanthao) ?? nullableText(item.nguoi_vaoso),
+    },
+    signer: {
+      username: nullableText(item.userid_nguoi_ky_chinh),
+      fullName: nullableText(item.nguoi_ky_chinh),
+      position: nullableText(item.chucvu_nguoiky),
+    },
+    enteredBy: nullableText(item.nguoi_vaoso),
+    assigner: nullableText(item.assigner),
+    pageCount: parseOptionalInteger(item.so_trang),
+    copyCount: parseOptionalInteger(item.so_ban),
+    status: nullableText(item.trang_thai),
+    processingStatus: nullableText(item.xu_ly),
+    processKey: nullableText(item.process_key),
+    processInstanceId: nullableText(item.process_instance_id),
+    taskId: nullableText(item.taskid),
+    files: parseRelatedDocumentFiles(item.files),
+  };
+}
+
+/**
+ * Fetch every eOffice document linked to an incoming document. The endpoint may
+ * return both incoming and outgoing records; direction is kept rather than filtered.
+ */
+export async function getRelatedDocumentList(
+  originalDocumentId: string,
+  csrfToken?: string,
+): Promise<RelatedDocumentSummary[]> {
+  const csrf = csrfToken ?? (await getCsrfToken());
+  const body = [
+    'callCount=1',
+    'c0-scriptName=NEORemoting',
+    'c0-methodName=getRSet',
+    `c0-id=${createCallId()}`,
+    `c0-param0=string:qlvb.van_ban_den.getDocRelated(%22${originalDocumentId}%22%2C%220%22)`,
+    'c0-param1=boolean:false',
+    'xml=true',
+    '',
+  ].join('\n');
+
+  const res = await langson.post(DWR_RSET_PATH, {
+    data: body,
+    responseType: 'text',
+    transformResponse: [(data) => data],
+    headers: { Accept: '*/*', 'Content-Type': 'text/plain', 'csrf-token': csrf, Origin: undefined, 'X-Requested-With': undefined },
+  });
+  if (res.status < 200 || res.status >= 300) throw new Error(`POST ${DWR_RSET_PATH} -> ${res.status}`);
+
+  return parseDwrS0<Record<string, unknown>>(String(res.data))
+    .map(parseRelatedDocumentSummary)
+    .filter((item): item is RelatedDocumentSummary => item !== null);
+}
+
+/** Fetch the full detail record for an outgoing eOffice document. */
+export async function getOutgoingDocumentDetail(
+  documentId: string,
+  csrfToken?: string,
+): Promise<RelatedDocumentDetail> {
+  const csrf = csrfToken ?? (await getCsrfToken());
+  const body = [
+    'callCount=1',
+    'c0-scriptName=NEORemoting',
+    'c0-methodName=getRSet',
+    `c0-id=${createCallId()}`,
+    `c0-param0=string:qlvb.vanban_di.act_activiti.sf_get_detail_doc('${documentId}')`,
+    'c0-param1=boolean:false',
+    'xml=true',
+    '',
+  ].join('\n');
+
+  const res = await langson.post(DWR_RSET_PATH, {
+    data: body,
+    responseType: 'text',
+    transformResponse: [(data) => data],
+    headers: { Accept: '*/*', 'Content-Type': 'text/plain', 'csrf-token': csrf, Origin: undefined, 'X-Requested-With': undefined },
+  });
+  if (res.status < 200 || res.status >= 300) throw new Error(`POST ${DWR_RSET_PATH} -> ${res.status}`);
+
+  const detail = parseDwrS0<Record<string, unknown>>(String(res.data))[0];
+  if (!detail) throw new Error(`Outgoing document detail is empty for document ${documentId}`);
+  return normalizeOutgoingRelatedDocumentDetail(detail);
 }
 
 /**
@@ -720,6 +1099,34 @@ export async function getTrackLog(
   if (res.status < 200 || res.status >= 300) throw new Error(`POST ${DWR_DATA_PATH} -> ${res.status}`);
 
   return parseTrackLogHtmlResponse(String(res.data));
+}
+
+/**
+ * Resolve outgoing documents related to one incoming document. A related item
+ * without a tracklog is not a usable response document and is intentionally
+ * excluded before its detail is requested or persisted.
+ */
+export async function getRelatedDocuments(
+  originalDocumentId: string,
+  orgPrefix: string = '',
+  csrfToken?: string,
+): Promise<RelatedDocumentResult[]> {
+  const csrf = csrfToken ?? (await getCsrfToken());
+  const summaries = await getRelatedDocumentList(originalDocumentId, csrf);
+
+  const outgoing = summaries.filter((summary) => summary.documentDirection === 'outgoing');
+  const withTrackLogs = await Promise.all(outgoing.map(async (summary) => ({
+    summary,
+    trackLogs: await getTrackLog(summary.documentId, orgPrefix, csrf),
+  })));
+
+  return Promise.all(withTrackLogs
+    .filter(({ trackLogs }) => trackLogs.length > 0)
+    .map(async ({ summary, trackLogs }) => ({
+      ...summary,
+      detail: await getOutgoingDocumentDetail(summary.documentId, csrf),
+      trackLogs,
+    })));
 }
 
 // CLI smoke test: `pnpm exec tsx src/services/langson-dwr.service.ts`

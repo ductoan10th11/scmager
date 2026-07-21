@@ -186,7 +186,7 @@ export const dashboardWorkloadService = async (actor: AuthUser) => {
       deadline: { $ne: null },
       'processing.currentAssignee.userId': { $in: userIds },
     })
-      .select('soDen soKyHieu trichYeu deadline processing.currentAssignee')
+      .select('soKyHieu trichYeu deadline processing.currentAssignee')
       .sort({ deadline: 1, updatedAt: -1 })
       .limit(100)
       .lean(),
@@ -200,7 +200,6 @@ export const dashboardWorkloadService = async (actor: AuthUser) => {
     if (bucket.length < 3) {
       bucket.push({
         id: idOf(document),
-        soDen: document.soDen,
         soKyHieu: document.soKyHieu,
         trichYeu: document.trichYeu,
         deadline: document.deadline,

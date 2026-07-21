@@ -41,6 +41,7 @@ export interface IngestCronStatus {
   enabled: boolean;
   running: boolean;
   intervalMs: number;
+  jitterPercent: number;
   nextRunAt: string | null;
   lastStartedAt: string | null;
   lastFinishedAt: string | null;
@@ -49,13 +50,22 @@ export interface IngestCronStatus {
   logSize: number;
 }
 
+const numberFromEnv = (name: string, fallback: number): number => {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
 const intervalMs = () => Math.max(
   60_000,
-  Number(process.env.LANGSON_INGEST_CRON_INTERVAL_MS ?? 15 * 60_000),
+  numberFromEnv('LANGSON_INGEST_CRON_INTERVAL_MS', 15 * 60_000),
+);
+const jitterPercent = () => Math.min(
+  50,
+  Math.max(0, numberFromEnv('LANGSON_INGEST_CRON_JITTER_PERCENT', 15)),
 );
 const maxLogs = () => Math.min(
   10,
-  Math.max(1, Number(process.env.LANGSON_INGEST_CRON_LOG_LIMIT ?? 10)),
+  Math.max(1, Math.floor(numberFromEnv('LANGSON_INGEST_CRON_LOG_LIMIT', 10))),
 );
 
 let timer: NodeJS.Timeout | null = null;
@@ -84,6 +94,7 @@ const status = (): IngestCronStatus => ({
   enabled,
   running,
   intervalMs: intervalMs(),
+  jitterPercent: jitterPercent(),
   nextRunAt: nextRunAt?.toISOString() ?? null,
   lastStartedAt: lastStartedAt?.toISOString() ?? null,
   lastFinishedAt: lastFinishedAt?.toISOString() ?? null,
@@ -92,7 +103,14 @@ const status = (): IngestCronStatus => ({
   logSize: logs.length,
 });
 
-const emitStatus = () => emitIngestCronEvent('ingest:cron:status', status());
+const emitStatus = () => {
+  try {
+    emitIngestCronEvent('ingest:cron:status', status());
+  } catch (error) {
+    // Realtime is observational. Cron state must not depend on a socket emit.
+    console.warn('[ingest-cron] could not emit status:', error instanceof Error ? error.message : String(error));
+  }
+};
 
 const pushLog = (
   level: IngestCronLogLevel,
@@ -111,7 +129,11 @@ const pushLog = (
 
   logs.unshift(log);
   logs.splice(maxLogs());
-  emitIngestCronEvent('ingest:cron:log', log);
+  try {
+    emitIngestCronEvent('ingest:cron:log', log);
+  } catch (error) {
+    console.warn('[ingest-cron] could not emit log:', error instanceof Error ? error.message : String(error));
+  }
   emitStatus();
   return log;
 };
@@ -122,6 +144,31 @@ const clearTimer = () => {
   timer = null;
 };
 
+const nextDelayMs = (): number => {
+  const base = intervalMs();
+  const spread = jitterPercent() / 100;
+  if (!spread) return base;
+
+  // Keep scheduled traffic from repeating at the same second while preserving
+  // a bounded cadence around the configured interval.
+  return Math.max(60_000, Math.round(base * (1 + ((Math.random() * 2 - 1) * spread))));
+};
+
+const reportUnexpectedTickError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  lastError = message;
+  console.error('[ingest-cron] unexpected tick error:', message);
+  try {
+    pushLog('ERROR', 'TICK_FAILED', 'Ingest tick stopped unexpectedly.', { error: message });
+  } catch {
+    // Do not let a logging failure turn into an unhandled timer rejection.
+  }
+};
+
+const runDetached = (scheduleAfter: boolean) => {
+  void executeSprint(scheduleAfter).catch(reportUnexpectedTickError);
+};
+
 const scheduleNext = () => {
   clearTimer();
   if (!enabled) {
@@ -129,18 +176,21 @@ const scheduleNext = () => {
     return;
   }
 
-  const delay = intervalMs();
+  const delay = nextDelayMs();
   nextRunAt = new Date(Date.now() + delay);
   timer = setTimeout(() => {
-    void tick();
+    void tick().catch(reportUnexpectedTickError);
   }, delay);
   timer.unref?.();
-  pushLog('INFO', 'TICK_SCHEDULED', `Next ingest sprint scheduled at ${nextRunAt.toISOString()}.`);
+  pushLog(
+    'INFO',
+    'TICK_SCHEDULED',
+    `Next ingest sprint scheduled at ${nextRunAt.toISOString()} (delay ${Math.round(delay / 1000)}s).`,
+  );
 };
 
 const documentLogMessage = (info: DocumentIngestLogInfo) => {
   return [
-    `SĐ ${info.soDen || '-'}`,
     info.soKyHieu || '-',
     `Ngày đến ${info.ngayDen || '-'}`,
     `Tình trạng: ${info.completed ? 'Xong' : 'Đang xử lý'}`,
@@ -155,11 +205,11 @@ async function executeSprint(scheduleAfter: boolean): Promise<void> {
   }
 
   running = true;
-  lastStartedAt = new Date();
-  lastError = '';
-  pushLog('INFO', 'TICK_STARTED', 'Ingest sprint started.');
-
   try {
+    lastStartedAt = new Date();
+    lastError = '';
+    pushLog('INFO', 'TICK_STARTED', 'Ingest sprint started.');
+
     const summary = await runSprint({}, {
       onDocumentEnriched: (info) => {
         pushLog('INFO', 'DOC_ENRICHED', documentLogMessage(info));
@@ -167,7 +217,12 @@ async function executeSprint(scheduleAfter: boolean): Promise<void> {
     });
     lastSummary = summary;
     lastFinishedAt = new Date();
-    pushLog('INFO', 'TICK_SUCCEEDED', 'Ingest sprint completed.', { summary });
+    if (summary.errors.length) {
+      lastError = summary.errors[0];
+      pushLog('WARN', 'TICK_SUCCEEDED', 'Ingest sprint completed with recoverable errors.', { summary });
+    } else {
+      pushLog('INFO', 'TICK_SUCCEEDED', 'Ingest sprint completed.', { summary });
+    }
   } catch (error) {
     lastFinishedAt = new Date();
     lastError = error instanceof Error ? error.message : String(error);
@@ -198,7 +253,11 @@ export const ingestCronService = {
   clearLogs(actor: AuthUser) {
     ensureAdmin(actor);
     logs.splice(0);
-    emitIngestCronEvent('ingest:cron:logs-cleared', { at: new Date().toISOString() });
+    try {
+      emitIngestCronEvent('ingest:cron:logs-cleared', { at: new Date().toISOString() });
+    } catch (error) {
+      console.warn('[ingest-cron] could not emit logs-cleared:', error instanceof Error ? error.message : String(error));
+    }
     emitStatus();
     return { data: logs };
   },
@@ -208,7 +267,7 @@ export const ingestCronService = {
     if (!enabled) {
       enabled = true;
       pushLog('INFO', 'CRON_STARTED', 'Ingest cron enabled.', { actor: actorMeta(actor) });
-      void executeSprint(true);
+      runDetached(true);
     } else if (!running && !timer) {
       scheduleNext();
     }
@@ -233,7 +292,7 @@ export const ingestCronService = {
     clearTimer();
     nextRunAt = null;
     emitStatus();
-    void executeSprint(enabled);
+    runDetached(enabled);
     return { data: status() };
   },
 };

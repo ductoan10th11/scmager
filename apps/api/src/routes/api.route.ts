@@ -18,6 +18,7 @@ import taskCompatibilityRoutes from './task-compatibility.route'
 import reportRoutes from './report.route'
 import assignmentAiRoutes from './assignment-ai.route'
 import performanceRoutes from './performance.route'
+import policyRoutes from './policy.route'
 
 const router = Router()
 
@@ -61,4 +62,5 @@ router.use('/extension', extensionRoutes)
 router.use('/reports', reportRoutes)
 router.use('/assignment-ai', assignmentAiRoutes)
 router.use('/performance', performanceRoutes)
+router.use('/policy', policyRoutes)
 export default router

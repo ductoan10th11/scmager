@@ -152,6 +152,10 @@ const toAssignee = (user, tasks = [], timelineDate = new Date()) => {
 }
 
 export const AssignmentService = {
+  getAiChatSession() {
+    return http('/api/assignment-ai/session?limit=200')
+  },
+
   async streamAiChat(payload, onEvent, signal) {
     const response = await fetch('/api/assignment-ai/chat', {
       method: 'POST',

@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import {
   getIngestDocument,
+  getOutgoingDocument,
   listIngestDocuments,
+  listOutgoingDocuments,
   updateIngestDocumentProcessing,
 } from '../controllers/document.controller';
 import { requireAuth } from '../middlewares/auth.middleware';
@@ -12,6 +14,12 @@ router.use(requireAuth);
 
 router.route('/')
   .get(listIngestDocuments);
+
+router.route('/outgoing')
+  .get(listOutgoingDocuments);
+
+router.route('/outgoing/:id')
+  .get(getOutgoingDocument);
 
 router.route('/:id')
   .get(getIngestDocument);

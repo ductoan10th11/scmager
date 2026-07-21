@@ -5,6 +5,8 @@ build/
 .next/
 docs/
 scripts/
+_bmad
+_bmad-output
 
 # Agent directories
 .agents/

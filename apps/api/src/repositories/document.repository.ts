@@ -1,17 +1,15 @@
 import DocumentModel from '../models/document.model';
+import { randomUUID } from 'node:crypto';
 import type {
-  DocDetailResult,
   DocumentListItem,
   TrackLogItem,
 } from '../services/langson-dwr.service';
 
 export interface DocumentEnrichmentUpdate {
-  detail: DocDetailResult;
   trackLogs: TrackLogItem[];
   completed: boolean;
   completedRule: string;
-  point: number | null;
-  pointSource: { trackLogId: string; comment: string } | null;
+  point: number;
   processing: Record<string, unknown>;
   now?: Date;
 }
@@ -23,26 +21,30 @@ export interface DocumentListOptions {
   sort: Record<string, 1 | -1>;
 }
 
-function preferNewValue(next: string, current?: string): string {
-  return next.trim() ? next : (current ?? '');
-}
+export type ExtensionIncomingDocumentItem = Omit<DocumentListItem, 'documentId'>;
+
+const toStoredTrackLog = (log: TrackLogItem) => ({
+  sender: { username: log.sender.username, fullName: log.sender.fullName },
+  content: log.content,
+  receivedAt: log.receivedAt,
+  processingAt: log.processingAt,
+  completedAt: log.completedAt,
+  updatedAt: log.updatedAt ?? null,
+});
 
 export const documentRepository = {
-  async upsertListItem(item: DocumentListItem, now = new Date()) {
+  async upsertListItem(
+    item: DocumentListItem,
+    now = new Date(),
+    source: 'LANGSON_DWR' | 'EXTENSION' = 'LANGSON_DWR',
+  ) {
     const update = {
       $set: {
-        processKey: item.processKey,
-        soDen: item.soDen,
         soKyHieu: item.soKyHieu,
         trichYeu: item.trichYeu,
-        donViBanHanh: item.donViBanHanh,
-        hinhThuc: item.hinhThuc,
-        ngayVanBan: item.ngayVanBan,
         ngayDen: item.ngayDen,
         doKhan: item.doKhan,
-        doMat: item.doMat,
         nguoiXuLy: item.nguoiXuLy,
-        trangThai: item.trangThai,
         deadline: item.deadline,
         'ingest.listFetchedAt': now,
         'ingest.lastError': '',
@@ -50,12 +52,12 @@ export const documentRepository = {
       $setOnInsert: {
         documentId: item.documentId,
         point: 0,
-        pointSource: { trackLogId: null, comment: null, extractedAt: null },
         processing: { status: 'UNASSIGNED', currentAssignee: null, assignees: [] },
         trackLogs: [],
-        'ingest.source': 'LANGSON_DWR',
-        'ingest.detailFetchedAt': null,
+        'ingest.source': source,
         'ingest.trackLogFetchedAt': null,
+        'ingest.outgoingDocumentsFetchedAt': null,
+        'ingest.outgoingDocumentCount': 0,
         'ingest.completed': false,
         'ingest.completedRule': '',
         'ingest.attempts': 0,
@@ -77,21 +79,105 @@ export const documentRepository = {
     return { doc, inserted: !before };
   },
 
-  findPendingForEnrichment(ngayDenValues: string[], now = new Date()) {
-    if (ngayDenValues.length === 0) return DocumentModel.find({ _id: null });
+  async upsertExtensionListItem(item: ExtensionIncomingDocumentItem, now = new Date()) {
+    const update = {
+      $set: {
+        soKyHieu: item.soKyHieu,
+        trichYeu: item.trichYeu,
+        ngayDen: item.ngayDen,
+        doKhan: item.doKhan,
+        nguoiXuLy: item.nguoiXuLy,
+        deadline: item.deadline,
+        'ingest.listFetchedAt': now,
+        'ingest.lastError': '',
+      },
+      $setOnInsert: {
+        documentId: randomUUID(),
+        point: 0,
+        processing: { status: 'UNASSIGNED', currentAssignee: null, assignees: [] },
+        trackLogs: [],
+        'ingest.source': 'EXTENSION',
+        'ingest.trackLogFetchedAt': now,
+        'ingest.outgoingDocumentsFetchedAt': now,
+        'ingest.outgoingDocumentCount': 0,
+        'ingest.completed': false,
+        'ingest.completedRule': '',
+        'ingest.attempts': 0,
+        'ingest.lastAttemptAt': now,
+        'ingest.nextRetryAt': null,
+        'ingest.deadLetter': false,
+        'ingest.deadLetterAt': null,
+        'ingest.deadLetterReason': '',
+      },
+    };
 
+    const before = await DocumentModel.exists({ soKyHieu: item.soKyHieu });
+    const doc = await DocumentModel.findOneAndUpdate({ soKyHieu: item.soKyHieu }, update, {
+      returnDocument: 'after',
+      setDefaultsOnInsert: true,
+      upsert: true,
+    });
+
+    return { doc, inserted: !before };
+  },
+
+  findPendingForEnrichment(year: string, month: string, now = new Date()) {
+    const monthStart = new Date(Date.UTC(Number(year), Number(month) - 1, 1));
+    const monthEnd = new Date(Date.UTC(Number(year), Number(month), 1));
     return DocumentModel.find({
-      ngayDen: { $in: ngayDenValues },
-      deadline: { $ne: null },
-      'ingest.completed': { $ne: true },
+      'ingest.listFetchedAt': { $gte: monthStart, $lt: monthEnd },
+      'ingest.source': { $ne: 'EXTENSION' },
       'ingest.deadLetter': { $ne: true },
-      $or: [
-        { 'ingest.nextRetryAt': null },
-        { 'ingest.nextRetryAt': { $exists: false } },
-        { 'ingest.nextRetryAt': { $lte: now } },
+      $and: [
+        {
+          $or: [
+            { 'ingest.completed': { $ne: true } },
+            { 'ingest.trackLogFetchedAt': null },
+            { 'ingest.trackLogFetchedAt': { $exists: false } },
+            { 'ingest.outgoingDocumentsFetchedAt': null },
+            { 'ingest.outgoingDocumentsFetchedAt': { $exists: false } },
+          ],
+        },
+        {
+          $or: [
+            { 'ingest.nextRetryAt': null },
+            { 'ingest.nextRetryAt': { $exists: false } },
+            { 'ingest.nextRetryAt': { $lte: now } },
+          ],
+        },
       ],
     })
       .sort({ 'ingest.lastAttemptAt': 1, updatedAt: 1 });
+  },
+
+  findLatestBySoKyHieu(soKyHieu: string) {
+    return DocumentModel.findOne({ soKyHieu })
+      .select('soKyHieu point updatedAt')
+      .sort({ updatedAt: -1 })
+      .lean();
+  },
+
+  findWithoutOutgoingRelations(now = new Date()) {
+    return DocumentModel.find({
+      'ingest.source': { $ne: 'EXTENSION' },
+      'ingest.deadLetter': { $ne: true },
+      $and: [
+        {
+          $or: [
+            { 'ingest.outgoingDocumentsFetchedAt': null },
+            { 'ingest.outgoingDocumentsFetchedAt': { $exists: false } },
+          ],
+        },
+        {
+          $or: [
+            { 'ingest.nextRetryAt': null },
+            { 'ingest.nextRetryAt': { $exists: false } },
+            { 'ingest.nextRetryAt': { $lte: now } },
+          ],
+        },
+      ],
+    })
+      .sort({ deadline: -1, updatedAt: 1 });
   },
 
   async markEnriched(documentId: string, update: DocumentEnrichmentUpdate) {
@@ -99,22 +185,8 @@ export const documentRepository = {
     const existing = await DocumentModel.findOne({ documentId });
     if (!existing) return null;
 
-    existing.soDen = preferNewValue(update.detail.soDen, existing.soDen);
-    existing.soKyHieu = preferNewValue(update.detail.soKyHieu, existing.soKyHieu);
-    existing.trichYeu = preferNewValue(update.detail.trichYeu, existing.trichYeu);
-    existing.donViBanHanh = preferNewValue(update.detail.donViBanHanh, existing.donViBanHanh);
-    existing.hinhThuc = preferNewValue(update.detail.hinhThuc, existing.hinhThuc);
-    existing.ngayVanBan = preferNewValue(update.detail.ngayVanBan, existing.ngayVanBan);
-    existing.ngayDen = preferNewValue(update.detail.ngayDen, existing.ngayDen);
-    existing.doKhan = preferNewValue(update.detail.doKhan, existing.doKhan);
-    existing.doMat = preferNewValue(update.detail.doMat, existing.doMat);
-    existing.nguoiSoan = preferNewValue(update.detail.nguoiSoan, existing.nguoiSoan);
-    existing.nguoiKy = preferNewValue(update.detail.nguoiKy, existing.nguoiKy);
-    existing.trackLogs = update.trackLogs as any;
+    existing.trackLogs = update.trackLogs.map(toStoredTrackLog) as any;
     existing.point = update.point;
-    existing.set('pointSource', update.pointSource
-      ? { ...update.pointSource, extractedAt: now }
-      : { trackLogId: null, comment: null, extractedAt: null });
     const manual = (existing as any).processing?.manual?.processedAt
       ? (existing as any).processing.manual.toObject?.() ?? (existing as any).processing.manual
       : null;
@@ -122,7 +194,6 @@ export const documentRepository = {
       ? { ...update.processing, status: 'MANUALLY_PROCESSED', currentAssignee: null, manual }
       : update.processing);
 
-    existing.set('ingest.detailFetchedAt', now);
     existing.set('ingest.trackLogFetchedAt', now);
     existing.set('ingest.completed', update.completed);
     existing.set('ingest.completedRule', update.completed ? update.completedRule : '');
@@ -187,5 +258,9 @@ export const documentRepository = {
 
   findByDocumentId(documentId: string) {
     return DocumentModel.findOne({ documentId }).lean();
+  },
+
+  findRawByDocumentId(documentId: string) {
+    return DocumentModel.findOne({ documentId });
   },
 };

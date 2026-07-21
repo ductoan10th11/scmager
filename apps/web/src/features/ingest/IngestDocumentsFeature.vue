@@ -33,6 +33,7 @@ const pageTitle = computed(() => props.context === 'ingest' ? 'Giám sát Ingest
 const pageDescription = computed(() => props.context === 'ingest'
   ? 'Kiểm tra dữ liệu văn bản được đồng bộ từ Langson eOffice.'
   : 'Theo dõi văn bản có hạn xử lý trong phạm vi của bạn.')
+const currentMonth = () => new Date().toISOString().slice(0, 7)
 
 const loading = ref(false)
 const detailLoading = ref(false)
@@ -47,6 +48,7 @@ const filters = ref({
   doKhan: 'ALL',
   scope: 'ALL',
   sort: 'newest',
+  month: currentMonth(),
 })
 
 let searchTimer = null
@@ -152,8 +154,8 @@ const resetFilters = () => {
     doKhan: 'ALL',
     scope: 'ALL',
     sort: 'newest',
+    month: currentMonth(),
   }
-  fetchDocuments(1)
 }
 
 const formatDateTime = (value) => {
@@ -170,11 +172,17 @@ const formatDateOnly = (value) => {
   return date.toLocaleDateString('vi-VN')
 }
 
-const statusLabel = (doc) => doc?.ingest?.completed ? 'Hoàn thành' : 'Đang theo dõi'
+const isProcessed = (doc) => Boolean(doc?.ingest?.completed)
+  || ['COMPLETED', 'MANUALLY_PROCESSED'].includes(doc?.processing?.status)
+
+const statusLabel = (doc) => {
+  if (doc?.processing?.status === 'MANUALLY_PROCESSED') return 'Đã xử lý'
+  return isProcessed(doc) ? 'Hoàn thành' : 'Đang theo dõi'
+}
 
 const processingMeta = (doc) => ({
   IN_PROGRESS: { label: 'Đang xử lý', class: 'border-blue-200 bg-blue-50 text-blue-700' },
-  MANUALLY_PROCESSED: { label: 'Đã xử lý thủ công', class: 'border-violet-200 bg-violet-50 text-violet-700' },
+  MANUALLY_PROCESSED: { label: 'Đã xử lý', class: 'border-violet-200 bg-violet-50 text-violet-700' },
   COMPLETED: { label: 'Đã hoàn tất', class: 'border-emerald-200 bg-emerald-50 text-emerald-700' },
   UNASSIGNED: { label: 'Chưa xác định', class: 'border-zinc-200 bg-zinc-50 text-zinc-500' },
 }[doc?.processing?.status] ?? { label: 'Chưa xác định', class: 'border-zinc-200 bg-zinc-50 text-zinc-500' })
@@ -183,7 +191,7 @@ const assigneeLabel = (doc) => doc?.processing?.currentAssignee?.fullName
   || doc?.processing?.currentAssignee?.externalFullName
   || '—'
 
-const completionClass = (doc) => doc?.ingest?.completed
+const completionClass = (doc) => isProcessed(doc)
   ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
   : 'border-amber-200 bg-amber-50 text-amber-700'
 
@@ -227,7 +235,7 @@ watch(() => filters.value.search, () => {
   searchTimer = setTimeout(() => fetchDocuments(1), 350)
 })
 
-watch(() => [filters.value.completed, filters.value.doKhan, filters.value.scope, filters.value.sort], () => {
+watch(() => [filters.value.completed, filters.value.doKhan, filters.value.scope, filters.value.sort, filters.value.month], () => {
   fetchDocuments(1)
 })
 
@@ -261,7 +269,7 @@ onMounted(() => {
     <main class="mx-auto w-full max-w-[1560px] px-4 py-5 sm:px-6">
       <div class="space-y-4 min-w-0">
         <section class="rounded-md border border-zinc-200 bg-white p-4 shadow-sm">
-          <div class="grid gap-3 md:grid-cols-[minmax(240px,1fr)_190px_170px_170px_150px_auto]">
+          <div class="grid gap-3 md:grid-cols-[minmax(240px,1fr)_190px_170px_170px_150px_160px_auto]">
             <div class="relative">
               <Search class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
               <Input v-model="filters.search" class="pl-9" placeholder="Tìm số đến, ký hiệu, trích yếu, đơn vị..." />
@@ -298,6 +306,7 @@ onMounted(() => {
                 <SelectItem value="oldest">Cũ trước</SelectItem>
               </SelectContent>
             </Select>
+            <Input v-model="filters.month" type="month" aria-label="Tháng ngày đến" />
             <Button variant="outline" :disabled="loading" @click="resetFilters">Xóa lọc</Button>
           </div>
         </section>
@@ -307,15 +316,15 @@ onMounted(() => {
         <section class="overflow-hidden rounded-md border border-zinc-200 bg-white shadow-sm">
           <div v-if="loading" class="space-y-3 p-5"><div v-for="index in 7" :key="index" class="h-12 animate-pulse rounded-md bg-zinc-100" /></div>
           <div v-else-if="items.length" class="overflow-x-auto">
-            <table class="w-full min-w-[1440px] text-sm">
+            <table class="w-full min-w-[1260px] text-sm">
               <thead class="border-b border-zinc-100 bg-zinc-50 text-left text-xs font-semibold text-zinc-500">
                 <tr>
                   <th class="px-4 py-3">Văn bản</th>
-                  <th class="px-4 py-3">Đơn vị ban hành</th>
                   <th class="px-4 py-3">Ngày đến</th>
                   <th class="px-4 py-3">Hạn xử lý</th>
                   <th class="px-4 py-3">Điểm</th>
-                  <th class="px-4 py-3">Độ khẩn/mật</th>
+                  <th class="px-4 py-3">Độ khẩn</th>
+                  <th class="px-4 py-3">XLC</th>
                   <th class="px-4 py-3">Ingest</th>
                   <th class="px-4 py-3">Xử lý</th>
                   <th class="px-4 py-3">Tracklog cuối</th>
@@ -335,15 +344,11 @@ onMounted(() => {
                       <FileText class="mt-0.5 h-4 w-4 shrink-0 text-sky-600" />
                       <div class="min-w-0">
                         <div class="flex flex-wrap items-center gap-2">
-                          <span class="font-bold text-zinc-900">SĐ {{ doc.soDen || '—' }}</span>
-                          <span class="text-xs font-semibold text-zinc-500">{{ doc.soKyHieu || doc.documentId }}</span>
+                          <span class="font-bold text-zinc-900">{{ doc.soKyHieu || doc.documentId }}</span>
                         </div>
                         <p class="mt-1 line-clamp-2 text-xs leading-5 text-zinc-600">{{ doc.trichYeu || '—' }}</p>
                       </div>
                     </div>
-                  </td>
-                  <td class="max-w-[220px] px-4 py-3 text-zinc-600">
-                    <span class="line-clamp-2">{{ doc.donViBanHanh || '—' }}</span>
                   </td>
                   <td class="px-4 py-3 whitespace-nowrap text-zinc-600">{{ doc.ngayDen || '—' }}</td>
                   <td class="px-4 py-3 whitespace-nowrap">
@@ -360,14 +365,14 @@ onMounted(() => {
                     <span v-else class="text-xs text-zinc-400">—</span>
                   </td>
                   <td class="px-4 py-3">
-                    <div class="flex flex-col gap-1 text-xs font-semibold">
-                      <span class="w-fit whitespace-nowrap rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-orange-700">{{ doc.doKhan || '—' }}</span>
-                      <span class="w-fit whitespace-nowrap rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-zinc-600">{{ doc.doMat || '—' }}</span>
-                    </div>
+                    <span class="w-fit whitespace-nowrap rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-xs font-semibold text-orange-700">{{ doc.doKhan || '—' }}</span>
+                  </td>
+                  <td class="max-w-[190px] px-4 py-3 text-xs text-zinc-600">
+                    <span class="line-clamp-2">{{ doc.nguoiXuLy || '—' }}</span>
                   </td>
                   <td class="px-4 py-3">
                     <span class="inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-1 text-xs font-bold" :class="completionClass(doc)">
-                      <CheckCircle2 v-if="doc.ingest?.completed" class="h-3.5 w-3.5" />
+                      <CheckCircle2 v-if="isProcessed(doc)" class="h-3.5 w-3.5" />
                       <Circle v-else class="h-3.5 w-3.5" />
                       {{ statusLabel(doc) }}
                     </span>
@@ -379,8 +384,8 @@ onMounted(() => {
                   </td>
                   <td class="max-w-[260px] px-4 py-3 text-xs text-zinc-600">
                     <template v-if="latestTrackLog(doc)">
-                      <p class="font-semibold text-zinc-800">{{ latestTrackLog(doc).action || '—' }}</p>
-                      <p class="mt-1 line-clamp-2">{{ latestTrackLog(doc).sender?.fullName || '—' }}</p>
+                      <p class="font-semibold text-zinc-800">{{ latestTrackLog(doc).sender?.fullName || '—' }}</p>
+                      <p class="mt-1 line-clamp-2">{{ latestTrackLog(doc).content || '—' }}</p>
                     </template>
                     <span v-else class="text-zinc-400">Chưa có tracklog</span>
                   </td>
@@ -445,23 +450,10 @@ onMounted(() => {
             <div class="min-h-0 flex-1 overflow-auto p-5">
               <section class="border-b border-zinc-100 pb-4">
                 <div class="flex flex-wrap items-center gap-2">
-                  <span class="whitespace-nowrap rounded-full bg-zinc-900 px-2.5 py-1 text-xs font-bold text-white">SĐ {{ selected.soDen || '—' }}</span>
-                  <span class="whitespace-nowrap rounded-full border border-zinc-200 px-2.5 py-1 text-xs font-semibold text-zinc-600">{{ selected.soKyHieu || 'Không có ký hiệu' }}</span>
+                  <span class="whitespace-nowrap rounded-full bg-zinc-900 px-2.5 py-1 text-xs font-bold text-white">{{ selected.soKyHieu || 'Không có ký hiệu' }}</span>
                 </div>
                 <h3 class="mt-3 text-base font-bold leading-6 text-zinc-900">{{ selected.trichYeu || '—' }}</h3>
                 <dl class="mt-4 grid grid-cols-2 gap-3 text-xs">
-                  <div>
-                    <dt class="font-semibold text-zinc-400">Đơn vị ban hành</dt>
-                    <dd class="mt-1 text-zinc-800">{{ selected.donViBanHanh || '—' }}</dd>
-                  </div>
-                  <div>
-                    <dt class="font-semibold text-zinc-400">Hình thức</dt>
-                    <dd class="mt-1 text-zinc-800">{{ selected.hinhThuc || '—' }}</dd>
-                  </div>
-                  <div>
-                    <dt class="font-semibold text-zinc-400">Ngày văn bản</dt>
-                    <dd class="mt-1 text-zinc-800">{{ selected.ngayVanBan || '—' }}</dd>
-                  </div>
                   <div>
                     <dt class="font-semibold text-zinc-400">Ngày đến</dt>
                     <dd class="mt-1 text-zinc-800">{{ selected.ngayDen || '—' }}</dd>
@@ -483,24 +475,16 @@ onMounted(() => {
                     <dd class="mt-1 text-zinc-800">{{ selected.point !== null && selected.point !== undefined ? `${selected.point} điểm` : '—' }}</dd>
                   </div>
                   <div>
-                    <dt class="font-semibold text-zinc-400">Người đang xử lý</dt>
-                    <dd class="mt-1 text-zinc-800">{{ assigneeLabel(selected) }}</dd>
+                    <dt class="font-semibold text-zinc-400">XLC</dt>
+                    <dd class="mt-1 text-zinc-800">{{ selected.nguoiXuLy || assigneeLabel(selected) }}</dd>
                   </div>
                   <div>
                     <dt class="font-semibold text-zinc-400">Trạng thái xử lý</dt>
                     <dd class="mt-1"><span class="inline-flex whitespace-nowrap rounded-full border px-2 py-1 text-xs font-bold" :class="processingMeta(selected).class">{{ processingMeta(selected).label }}</span></dd>
                   </div>
                   <div v-if="selected.processing?.manual?.processedAt" class="col-span-2 rounded-lg bg-violet-50 p-3">
-                    <dt class="font-semibold text-violet-500">Xử lý thủ công</dt>
+                    <dt class="font-semibold text-violet-500">Thông tin xử lý</dt>
                     <dd class="mt-1 text-violet-800">{{ selected.processing.manual.fullName }} · {{ formatDateTime(selected.processing.manual.processedAt) }}</dd>
-                  </div>
-                  <div>
-                    <dt class="font-semibold text-zinc-400">Người soạn</dt>
-                    <dd class="mt-1 text-zinc-800">{{ selected.nguoiSoan || '—' }}</dd>
-                  </div>
-                  <div>
-                    <dt class="font-semibold text-zinc-400">Người ký</dt>
-                    <dd class="mt-1 text-zinc-800">{{ selected.nguoiKy || '—' }}</dd>
                   </div>
                 </dl>
               </section>
@@ -544,21 +528,16 @@ onMounted(() => {
               <section class="py-4">
                 <h3 class="text-xs font-bold uppercase text-zinc-400">Tracklog {{ trackLogText.length }}</h3>
                 <div v-if="trackLogText.length" class="mt-3 space-y-3">
-                  <article v-for="log in trackLogText" :key="log.id" class="rounded-md border border-zinc-200 p-3">
-                    <div class="flex items-start justify-between gap-3">
-                      <p class="text-sm font-bold text-zinc-900">{{ log.action || '—' }}</p>
-                      <span class="whitespace-nowrap rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] font-bold text-zinc-500">#{{ log.id }}</span>
-                    </div>
+                  <article v-for="(log, index) in trackLogText" :key="index" class="rounded-md border border-zinc-200 p-3">
                     <p class="mt-2 text-xs text-zinc-600">
                       <span class="font-semibold text-zinc-900">{{ log.sender?.fullName || '—' }}</span>
-                      <span class="text-zinc-400"> → </span>
-                      <span class="font-semibold text-zinc-900">{{ log.receiver?.fullName || '—' }}</span>
                     </p>
-                    <p v-if="log.comment" class="mt-2 rounded bg-zinc-50 p-2 text-xs leading-5 text-zinc-700">{{ log.comment }}</p>
-                    <div class="mt-2 grid grid-cols-3 gap-2 text-[11px] text-zinc-500">
+                    <p class="mt-2 rounded bg-zinc-50 p-2 text-xs leading-5 text-zinc-700">{{ log.content || '—' }}</p>
+                    <div class="mt-2 grid grid-cols-2 gap-2 text-[11px] text-zinc-500">
                       <span>Nhận: {{ log.receivedAt || '—' }}</span>
                       <span>Xử lý: {{ log.processingAt || '—' }}</span>
-                      <span>Xong: {{ log.completedAt || '—' }}</span>
+                      <span>Hoàn tất: {{ log.completedAt || '—' }}</span>
+                      <span>Cập nhật: {{ log.updatedAt || '—' }}</span>
                     </div>
                   </article>
                 </div>

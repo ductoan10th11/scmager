@@ -269,7 +269,7 @@ onMounted(fetchDashboard)
                   <td class="px-4 py-3 text-right font-semibold text-blue-700">{{ row.documentsCurrent }}</td>
                   <td class="px-4 py-3 text-right text-emerald-700">{{ row.documentsProcessed }}</td>
                   <td class="px-4 py-3 text-right font-semibold" :class="row.documentsOverdue ? 'text-rose-600' : 'text-zinc-400'">{{ row.documentsOverdue }}</td>
-                  <td class="max-w-[320px] px-4 py-3"><p v-for="document in row.currentDocuments" :key="document.id" class="truncate text-xs text-zinc-600">SĐ {{ document.soDen }} · {{ document.trichYeu || document.soKyHieu }}</p><span v-if="!row.currentDocuments?.length" class="text-xs text-zinc-400">Không có</span></td>
+                  <td class="max-w-[320px] px-4 py-3"><p v-for="document in row.currentDocuments" :key="document.id" class="truncate text-xs text-zinc-600">{{ document.soKyHieu || 'Văn bản đến' }} · {{ document.trichYeu }}</p><span v-if="!row.currentDocuments?.length" class="text-xs text-zinc-400">Không có</span></td>
                   <td class="px-4 py-3 text-right text-zinc-600">{{ row.pendingReview }}</td>
                   <td class="px-4 py-3 text-right text-emerald-700">{{ row.done }}</td>
                 </tr>

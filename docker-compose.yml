@@ -8,7 +8,7 @@ services:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
     ports:
-      - "8000:8000"
+      - "9006:8000"
     command: --port 8000
     volumes:
       - mongodb_data:/data/db
@@ -23,8 +23,8 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MINIO_BROWSER_REDIRECT_URL: ${MINIO_BROWSER_REDIRECT_URL}
     ports:
-      - "8001:8001"     # API port
-      - "8002:8002"     # Console port
+      - "9007:8001"     # API port
+      - "9008:8002"     # Console port
     command: server /data --address ":8001" --console-address ":8002"
     volumes:
       - minio_data:/data
@@ -35,7 +35,7 @@ services:
     container_name: sc-valkey
     restart: always
     ports:
-      - "8003:8003"
+      - "9009:8003"
     command: valkey-server --port 8003
     volumes:
       - valkey_data:/data
@@ -47,7 +47,7 @@ services:
     restart: unless-stopped
     working_dir: /app/apps/api
     ports:
-      - "8004:8004"
+      - "9010:8004"
     environment:
       - NODE_ENV=production
       - MONGO_URI=${MONGO_URI}
@@ -79,7 +79,7 @@ services:
     restart: unless-stopped
     working_dir: /app/apps/web
     ports:
-      - "8005:8005"
+      - "9011:8005"
     environment:
       - NODE_ENV=production
     volumes:

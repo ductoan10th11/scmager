@@ -37,16 +37,24 @@ const chronologicalTrackLogs = (trackLogs: TrackLogItem[]) => [...trackLogs].sor
 
 const actorFrom = (actor: TrackLogItem['sender']): TrackLogActor | null => {
   const fullName = String(actor?.fullName ?? '').trim();
-  if (!fullName) return null;
+  const parsedUsername = String(actor?.username ?? '').trim().toLowerCase();
   const match = fullName.match(/\(([^()]+)\)\s*\.?\s*$/);
+  const externalUsername = parsedUsername || match?.[1]?.trim().toLowerCase() || null;
+  if (!fullName && !externalUsername) return null;
+
   return {
     fullName,
-    externalUsername: match?.[1]?.trim().toLowerCase() || null,
+    externalUsername,
   };
 };
 
 const actorKey = (actor: TrackLogActor) => actor.externalUsername || actor.fullName.toLowerCase();
 const eventTime = (log: TrackLogItem) => log.completedAt ?? log.processingAt ?? log.receivedAt ?? null;
+const isResponseCreated = (log: TrackLogItem | null) => String(log?.action ?? '')
+  .normalize('NFC')
+  .replace(/\s+/g, ' ')
+  .trim()
+  .toLowerCase() === 'đã tạo phúc đáp';
 
 const usernameCandidates = (externalUsername: string | null) => {
   if (!externalUsername) return [];
@@ -90,11 +98,15 @@ const rawWorkflow = (trackLogs: TrackLogItem[], completed: boolean) => {
   }
 
   const latest = ordered.at(-1) ?? null;
-  const current = completed || !latest ? null : actorFrom(latest.receiver);
+  // A specialist creating a response has not completed the incoming document.
+  // eOffice does not always return a receiver for this event, so keep that
+  // specialist as the current actor until the commune clerk creates the response.
+  const current = completed || !latest
+    ? null
+    : actorFrom(latest.receiver) ?? (isResponseCreated(latest) ? actorFrom(latest.sender) : null);
   const currentKey = current ? actorKey(current) : null;
-  const manuallyProcessed = !completed && Boolean(latest && actorFrom(latest.sender) && !current);
   return {
-    status: completed ? 'COMPLETED' : current ? 'IN_PROGRESS' : manuallyProcessed ? 'MANUALLY_PROCESSED' : 'UNASSIGNED',
+    status: completed ? 'COMPLETED' : current ? 'IN_PROGRESS' : 'UNASSIGNED',
     currentKey,
     participants: [...participants.values()],
   };

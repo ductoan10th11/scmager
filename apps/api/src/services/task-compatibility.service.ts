@@ -56,7 +56,6 @@ export const listCompatibilityTasksService = async (actor: AuthUser, query: Reco
   if (status === 'IN_PROGRESS') filter['processing.status'] = 'IN_PROGRESS';
   if (status === 'DONE') filter['processing.status'] = { $in: ['COMPLETED', 'MANUALLY_PROCESSED'] };
   if (query.search) filter.$or = [
-    { soDen: new RegExp(String(query.search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') },
     { soKyHieu: new RegExp(String(query.search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') },
     { trichYeu: new RegExp(String(query.search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') },
   ];
@@ -73,7 +72,7 @@ export const listCompatibilityTasksService = async (actor: AuthUser, query: Reco
         || null;
       return {
         _id: idOf(document),
-        title: document.trichYeu || document.soKyHieu || `Văn bản số đến ${document.soDen}`,
+        title: document.trichYeu || document.soKyHieu || 'Văn bản đến',
         description: document.soKyHieu || '',
         type: 'INGEST_DOCUMENT',
         status: documentTaskStatus(document),
@@ -86,7 +85,7 @@ export const listCompatibilityTasksService = async (actor: AuthUser, query: Reco
           position: assignee.position ?? null,
         } : null,
         assignedDepartment: department ? { _id: idOf(department), name: department.name, code: department.code } : null,
-        sourceDocument: { _id: idOf(document), documentNumber: document.soDen },
+        sourceDocument: { _id: idOf(document), documentNumber: document.soKyHieu },
       };
     }),
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
