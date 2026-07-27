@@ -7,6 +7,8 @@ import { CalendarDate } from '@internationalized/date'
 import { AssignmentService } from '@/features/assignments/services/assignment.service'
 import { Users, UserCheck, UserMinus, UserX, ChevronLeft, ChevronRight, Filter, Sparkles, Calendar as CalendarIcon, X, Plus, Paperclip, Mic, Send, Bot, CheckCircle, ClipboardCheck } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -797,6 +799,11 @@ const updatingTaskTime = ref(false)
 const completionResult = ref('')
 const completionNote = ref('')
 const completionSaving = ref(false)
+const isPointAdjustmentOpen = ref(false)
+const pointAdjustmentMode = ref('request')
+const pointAdjustmentSaving = ref(false)
+const pointAdjustmentError = ref('')
+const pointAdjustmentForm = ref({ requestedPoint: '', reason: '', approvedPoint: '', note: '', forwardApproverId: '' })
 
 const openTaskTime = (task, assignee) => {
   if (!task.id) return
@@ -844,6 +851,74 @@ const canConfirmCompletion = computed(() => {
   const task = taskTimeTarget.value?.task
   return task?.rawStatus === 'PENDING_COMPLETION' && String(idOf(task.approval?.currentApprover)) === String(idOf(currentUser.value))
 })
+const pointAdjustment = computed(() => taskTimeTarget.value?.task?.pointAdjustment ?? null)
+const canRequestPointAdjustment = computed(() => {
+  const task = taskTimeTarget.value?.task
+  return task?.rawStatus === 'APPROVED'
+    && task?.workSource === 'MANAGER_ASSIGNED'
+    && String(idOf(task.createdBy)) === String(idOf(currentUser.value))
+    && Boolean(idOf(task.assignedBy))
+    && pointAdjustment.value?.status !== 'PENDING'
+})
+const canManagePointAdjustment = computed(() => pointAdjustment.value?.status === 'PENDING'
+  && String(idOf(pointAdjustment.value?.currentApprover)) === String(idOf(currentUser.value)))
+const pointAdjustmentForwardOptions = computed(() => resources.value.filter((resource) => (
+  resource.id !== idOf(currentUser.value)
+  && Number(resource.roleLevel ?? 99) < Number(currentUser.value?.role?.level ?? 99)
+)))
+const pointAdjustmentStatusLabel = (status) => ({
+  PENDING: 'Chờ duyệt', APPROVED: 'Đã duyệt', REJECTED: 'Không duyệt', CANCELLED: 'Đã hủy', NONE: 'Chưa kiến nghị',
+}[status] || 'Chưa kiến nghị')
+const openPointAdjustmentDialog = (mode) => {
+  const adjustment = pointAdjustment.value
+  pointAdjustmentMode.value = mode
+  pointAdjustmentError.value = ''
+  pointAdjustmentForm.value = {
+    requestedPoint: adjustment?.requestedPoint ?? taskTimeTarget.value?.task?.declaredPoint ?? 0,
+    reason: adjustment?.reason ?? '',
+    approvedPoint: adjustment?.requestedPoint ?? taskTimeTarget.value?.task?.declaredPoint ?? 0,
+    note: adjustment?.decisionNote ?? '',
+    forwardApproverId: '',
+  }
+  isPointAdjustmentOpen.value = true
+}
+const submitPointAdjustment = async (action) => {
+  const task = taskTimeTarget.value?.task
+  if (!task?.id) return
+  pointAdjustmentSaving.value = true
+  pointAdjustmentError.value = ''
+  try {
+    if (action === 'request') {
+      await AssignmentService.requestPointAdjustment(task.id, {
+        requestedPoint: Number(pointAdjustmentForm.value.requestedPoint),
+        reason: pointAdjustmentForm.value.reason.trim(), revision: task.revision,
+      })
+    } else if (action === 'approve') {
+      await AssignmentService.approvePointAdjustment(task.id, {
+        approvedPoint: Number(pointAdjustmentForm.value.approvedPoint),
+        note: pointAdjustmentForm.value.note.trim() || undefined, revision: task.revision,
+      })
+    } else if (action === 'reject') {
+      await AssignmentService.rejectPointAdjustment(task.id, {
+        note: pointAdjustmentForm.value.note.trim(), revision: task.revision,
+      })
+    } else if (action === 'forward') {
+      await AssignmentService.forwardPointAdjustment(task.id, {
+        approverId: pointAdjustmentForm.value.forwardApproverId,
+        note: pointAdjustmentForm.value.note.trim(), revision: task.revision,
+      })
+    } else if (action === 'cancel') {
+      await AssignmentService.cancelPointAdjustment(task.id, { revision: task.revision })
+    }
+    isPointAdjustmentOpen.value = false
+    isTaskTimeOpen.value = false
+    await refreshResources()
+  } catch (error) {
+    pointAdjustmentError.value = (await staleMessage(error)) || 'Không thể cập nhật kiến nghị điểm.'
+  } finally {
+    pointAdjustmentSaving.value = false
+  }
+}
 const submitCompletion = async () => {
   const task = taskTimeTarget.value?.task
   if (!task?.id || !completionResult.value.trim()) return
@@ -1577,14 +1652,14 @@ onBeforeUnmount(() => {
                       <span v-if="task.editable" role="separator" aria-label="Kéo để đổi giờ bắt đầu" title="Đổi giờ bắt đầu" class="absolute inset-y-0 left-0 z-10 w-2.5 cursor-ew-resize" @pointerdown.stop="startTaskPointer($event, task, user, 'resize-start')" @click.stop></span>
                       <div v-if="!isCompactTask(task)" class="flex min-w-0 flex-1 flex-col justify-center gap-1 overflow-hidden pointer-events-none">
                         <span class="truncate text-[12px] font-bold leading-tight">{{ task.name }}</span>
-                        <span class="truncate text-[10px] font-semibold opacity-75">{{ task.start }} - {{ task.end }} · {{ task.declaredPoint ?? 0 }} điểm · {{ declarationStatusMeta[task.rawStatus || task.status]?.label }}</span>
+                        <span class="truncate text-[10px] font-semibold opacity-75">{{ task.start }} - {{ task.end }} · {{ task.effectivePoint ?? task.declaredPoint ?? 0 }} điểm · {{ declarationStatusMeta[task.rawStatus || task.status]?.label }}</span>
                         <span v-if="!isCondensedTask(task)" class="truncate text-[10px] font-medium opacity-65">{{ task.description || 'Không có mô tả' }}</span>
                       </div>
                       <div v-else class="pointer-events-none absolute left-full top-1/2 z-50 ml-2 w-max max-w-[220px] -translate-y-1/2 rounded-md border border-zinc-200 bg-zinc-900 px-2.5 py-1.5 text-white opacity-0 shadow-lg transition-opacity group-hover/task:opacity-100">
                         <p class="truncate text-[11px] font-bold">
                           {{ task.name }}
                         </p>
-                        <p class="mt-0.5 whitespace-nowrap text-[10px] font-medium text-zinc-300">{{ task.start }} - {{ task.end }} · {{ task.declaredPoint ?? 0 }} điểm</p>
+                        <p class="mt-0.5 whitespace-nowrap text-[10px] font-medium text-zinc-300">{{ task.start }} - {{ task.end }} · {{ task.effectivePoint ?? task.declaredPoint ?? 0 }} điểm</p>
                       </div>
                       <span v-if="task.editable" role="separator" aria-label="Kéo để đổi giờ kết thúc" title="Đổi giờ kết thúc" class="absolute inset-y-0 right-0 z-10 w-2.5 cursor-ew-resize" @pointerdown.stop="startTaskPointer($event, task, user, 'resize-end')" @click.stop></span>
                     </div>
@@ -2121,6 +2196,20 @@ onBeforeUnmount(() => {
             </p>
           </div>
 
+          <Card v-if="taskTimeTarget?.task?.workSource === 'MANAGER_ASSIGNED'" class="mt-4 border-amber-100 bg-amber-50/50 shadow-none">
+            <CardHeader class="flex-row items-start justify-between gap-3 space-y-0 p-4">
+              <div><CardTitle class="text-[11px] font-bold uppercase text-amber-700">Điểm công việc</CardTitle><p class="mt-1 text-sm font-bold text-zinc-900">Điểm giao: {{ taskTimeTarget?.task?.declaredPoint ?? 0 }}</p><p v-if="pointAdjustment?.status === 'APPROVED'" class="mt-1 text-xs font-semibold text-emerald-700">Điểm hiệu lực: {{ pointAdjustment.approvedPoint ?? taskTimeTarget?.task?.declaredPoint ?? 0 }}</p></div>
+              <Button v-if="canRequestPointAdjustment" size="sm" variant="outline" class="rounded-full border-amber-300 bg-white text-amber-800 hover:bg-amber-100" @click="openPointAdjustmentDialog('request')">Kiến nghị điểm</Button>
+              <Button v-else-if="canManagePointAdjustment" size="sm" class="rounded-full bg-amber-600 text-white hover:bg-amber-700" @click="openPointAdjustmentDialog('review')">Duyệt kiến nghị</Button>
+            </CardHeader>
+            <CardContent v-if="pointAdjustment && pointAdjustment.status !== 'NONE'" class="border-t border-amber-100 px-4 pb-4 pt-3 text-xs">
+              <div class="flex flex-wrap items-center gap-2"><Badge variant="outline" class="border-amber-200 bg-white font-bold text-amber-800">{{ pointAdjustmentStatusLabel(pointAdjustment.status) }}</Badge><span>Đề xuất: <strong class="text-zinc-800">{{ pointAdjustment.requestedPoint ?? 0 }} điểm</strong></span></div>
+              <p v-if="pointAdjustment.reason" class="mt-2 whitespace-pre-wrap text-zinc-600">{{ pointAdjustment.reason }}</p><p v-if="pointAdjustment.decisionNote" class="mt-2 text-zinc-500">Phản hồi: {{ pointAdjustment.decisionNote }}</p>
+              <div v-if="pointAdjustment.history?.length" class="mt-3 space-y-2 border-t border-amber-100 pt-3"><div v-for="(history, index) in pointAdjustment.history" :key="`${history.actedAt}-${index}`" class="flex items-start justify-between gap-3"><p class="text-zinc-600"><strong class="text-zinc-800">{{ history.action === 'REQUESTED' ? 'Gửi kiến nghị' : history.action === 'FORWARDED' ? 'Chuyển duyệt' : history.action === 'APPROVED' ? 'Duyệt điểm' : history.action === 'REJECTED' ? 'Không duyệt' : 'Hủy kiến nghị' }}</strong><span v-if="history.note"> · {{ history.note }}</span></p><time class="shrink-0 text-[10px] text-zinc-400">{{ formatApprovalDateTime(history.actedAt) }}</time></div></div>
+              <Button v-if="pointAdjustment.status === 'PENDING' && String(idOf(pointAdjustment.requestedBy)) === String(idOf(currentUser))" variant="ghost" size="sm" class="mt-2 h-7 px-2 text-xs text-zinc-600" :disabled="pointAdjustmentSaving" @click="submitPointAdjustment('cancel')">Hủy kiến nghị</Button>
+            </CardContent>
+          </Card>
+
           <div v-if="taskTimeTarget?.task?.editable" class="mt-5 rounded-lg border border-zinc-200 p-4">
             <p class="text-[11px] font-bold uppercase text-zinc-500">Điều chỉnh thời gian</p>
             <div class="mt-3 grid grid-cols-2 gap-3">
@@ -2168,6 +2257,30 @@ onBeforeUnmount(() => {
             <Button class="rounded-full bg-emerald-600 text-white hover:bg-emerald-700" :disabled="completionSaving" @click="confirmCompletion(false)">Xác nhận hoàn thành</Button>
           </template>
           <Button v-if="taskTimeTarget?.task?.editable" class="rounded-full bg-indigo-600 hover:bg-indigo-700 text-white" :disabled="updatingTaskTime" @click="submitTaskTime"> Lưu thời gian </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog v-model:open="isPointAdjustmentOpen">
+      <DialogContent class="sm:max-w-[480px]">
+        <div class="space-y-5">
+          <div>
+            <DialogTitle class="text-lg font-bold text-zinc-900">{{ pointAdjustmentMode === 'request' ? 'Kiến nghị điều chỉnh điểm' : 'Duyệt kiến nghị điểm' }}</DialogTitle>
+            <p class="mt-1 text-sm text-zinc-500">{{ taskTimeTarget?.task?.name }}</p>
+          </div>
+          <div class="rounded-lg bg-zinc-50 px-4 py-3 text-sm"><span class="text-zinc-500">Điểm giao ban đầu</span><strong class="ml-2 text-zinc-900">{{ taskTimeTarget?.task?.declaredPoint ?? 0 }} điểm</strong></div>
+          <template v-if="pointAdjustmentMode === 'request'">
+            <label class="grid gap-2 text-sm font-semibold text-zinc-700">Điểm kiến nghị<Input v-model="pointAdjustmentForm.requestedPoint" type="number" min="0" step="0.5" class="h-10" /></label>
+            <label class="grid gap-2 text-sm font-semibold text-zinc-700">Lý do kiến nghị<Textarea v-model="pointAdjustmentForm.reason" class="min-h-24 resize-none" placeholder="Nêu phần việc và lý do cần điều chỉnh điểm..." /></label>
+          </template>
+          <template v-else>
+            <div class="rounded-lg border border-amber-100 bg-amber-50/50 px-4 py-3 text-sm"><p class="font-semibold text-amber-900">Người thực hiện đề xuất {{ pointAdjustment?.requestedPoint ?? 0 }} điểm</p><p class="mt-1 whitespace-pre-wrap text-amber-800">{{ pointAdjustment?.reason || 'Không có lý do.' }}</p></div>
+            <label class="grid gap-2 text-sm font-semibold text-zinc-700">Điểm chốt<Input v-model="pointAdjustmentForm.approvedPoint" type="number" min="0" step="0.5" class="h-10" /></label>
+            <label class="grid gap-2 text-sm font-semibold text-zinc-700">Phản hồi<Textarea v-model="pointAdjustmentForm.note" class="min-h-20 resize-none" placeholder="Bắt buộc khi không duyệt hoặc chuyển duyệt." /></label>
+            <label class="grid gap-2 text-sm font-semibold text-zinc-700">Chuyển duyệt đến<Select v-model="pointAdjustmentForm.forwardApproverId"><SelectTrigger class="h-10"><SelectValue placeholder="Chọn cấp cao hơn" /></SelectTrigger><SelectContent><SelectItem v-for="approver in pointAdjustmentForwardOptions" :key="approver.id" :value="approver.id">{{ approver.name }} · {{ approver.role }}</SelectItem></SelectContent></Select></label>
+          </template>
+          <p v-if="pointAdjustmentError" class="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700">{{ pointAdjustmentError }}</p>
+          <div class="flex flex-wrap justify-end gap-2"><Button variant="outline" :disabled="pointAdjustmentSaving" @click="isPointAdjustmentOpen = false">Hủy</Button><template v-if="pointAdjustmentMode === 'request'"><Button :disabled="pointAdjustmentSaving || !pointAdjustmentForm.reason.trim()" @click="submitPointAdjustment('request')">Gửi kiến nghị</Button></template><template v-else><Button variant="outline" class="border-rose-200 text-rose-700 hover:bg-rose-50" :disabled="pointAdjustmentSaving || !pointAdjustmentForm.note.trim()" @click="submitPointAdjustment('reject')">Không duyệt</Button><Button variant="outline" :disabled="pointAdjustmentSaving || !pointAdjustmentForm.note.trim() || !pointAdjustmentForm.forwardApproverId" @click="submitPointAdjustment('forward')">Chuyển duyệt</Button><Button :disabled="pointAdjustmentSaving" @click="submitPointAdjustment('approve')">Duyệt điểm</Button></template></div>
         </div>
       </DialogContent>
     </Dialog>

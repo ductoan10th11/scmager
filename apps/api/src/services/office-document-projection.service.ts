@@ -69,12 +69,20 @@ export const officeDocumentProjection = (context: any) => {
   };
 };
 
-export const officeDocumentScope = (actor: { id: string; organization?: string | null; department?: string | null; role: { code: string } }) => {
+export const officeDocumentScope = (actor: { id: string; username?: string; organization?: string | null; department?: string | null; role: { code: string } }) => {
   const filter: Record<string, unknown> = { pageType: 'incoming' };
   if (actor.organization) filter.organizationId = actor.organization;
   else if (actor.role.code !== 'ADMIN') filter._id = null;
   if (actor.role.code === 'SPECIALIST') {
-    filter['management.assignment.userId'] = actor.id;
+    filter.$or = [
+      { 'management.assignment.userId': actor.id },
+      { 'statusSync.processing.currentAssignee.userId': actor.id },
+      { 'statusSync.processing.currentAssignee.externalUsername': actor.username },
+      { 'statusSync.processing.currentAssignee.username': actor.username },
+      { 'statusSync.processing.assignees': { $elemMatch: { userId: actor.id } } },
+      { 'statusSync.processing.assignees': { $elemMatch: { externalUsername: actor.username } } },
+      { 'observation.recipients': { $elemMatch: { role: 'main', userId: actor.username } } },
+    ];
   } else if (actor.role.code === 'DEPARTMENT_LEADER') {
     filter.$or = [
       { 'management.assignment.departmentId': actor.department },

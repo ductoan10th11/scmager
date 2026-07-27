@@ -8,6 +8,10 @@ import { emitUserNotification, emitUserNotificationChanged } from '../realtime/i
 const OUTBOX_MAX_ATTEMPTS = 5;
 const OUTBOX_LOCK_MS = 60_000;
 const OUTBOX_BASE_RETRY_MS = 1_000;
+const POINT_ADJUSTMENT_PENDING_TYPES = [
+  'WORK_DECLARATION_POINT_ADJUSTMENT_REQUESTED',
+  'WORK_DECLARATION_POINT_ADJUSTMENT_FORWARDED',
+];
 
 type WorkDeclarationOutboxInput = {
   session: ClientSession | null;
@@ -46,11 +50,16 @@ const reconcileWorkDeclarationNotifications = async (recipient: string) => {
   if (!pending.length) return;
   const declarationIds = [...new Set(pending.map((item: any) => String(item.relatedId)))];
   const declarations = await WorkDeclarationModel.find({ _id: { $in: declarationIds } })
-    .select('_id status approval.currentApprover')
+    .select('_id status approval.currentApprover pointAdjustment.status pointAdjustment.currentApprover')
     .lean();
   const currentById = new Map(declarations.map((item: any) => [String(item._id), item]));
   const staleIds = pending.filter((notification: any) => {
     const declaration: any = currentById.get(String(notification.relatedId));
+    if (POINT_ADJUSTMENT_PENDING_TYPES.includes(notification.type)) {
+      return !declaration
+        || declaration.pointAdjustment?.status !== 'PENDING'
+        || String(declaration.pointAdjustment?.currentApprover ?? '') !== recipient;
+    }
     return !declaration
       || !['PENDING_APPROVAL', 'PENDING_COMPLETION'].includes(declaration.status)
       || String(declaration.approval?.currentApprover ?? '') !== recipient;
@@ -308,6 +317,25 @@ export const markAllWorkDeclarationNotificationsRead = async (declarationId: str
   const recipients = await notificationRepository.unreadRelatedRecipients(declarationId, types);
   await Promise.all(recipients.map((recipient: any) => (
     notificationRepository.markRelatedRead(String(recipient), declarationId, types)
+  )));
+  recipients.forEach((recipient: any) => emitUserNotificationChanged(String(recipient)));
+};
+
+export const markWorkDeclarationPointAdjustmentNotificationsRead = async (
+  recipient: string,
+  declarationId: string,
+) => {
+  await notificationRepository.markRelatedRead(recipient, declarationId, POINT_ADJUSTMENT_PENDING_TYPES);
+  emitUserNotificationChanged(recipient);
+};
+
+export const markAllWorkDeclarationPointAdjustmentNotificationsRead = async (declarationId: string) => {
+  const recipients = await notificationRepository.unreadRelatedRecipients(
+    declarationId,
+    POINT_ADJUSTMENT_PENDING_TYPES,
+  );
+  await Promise.all(recipients.map((recipient: any) => (
+    notificationRepository.markRelatedRead(String(recipient), declarationId, POINT_ADJUSTMENT_PENDING_TYPES)
   )));
   recipients.forEach((recipient: any) => emitUserNotificationChanged(String(recipient)));
 };

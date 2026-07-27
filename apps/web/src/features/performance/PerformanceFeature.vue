@@ -1,10 +1,15 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { BarChart3, CheckCircle2, Clock3, FileText, RefreshCw, TriangleAlert, Users, X } from 'lucide-vue-next'
+import { CalendarDays, BarChart3, CheckCircle2, Clock3, Download, FileText, RefreshCw, TriangleAlert, Upload, Users, X } from 'lucide-vue-next'
+import { CalendarDate } from '@internationalized/date'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Calendar } from '@/components/ui/calendar'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { PerformanceService } from './services/performance.service'
 import { useAuth } from '@/features/auth/composables/useAuth'
 
@@ -17,6 +22,19 @@ const assigneeSort = ref('specialists-with-data')
 const selectedDocument = ref(null)
 const selectedAssignee = ref(null)
 const detailLoading = ref(false)
+const downloadingUserId = ref(null)
+const exportDialogOpen = ref(false)
+const exportAssignee = ref(null)
+const exportRange = ref({ startDate: '', endDate: '' })
+const exportRangeError = ref(null)
+const exportStartPickerOpen = ref(false)
+const exportEndPickerOpen = ref(false)
+const importDialogOpen = ref(false)
+const importFile = ref(null)
+const importInput = ref(null)
+const importError = ref(null)
+const importResult = ref(null)
+const importing = ref(false)
 const period = ref(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit' })
   .formatToParts(new Date()).filter((part) => part.type !== 'literal').map((part) => part.value).join('-'))
 
@@ -50,6 +68,7 @@ const documentTabs = computed(() => [
   { value: 'completed', documents: documents.value.filter((document) => document.status === 'COMPLETED') },
 ])
 const canSeeAssignees = computed(() => user.value?.role?.code !== 'SPECIALIST')
+const canImportKpi = computed(() => ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER'].includes(user.value?.role?.code))
 const formatNumber = (value) => new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 2 }).format(Number(value ?? 0))
 const formatDate = (value) => value ? new Date(value).toLocaleDateString('vi-VN') : '—'
 const formatDateTime = (value) => {
@@ -65,7 +84,7 @@ const statusClass = (status) => ({
 }[status] || 'border-zinc-200 bg-zinc-50 text-zinc-600')
 
 const metricCards = computed(() => [
-  { label: 'Tổng văn bản', value: summary.value.totalDocuments, note: `Trong kỳ ${payload.value?.period || period.value}`, icon: FileText, tone: 'bg-blue-50 text-blue-700' },
+  { label: 'Tổng nhiệm vụ', value: summary.value.totalDocuments, note: `Trong kỳ ${payload.value?.period || period.value}`, icon: FileText, tone: 'bg-blue-50 text-blue-700' },
   { label: 'Đã xử lý', value: summary.value.completedDocuments, note: 'Đã có phúc đáp văn thư', icon: CheckCircle2, tone: 'bg-emerald-50 text-emerald-700' },
   { label: 'Đang xử lý', value: summary.value.inProgressDocuments, note: 'Chưa hoàn thành', icon: Clock3, tone: 'bg-amber-50 text-amber-700' },
   { label: 'Quá hạn', value: summary.value.overdueDocuments, note: 'Chưa hoàn thành đúng hạn', icon: TriangleAlert, tone: 'bg-rose-50 text-rose-700' },
@@ -103,6 +122,123 @@ const fetchData = async () => {
   }
 }
 
+const monthBounds = (month) => {
+  const [year, monthNumber] = month.split('-').map(Number)
+  const lastDay = new Date(year, monthNumber, 0).getDate()
+  return {
+    startDate: `${year}-${String(monthNumber).padStart(2, '0')}-01`,
+    endDate: `${year}-${String(monthNumber).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`,
+  }
+}
+
+const calendarDateFromValue = (value) => {
+  const [year, month, day] = String(value ?? '').split('-').map(Number)
+  return Number.isInteger(year) && Number.isInteger(month) && Number.isInteger(day)
+    ? new CalendarDate(year, month, day)
+    : undefined
+}
+const formatExportDate = (value) => {
+  const [year, month, day] = String(value ?? '').split('-')
+  return year && month && day ? `${day}/${month}/${year}` : 'Chọn ngày'
+}
+const exportStartCalendarDate = computed({
+  get: () => calendarDateFromValue(exportRange.value.startDate),
+  set: (value) => {
+    if (!value) return
+    exportRange.value.startDate = value.toString()
+    exportStartPickerOpen.value = false
+  },
+})
+const exportEndCalendarDate = computed({
+  get: () => calendarDateFromValue(exportRange.value.endDate),
+  set: (value) => {
+    if (!value) return
+    exportRange.value.endDate = value.toString()
+    exportEndPickerOpen.value = false
+  },
+})
+
+const openExportDialog = (assignee) => {
+  exportAssignee.value = assignee
+  exportRange.value = monthBounds(period.value)
+  exportRangeError.value = null
+  exportStartPickerOpen.value = false
+  exportEndPickerOpen.value = false
+  exportDialogOpen.value = true
+}
+
+const downloadKpi = async () => {
+  const assignee = exportAssignee.value
+  if (!assignee) return
+  if (!exportRange.value.startDate || !exportRange.value.endDate) {
+    exportRangeError.value = 'Chọn đầy đủ từ ngày và đến ngày.'
+    return
+  }
+  if (exportRange.value.startDate > exportRange.value.endDate) {
+    exportRangeError.value = 'Từ ngày không được sau đến ngày.'
+    return
+  }
+  downloadingUserId.value = assignee.user.id
+  exportRangeError.value = null
+  error.value = null
+  try {
+    const { blob, filename } = await PerformanceService.download({
+      userId: assignee.user.id,
+      startDate: exportRange.value.startDate,
+      endDate: exportRange.value.endDate,
+    })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+    exportDialogOpen.value = false
+  } catch (requestError) {
+    error.value = requestError.message || 'Không thể tạo file KPI.'
+  } finally {
+    downloadingUserId.value = null
+  }
+}
+
+const openImportDialog = () => {
+  importFile.value = null
+  importError.value = null
+  importResult.value = null
+  if (importInput.value) importInput.value.value = ''
+  importDialogOpen.value = true
+}
+
+const selectImportFile = (event) => {
+  importFile.value = event.target.files?.[0] || null
+  importError.value = null
+  importResult.value = null
+}
+
+const importKpiWorkbook = async () => {
+  if (!importFile.value) {
+    importError.value = 'Chọn file PL4 .xlsx trước khi nhập.'
+    return
+  }
+  importing.value = true
+  importError.value = null
+  importResult.value = null
+  try {
+    const response = await PerformanceService.importWorkbook(importFile.value)
+    importResult.value = response.data
+    await fetchData()
+  } catch (requestError) {
+    const errors = requestError.details?.errors
+    importError.value = Array.isArray(errors) && errors.length
+      ? errors.join('\n')
+      : (requestError.message || 'Không thể nhập bảng KPI.')
+  } finally {
+    importing.value = false
+  }
+}
+
 onMounted(fetchData)
 </script>
 
@@ -116,6 +252,7 @@ onMounted(fetchData)
         </div>
         <div class="flex items-center gap-2">
           <Input v-model="period" type="month" class="h-9 w-[150px] rounded-md border-zinc-200 bg-white px-3 text-sm font-medium" @change="fetchData" />
+          <Button v-if="canImportKpi" variant="outline" class="h-9 rounded-full" @click="openImportDialog"><Upload class="h-4 w-4" />Nhập PL4</Button>
           <Button variant="outline" size="icon" class="h-9 w-9 rounded-full" title="Làm mới" :disabled="loading" @click="fetchData"><RefreshCw class="h-4 w-4" :class="{ 'animate-spin': loading }" /></Button>
         </div>
       </div>
@@ -135,17 +272,57 @@ onMounted(fetchData)
 
         <section class="overflow-hidden rounded-md border border-zinc-200 bg-white shadow-sm">
           <div class="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-100 px-4 py-3"><div><h2 class="text-sm font-bold text-zinc-900">{{ canSeeAssignees ? 'KPI theo nhân sự' : 'KPI của tôi' }}</h2><p class="mt-0.5 text-xs text-zinc-500">Tổng hợp trực tiếp từ các văn bản trong kỳ.</p></div><div class="flex items-center gap-2"><label class="text-xs font-semibold text-zinc-500">Sắp xếp</label><Select v-model="assigneeSort"><SelectTrigger class="h-8 w-[190px] border-zinc-200 bg-white text-xs font-semibold text-zinc-700"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="specialists-with-data">Chuyên viên có dữ liệu</SelectItem><SelectItem value="point">KPI dự kiến cao</SelectItem><SelectItem value="documents">Nhiều văn bản</SelectItem><SelectItem value="active">Đang xử lý nhiều</SelectItem><SelectItem value="overdue">Quá hạn nhiều</SelectItem></SelectContent></Select></div></div>
-          <div class="overflow-x-auto"><table class="w-full min-w-[1160px] text-sm"><thead class="bg-zinc-50 text-left text-xs font-semibold text-zinc-500"><tr><th class="px-4 py-3">Nhân sự</th><th class="px-4 py-3">Phòng ban</th><th class="px-4 py-3 text-right">Văn bản</th><th class="px-4 py-3 text-right">Hoàn thành</th><th class="px-4 py-3 text-right">Đang xử lý</th><th class="px-4 py-3 text-right">Quá hạn</th><th class="px-4 py-3 text-right">KPI chốt</th><th class="px-4 py-3 text-right">Điểm giao</th><th class="px-4 py-3 text-right">Ngày trễ</th><th class="px-4 py-3 text-right">KPI tháng</th></tr></thead><tbody class="divide-y divide-zinc-100"><tr v-for="row in sortedAssignees" :key="row.user.id" tabindex="0" role="button" class="cursor-pointer hover:bg-zinc-50/70 focus:bg-blue-50 focus:outline-none" @click="openAssignee(row)" @keydown.enter="openAssignee(row)" @keydown.space.prevent="openAssignee(row)"><td class="px-4 py-3"><p class="font-bold text-zinc-900">{{ row.user.fullName }}</p><p class="mt-0.5 text-xs text-zinc-500">{{ row.user.position || row.user.role?.name || row.user.username }}</p></td><td class="px-4 py-3 text-zinc-500">{{ row.user.department?.name || '—' }}</td><td class="px-4 py-3 text-right font-semibold text-zinc-700">{{ formatNumber(row.documentCount) }}</td><td class="px-4 py-3 text-right font-semibold text-emerald-700">{{ formatNumber(row.completedDocumentCount) }}</td><td class="px-4 py-3 text-right font-semibold text-amber-700">{{ formatNumber(row.inProgressDocumentCount) }}</td><td class="px-4 py-3 text-right font-semibold" :class="row.overdueDocumentCount ? 'text-rose-600' : 'text-zinc-400'">{{ formatNumber(row.overdueDocumentCount) }}</td><td class="px-4 py-3 text-right font-bold text-blue-700">{{ formatNumber(row.totalPoint) }}</td><td class="px-4 py-3 text-right font-semibold text-amber-700">{{ formatNumber(row.pendingPoint) }}</td><td class="px-4 py-3 text-right font-semibold" :class="row.lateWorkingDays ? 'text-rose-600' : 'text-zinc-400'">{{ formatNumber(row.lateWorkingDays) }}</td><td class="px-4 py-3 text-right font-bold text-zinc-900">{{ formatNumber(row.monthlyKpi) }}</td></tr><tr v-if="!sortedAssignees.length"><td colspan="10" class="px-4 py-12 text-center text-zinc-400">Chưa có nhân sự trong phạm vi xem.</td></tr></tbody></table></div>
+          <Table class="min-w-[760px]">
+            <TableHeader class="bg-zinc-50 text-xs font-semibold text-zinc-500"><TableRow><TableHead>Nhân sự</TableHead><TableHead class="text-right">Văn bản</TableHead><TableHead class="text-right">Hoàn thành</TableHead><TableHead class="text-right">Đang xử lý</TableHead><TableHead class="text-right">KPI tháng</TableHead><TableHead class="text-center">Tải</TableHead></TableRow></TableHeader>
+            <TableBody class="divide-y divide-zinc-100"><TableRow v-for="row in sortedAssignees" :key="row.user.id" tabindex="0" role="button" class="cursor-pointer hover:bg-zinc-50/70 focus:bg-blue-50 focus:outline-none" @click="openAssignee(row)" @keydown.enter="openAssignee(row)" @keydown.space.prevent="openAssignee(row)"><TableCell><p class="font-bold text-zinc-900">{{ row.user.fullName }}</p><p class="mt-0.5 truncate text-xs text-zinc-500">{{ row.user.position || row.user.role?.name || row.user.username }} · {{ row.user.department?.name || 'Chưa phân phòng ban' }}</p></TableCell><TableCell class="text-right font-semibold text-zinc-700">{{ formatNumber(row.documentCount) }}</TableCell><TableCell class="text-right font-semibold text-emerald-700">{{ formatNumber(row.completedDocumentCount) }}</TableCell><TableCell class="text-right font-semibold text-amber-700">{{ formatNumber(row.inProgressDocumentCount) }}</TableCell><TableCell class="text-right font-bold text-zinc-900">{{ formatNumber(row.monthlyKpi) }}</TableCell><TableCell class="text-center"><Button variant="ghost" size="icon" class="h-8 w-8 rounded-full" :title="`Tải bảng KPI của ${row.user.fullName}`" :disabled="downloadingUserId === row.user.id" @click.stop="openExportDialog(row)"><Download class="h-4 w-4" /></Button></TableCell></TableRow><TableRow v-if="!sortedAssignees.length"><TableCell colspan="6" class="py-12 text-center text-zinc-400">Chưa có nhân sự trong phạm vi xem.</TableCell></TableRow></TableBody>
+          </Table>
         </section>
 
         <section class="overflow-hidden rounded-md border border-zinc-200 bg-white shadow-sm">
           <Tabs v-model="documentTab">
-            <div class="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-100 px-4 py-3"><div><h2 class="text-sm font-bold text-zinc-900">Văn bản trong kỳ</h2><p class="mt-0.5 text-xs text-zinc-500">Mỗi dòng là nguồn dữ liệu để kiểm tra hạn xử lý, người nhận và điểm.</p><p v-if="summary.unmappedDocuments" class="mt-1 text-xs font-semibold text-amber-700">{{ formatNumber(summary.unmappedDocuments) }} văn bản chưa map được sang tài khoản nội bộ, vẫn hiển thị đầy đủ bên dưới.</p></div><TabsList aria-label="Lọc văn bản trong kỳ"><TabsTrigger value="all" class="text-xs font-bold">Tất cả</TabsTrigger><TabsTrigger value="active" class="text-xs font-bold">Đang xử lý</TabsTrigger><TabsTrigger value="completed" class="text-xs font-bold">Đã xử lý</TabsTrigger></TabsList></div>
+          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-100 px-4 py-3"><div><h2 class="text-sm font-bold text-zinc-900">Nhiệm vụ trong kỳ</h2><p class="mt-0.5 text-xs text-zinc-500">Văn bản đến và công việc ngoài hệ thống được tính theo hạn xử lý.</p><p v-if="summary.unmappedDocuments" class="mt-1 text-xs font-semibold text-amber-700">{{ formatNumber(summary.unmappedDocuments) }} văn bản chưa map được sang tài khoản nội bộ, vẫn hiển thị đầy đủ bên dưới.</p></div><TabsList aria-label="Lọc nhiệm vụ trong kỳ"><TabsTrigger value="all" class="text-xs font-bold">Tất cả</TabsTrigger><TabsTrigger value="active" class="text-xs font-bold">Đang xử lý</TabsTrigger><TabsTrigger value="completed" class="text-xs font-bold">Đã xử lý</TabsTrigger></TabsList></div>
             <TabsContent v-for="tab in documentTabs" :key="tab.value" :value="tab.value" class="m-0 overflow-x-auto"><table class="w-full min-w-[1180px] text-sm"><thead class="bg-zinc-50 text-left text-xs font-semibold text-zinc-500"><tr><th class="px-4 py-3">Văn bản</th><th class="px-4 py-3">Người xử lý</th><th class="px-4 py-3">Trạng thái</th><th class="px-4 py-3 text-right">Điểm</th><th class="px-4 py-3">Hạn xử lý</th><th class="px-4 py-3">Nộp kết quả</th></tr></thead><tbody class="divide-y divide-zinc-100"><tr v-for="document in tab.documents" :key="document.id" tabindex="0" role="button" class="cursor-pointer hover:bg-zinc-50/70 focus:bg-blue-50 focus:outline-none" @click="openDocument(document)" @keydown.enter="openDocument(document)" @keydown.space.prevent="openDocument(document)"><td class="max-w-[430px] px-4 py-3"><div class="flex items-center gap-2"><span v-if="document.soDen" class="shrink-0 rounded bg-zinc-900 px-1.5 py-0.5 text-[11px] font-bold text-white">SĐ {{ document.soDen }}</span><span class="truncate font-bold text-zinc-900">{{ document.soKyHieu || document.documentId }}</span></div><p class="mt-1 line-clamp-2 text-xs leading-5 text-zinc-600">{{ document.trichYeu || 'Không có trích yếu.' }}</p></td><td class="px-4 py-3"><p class="font-semibold text-zinc-800">{{ document.owner?.fullName || 'Chưa map được người xử lý' }}</p><p class="mt-0.5 text-xs text-zinc-500">{{ document.owner?.position || document.owner?.username || '—' }}</p></td><td class="px-4 py-3"><span class="inline-flex whitespace-nowrap rounded-full border px-2 py-1 text-xs font-bold" :class="statusClass(document.status)">{{ statusLabel(document.status) }}</span></td><td class="px-4 py-3 text-right"><p class="font-bold text-blue-700">{{ formatNumber(document.completed ? document.creditedPoint : document.point) }}</p><p v-if="document.completed && document.point !== document.creditedPoint" class="mt-0.5 text-xs text-rose-600">gốc {{ formatNumber(document.point) }}</p></td><td class="px-4 py-3"><p class="font-semibold text-zinc-800">{{ formatDate(document.deadline) }}</p><p v-if="document.lateWorkingDays" class="mt-0.5 text-xs font-medium text-rose-600">Trễ {{ document.lateWorkingDays }} ngày làm việc</p></td><td class="px-4 py-3 text-xs text-zinc-600"><p>{{ formatDateTime(document.submittedAt) }}</p><p v-if="document.completedAt" class="mt-1 text-zinc-400">Hoàn tất: {{ formatDateTime(document.completedAt) }}</p></td></tr><tr v-if="!tab.documents.length"><td colspan="6" class="px-4 py-12 text-center text-zinc-400">Không có văn bản phù hợp trong kỳ này.</td></tr></tbody></table></TabsContent>
           </Tabs>
         </section>
       </template>
     </main>
+
+    <Dialog v-model:open="exportDialogOpen">
+      <DialogContent class="sm:max-w-[440px]">
+        <DialogHeader>
+          <DialogTitle>Tải bảng KPI</DialogTitle>
+          <DialogDescription>{{ exportAssignee?.user.fullName }} · Chỉ lấy văn bản có hạn xử lý trong khoảng đã chọn.</DialogDescription>
+        </DialogHeader>
+        <div class="grid gap-4 py-2 sm:grid-cols-2">
+          <div class="grid gap-2 text-sm font-semibold text-zinc-700"><span>Từ ngày</span><Popover v-model:open="exportStartPickerOpen"><PopoverTrigger as-child><Button variant="outline" class="h-10 justify-between rounded-md border-zinc-200 px-3 font-medium text-zinc-800"><span>{{ formatExportDate(exportRange.startDate) }}</span><CalendarDays class="h-4 w-4 text-zinc-500" /></Button></PopoverTrigger><PopoverContent align="start" class="w-auto p-0"><Calendar v-model="exportStartCalendarDate" locale="vi-VN" :max-value="exportEndCalendarDate" initial-focus /></PopoverContent></Popover></div>
+          <div class="grid gap-2 text-sm font-semibold text-zinc-700"><span>Đến ngày</span><Popover v-model:open="exportEndPickerOpen"><PopoverTrigger as-child><Button variant="outline" class="h-10 justify-between rounded-md border-zinc-200 px-3 font-medium text-zinc-800"><span>{{ formatExportDate(exportRange.endDate) }}</span><CalendarDays class="h-4 w-4 text-zinc-500" /></Button></PopoverTrigger><PopoverContent align="end" class="w-auto p-0"><Calendar v-model="exportEndCalendarDate" locale="vi-VN" :min-value="exportStartCalendarDate" initial-focus /></PopoverContent></Popover></div>
+        </div>
+        <p v-if="exportRangeError" class="text-sm font-medium text-rose-600">{{ exportRangeError }}</p>
+        <DialogFooter class="gap-2 sm:gap-2">
+          <Button variant="outline" :disabled="Boolean(downloadingUserId)" @click="exportDialogOpen = false">Hủy</Button>
+          <Button :disabled="Boolean(downloadingUserId)" @click="downloadKpi"><Download class="h-4 w-4" :class="{ 'animate-pulse': Boolean(downloadingUserId) }" />{{ downloadingUserId ? 'Đang tạo' : 'Tải file Excel' }}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog v-model:open="importDialogOpen">
+      <DialogContent class="sm:max-w-[560px]">
+        <DialogHeader>
+          <DialogTitle>Nhập bảng KPI PL4</DialogTitle>
+          <DialogDescription>Chỉ nhận file `.xlsx` đúng mẫu PL4. Nếu sai một ô cấu trúc hoặc một dòng dữ liệu, toàn bộ file sẽ bị từ chối.</DialogDescription>
+        </DialogHeader>
+        <div v-if="!importResult" class="grid gap-3 py-2">
+          <label class="grid gap-2 text-sm font-semibold text-zinc-700"><span>File PL4</span><Input ref="importInput" type="file" accept="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx" class="h-10 cursor-pointer" @change="selectImportFile" /></label>
+          <p v-if="importFile" class="text-xs font-medium text-zinc-600">{{ importFile.name }}</p>
+          <p v-if="importError" class="max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium leading-6 text-rose-700">{{ importError }}</p>
+        </div>
+        <div v-else class="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800"><p class="font-bold">Đã nhập {{ importResult.importedRows }} dòng cho {{ importResult.user.fullName }}.</p><p class="mt-1">Cập nhật {{ importResult.updatedDocuments }} văn bản; tạo {{ importResult.createdWorks }} và cập nhật {{ importResult.updatedWorks }} công việc ngoài hệ thống.</p></div>
+        <DialogFooter class="gap-2 sm:gap-2">
+          <Button variant="outline" :disabled="importing" @click="importDialogOpen = false">{{ importResult ? 'Đóng' : 'Hủy' }}</Button>
+          <Button v-if="!importResult" :disabled="importing || !importFile" @click="importKpiWorkbook"><Upload class="h-4 w-4" :class="{ 'animate-pulse': importing }" />{{ importing ? 'Đang kiểm tra và nhập' : 'Kiểm tra và nhập' }}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
 
     <Teleport to="body">
       <Transition name="performance-drawer">
@@ -159,7 +336,7 @@ onMounted(fetchData)
 
             <div v-if="selectedAssignee" class="min-h-0 flex-1 overflow-auto p-5">
               <section class="border-b border-zinc-100 pb-4"><h3 class="text-lg font-bold text-zinc-900">{{ selectedAssignee.user.fullName }}</h3><p class="mt-1 text-sm text-zinc-500">{{ selectedAssignee.user.position || selectedAssignee.user.role?.name || selectedAssignee.user.username }} · {{ selectedAssignee.user.department?.name || 'Chưa phân phòng ban' }}</p><dl class="mt-4 grid grid-cols-2 gap-3"><div class="rounded-md bg-blue-50 p-3"><dt class="text-xs font-semibold text-blue-600">KPI đã chốt</dt><dd class="mt-1 text-xl font-bold text-blue-800">{{ formatNumber(selectedAssignee.totalPoint) }}</dd></div><div class="rounded-md bg-amber-50 p-3"><dt class="text-xs font-semibold text-amber-600">Điểm đang giao</dt><dd class="mt-1 text-xl font-bold text-amber-800">{{ formatNumber(selectedAssignee.pendingPoint) }}</dd></div><div class="rounded-md bg-zinc-50 p-3"><dt class="text-xs font-semibold text-zinc-500">Văn bản / quá hạn</dt><dd class="mt-1 text-xl font-bold text-zinc-800">{{ selectedAssignee.documentCount }} / {{ selectedAssignee.overdueDocumentCount }}</dd></div><div class="rounded-md bg-rose-50 p-3"><dt class="text-xs font-semibold text-rose-600">Ngày trễ</dt><dd class="mt-1 text-xl font-bold text-rose-800">{{ selectedAssignee.lateWorkingDays }}</dd></div></dl></section>
-              <section class="py-4"><h3 class="text-xs font-bold uppercase text-zinc-400">Văn bản trong kỳ {{ assigneeDocuments.length }}</h3><button v-for="document in assigneeDocuments" :key="document.id" class="mt-2 block w-full rounded-md border border-zinc-200 p-3 text-left hover:border-blue-300 hover:bg-blue-50/40" @click="openDocument(document)"><div class="flex items-center justify-between gap-3"><span class="truncate text-sm font-bold text-zinc-900">{{ document.soKyHieu || document.documentId }}</span><span class="shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-bold" :class="statusClass(document.status)">{{ statusLabel(document.status) }}</span></div><p class="mt-1 line-clamp-2 text-xs leading-5 text-zinc-600">{{ document.trichYeu || 'Không có trích yếu.' }}</p><p class="mt-2 text-xs font-semibold text-zinc-500">Hạn {{ formatDate(document.deadline) }} · {{ formatNumber(document.completed ? document.creditedPoint : document.point) }} điểm</p></button><p v-if="!assigneeDocuments.length" class="py-10 text-center text-sm text-zinc-400">Chưa có văn bản map cho nhân sự này trong kỳ.</p></section>
+              <section class="py-4"><div class="flex items-baseline justify-between gap-3"><h3 class="text-xs font-bold uppercase text-zinc-400">Nhiệm vụ trong kỳ</h3><span class="text-xs font-semibold text-zinc-500">{{ assigneeDocuments.length }} văn bản</span></div><Table class="mt-3 min-w-[600px] rounded-md border border-zinc-200"><TableHeader class="bg-zinc-50 text-[11px] font-bold text-zinc-500"><TableRow><TableHead>Nội dung nhiệm vụ</TableHead><TableHead class="text-right">Điểm</TableHead><TableHead class="text-right">Hoàn thành</TableHead><TableHead class="text-right">Ngày chậm</TableHead><TableHead class="text-right">Làm lại</TableHead></TableRow></TableHeader><TableBody><TableRow v-for="document in assigneeDocuments" :key="document.id" tabindex="0" role="button" class="cursor-pointer hover:bg-blue-50/40 focus:bg-blue-50 focus:outline-none" @click="openDocument(document)" @keydown.enter="openDocument(document)"><TableCell class="max-w-[260px]"><p class="truncate font-bold text-zinc-900">{{ document.soKyHieu || document.documentId }}</p><p class="mt-1 line-clamp-2 text-xs leading-5 text-zinc-500">{{ document.trichYeu || 'Không có trích yếu.' }}</p></TableCell><TableCell class="text-right font-bold text-blue-700">{{ formatNumber(document.point) }}</TableCell><TableCell class="text-right font-semibold" :class="document.completed ? 'text-emerald-700' : 'text-zinc-400'">{{ document.completed ? 1 : 0 }}</TableCell><TableCell class="text-right font-semibold" :class="document.lateWorkingDays ? 'text-rose-600' : 'text-zinc-400'">{{ formatNumber(document.lateWorkingDays) }}</TableCell><TableCell class="text-right font-semibold" :class="document.reworkCount ? 'text-amber-700' : 'text-zinc-400'">{{ formatNumber(document.reworkCount) }}</TableCell></TableRow><TableRow v-if="!assigneeDocuments.length"><TableCell colspan="5" class="py-10 text-center text-sm text-zinc-400">Chưa có văn bản map cho nhân sự này trong kỳ.</TableCell></TableRow></TableBody></Table></section>
             </div>
 
             <div v-else-if="selectedDocument" class="min-h-0 flex-1 overflow-auto p-5">

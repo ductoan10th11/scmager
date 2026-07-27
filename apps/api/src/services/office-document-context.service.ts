@@ -34,6 +34,57 @@ const MANAGER_ROLES = new Set([
   "COMMUNE_LEADER",
   "DEPARTMENT_LEADER",
 ]);
+
+const personMatchesActor = (person: any, actor: AuthUser) => {
+  const identities = new Set(
+    [actor.id, actor.username, actor.fullName]
+      .map(normalizedIdentity)
+      .filter(Boolean),
+  );
+  return [
+    person?.userId,
+    person?.externalUsername,
+    person?.username,
+    person?.fullName,
+    person?.externalFullName,
+  ].some((value) => identities.has(normalizedIdentity(value)));
+};
+
+const actorCanReadOfficeDocument = (context: any, actor: AuthUser) => {
+  if (["ADMIN", "OFFICE_CHIEF", "COMMUNE_LEADER"].includes(actor.role.code)) return true;
+
+  const assignment = context.management?.assignment ?? {};
+  const processing = context.statusSync?.processing ?? {};
+  const observation = {
+    ...(context.observation ?? {}),
+    ...(context.management?.overrides ?? {}),
+  };
+  const participantMatches = (person: any) => personMatchesActor(person, actor);
+  const directlyAssigned = participantMatches(assignment)
+    || participantMatches(processing.currentAssignee)
+    || (processing.assignees ?? []).some(participantMatches);
+
+  if (actor.role.code === "DEPARTMENT_LEADER") {
+    return directlyAssigned
+      || (actor.department && String(assignment.departmentId ?? "") === actor.department)
+      || (processing.assignees ?? []).some(
+        (participant: any) => String(participant?.departmentId ?? "") === actor.department,
+      );
+  }
+
+  if (context.pageType !== "incoming") {
+    return directlyAssigned || participantMatches({
+      userId: observation.draftingUserId ?? observation.senderUserId,
+      fullName: observation.draftingUser ?? observation.senderUser,
+    });
+  }
+
+  // Co-processors are intentionally excluded. Only the primary recipient may view
+  // a document before the workflow has been resolved into processing.assignees.
+  return directlyAssigned || (observation.recipients ?? []).some(
+    (recipient: any) => recipient?.role === "main" && participantMatches(recipient),
+  );
+};
 const MANAGED_FIELDS = [
   "title",
   "subject",
@@ -168,6 +219,7 @@ const normalizedIdentity = (value: unknown) =>
   String(value ?? "")
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "")
+    .replace(/\.lsn$/iu, "")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
@@ -557,6 +609,7 @@ export const backfillOfficeDocumentContextTenants = async () => {
 };
 
 export const listOfficeDocumentContexts = async (
+  actor: AuthUser,
   query: Record<string, unknown>,
 ) => {
   const allowed = [
@@ -607,6 +660,10 @@ export const listOfficeDocumentContexts = async (
     ? new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")
     : null;
   const filter: Record<string, unknown> = { pageType };
+  if (actor.role.code !== "ADMIN") {
+    if (!actor.organization) throw forbidden("User has no organization assigned.");
+    filter.organizationId = actor.organization;
+  }
   if (regex)
     filter.$or = [
       { externalDocumentId: regex },
@@ -809,14 +866,6 @@ export const listOfficeDocumentContexts = async (
         .select("_id username fullName department")
         .lean()
     : [];
-  const normalizedIdentity = (value: unknown) =>
-    String(value ?? "")
-      .normalize("NFD")
-      .replace(/\p{Diacritic}/gu, "")
-      .replace(/\.lsn$/iu, "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .toLowerCase();
   const matchesPeople = (context: any, tracking: any, people: any[]) => {
     const ids = new Set(people.map((person) => String(person._id)));
     const identities = new Set(
@@ -902,6 +951,7 @@ export const listOfficeDocumentContexts = async (
   });
   const items = itemsWithTracking.filter((context: any) => {
     const tracking = context.tracking;
+    if (!actorCanReadOfficeDocument(context, actor)) return false;
     if (userId && !selectedUser) return false;
     if (departmentId && !selectedDepartment) return false;
     if (
@@ -955,10 +1005,17 @@ export const listOfficeDocumentContexts = async (
   };
 };
 
-export const getOfficeDocumentContext = async (id: string) => {
+export const getOfficeDocumentContext = async (actor: AuthUser, id: string) => {
   if (!isValidObjectId(id)) throw badRequest("id must be a valid ObjectId.");
   const context = await OfficeDocumentContextModel.findById(id).lean();
   if (!context) throw notFound("Office document context was not found.");
+  if (
+    actor.role.code !== "ADMIN"
+    && (!actor.organization || String(context.organizationId ?? "") !== actor.organization)
+  ) throw notFound("Office document context was not found.");
+  if (!actorCanReadOfficeDocument(context, actor)) {
+    throw notFound("Office document context was not found.");
+  }
   return { data: context };
 };
 

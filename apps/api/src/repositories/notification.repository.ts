@@ -122,9 +122,16 @@ export const notificationRepository = {
     return NotificationModel.find({
       recipient,
       relatedModel: 'WorkDeclaration',
-      type: { $in: ['WORK_DECLARATION_SUBMITTED', 'WORK_DECLARATION_FORWARDED'] },
+      type: {
+        $in: [
+          'WORK_DECLARATION_SUBMITTED',
+          'WORK_DECLARATION_FORWARDED',
+          'WORK_DECLARATION_POINT_ADJUSTMENT_REQUESTED',
+          'WORK_DECLARATION_POINT_ADJUSTMENT_FORWARDED',
+        ],
+      },
       readAt: null,
-    }).select('_id relatedId').limit(500).lean();
+    }).select('_id relatedId type').limit(500).lean();
   },
 
   markManyRead(ids: string[]) {

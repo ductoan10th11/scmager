@@ -2,14 +2,19 @@ import { Router } from 'express';
 import { requireAuth } from '../middlewares/auth.middleware';
 import {
   approveWorkDeclaration,
+  approveWorkDeclarationPointAdjustment,
   cancelWorkDeclaration,
+  cancelWorkDeclarationPointAdjustment,
   confirmWorkDeclarationCompletion,
   createWorkDeclaration,
   forwardWorkDeclaration,
+  forwardWorkDeclarationPointAdjustment,
   getWorkDeclaration,
   listAssignmentParticipants,
   listWorkDeclarations,
   returnWorkDeclaration,
+  rejectWorkDeclarationPointAdjustment,
+  requestWorkDeclarationPointAdjustment,
   returnWorkDeclarationCompletion,
   rescheduleWorkDeclaration,
   submitWorkDeclaration,
@@ -26,6 +31,11 @@ router.route('/:id').get(getWorkDeclaration).patch(updateWorkDeclaration);
 router.patch('/:id/schedule', rescheduleWorkDeclaration);
 router.post('/:id/submit', submitWorkDeclaration);
 router.post('/:id/approve', approveWorkDeclaration);
+router.post('/:id/point-adjustment/request', requestWorkDeclarationPointAdjustment);
+router.post('/:id/point-adjustment/approve', approveWorkDeclarationPointAdjustment);
+router.post('/:id/point-adjustment/reject', rejectWorkDeclarationPointAdjustment);
+router.post('/:id/point-adjustment/forward', forwardWorkDeclarationPointAdjustment);
+router.post('/:id/point-adjustment/cancel', cancelWorkDeclarationPointAdjustment);
 router.post('/:id/return', returnWorkDeclaration);
 router.post('/:id/forward', forwardWorkDeclaration);
 router.post('/:id/cancel', cancelWorkDeclaration);

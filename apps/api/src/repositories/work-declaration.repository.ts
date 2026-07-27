@@ -11,6 +11,12 @@ const POPULATE_WORK_DECLARATION = [
   { path: 'approval.history.actor', select: '_id username fullName position email' },
   { path: 'approval.history.fromApprover', select: '_id username fullName position email' },
   { path: 'approval.history.toApprover', select: '_id username fullName position email' },
+  { path: 'pointAdjustment.requestedBy', select: '_id username fullName position email' },
+  { path: 'pointAdjustment.currentApprover', select: '_id username fullName position email' },
+  { path: 'pointAdjustment.decidedBy', select: '_id username fullName position email' },
+  { path: 'pointAdjustment.history.actor', select: '_id username fullName position email' },
+  { path: 'pointAdjustment.history.fromApprover', select: '_id username fullName position email' },
+  { path: 'pointAdjustment.history.toApprover', select: '_id username fullName position email' },
 ];
 
 export const workDeclarationRepository = {

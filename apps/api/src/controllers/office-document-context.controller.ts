@@ -29,7 +29,7 @@ export const listOfficeDocumentContext = async (
 ) => {
   try {
     res.json(
-      await listOfficeDocumentContexts(req.query as Record<string, unknown>),
+      await listOfficeDocumentContexts(actor(req), req.query as Record<string, unknown>),
     );
   } catch (error) {
     next(error);
@@ -42,7 +42,7 @@ export const getOfficeDocumentContext = async (
   next: NextFunction,
 ) => {
   try {
-    res.json(await getOfficeDocumentContextService(String(req.params.id)));
+    res.json(await getOfficeDocumentContextService(actor(req), String(req.params.id)));
   } catch (error) {
     next(error);
   }

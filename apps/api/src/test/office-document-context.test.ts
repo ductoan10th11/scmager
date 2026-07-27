@@ -254,7 +254,7 @@ test("Office context HMAC rejects unsigned, invalid, and replayed requests", () 
   assert.equal(accepted, false);
 });
 
-test("Office context list is reachable through both API mounts before the 404 fallback", async () => {
+test("Office context list requires an authenticated session on both API mounts", async () => {
   const originalFind = OfficeDocumentContextModel.find;
   const originalCountDocuments = OfficeDocumentContextModel.countDocuments;
   const filters: Array<Record<string, unknown>> = [];
@@ -286,20 +286,9 @@ test("Office context list is reachable through both API mounts before the 404 fa
       `${baseUrl}/office-document-contexts?pageType=outgoing,outgoing_c2`,
     );
 
-    assert.equal(apiResponse.status, 200);
-    assert.equal(rootResponse.status, 200);
-    assert.deepEqual(await apiResponse.json(), {
-      data: [],
-      pagination: { page: 1, limit: 25, total: 0, totalPages: 0 },
-    });
-    assert.deepEqual(await rootResponse.json(), {
-      data: [],
-      pagination: { page: 1, limit: 25, total: 0, totalPages: 0 },
-    });
-    assert.deepEqual(filters, [
-      { pageType: "incoming" },
-      { pageType: { $in: ["outgoing", "outgoing_c2"] } },
-    ]);
+    assert.equal(apiResponse.status, 401);
+    assert.equal(rootResponse.status, 401);
+    assert.deepEqual(filters, []);
   } finally {
     OfficeDocumentContextModel.find = originalFind;
     OfficeDocumentContextModel.countDocuments = originalCountDocuments;

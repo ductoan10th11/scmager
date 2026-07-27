@@ -102,10 +102,26 @@ const managementAssignmentSchema = new Schema(
   { _id: false },
 );
 
+const kpiImportSchema = new Schema(
+  {
+    importKey: { type: String, trim: true, default: '' },
+    point: { type: Number, min: 0, default: null },
+    product: { type: String, trim: true, default: '' },
+    assignedQuantity: { type: Number, min: 0, default: 1 },
+    completedQuantity: { type: Number, min: 0, default: 0 },
+    completedAt: { type: Date, default: null },
+    reworkCount: { type: Number, min: 0, default: 0 },
+    importedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    importedAt: { type: Date, default: null },
+  },
+  { _id: false },
+);
+
 const managementSchema = new Schema(
   {
     overrides: { type: Schema.Types.Mixed, default: () => ({}) },
     assignment: { type: managementAssignmentSchema, default: () => ({}) },
+    kpiImport: { type: kpiImportSchema, default: () => ({}) },
     manualScore: { type: Number, min: 0, max: 1_000_000, default: null },
     note: { type: String, trim: true, default: "" },
     updatedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },

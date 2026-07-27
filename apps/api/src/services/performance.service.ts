@@ -1,4 +1,4 @@
-import { OfficeDocumentContextModel, UserModel } from '../models';
+import { OfficeDocumentContextModel, UserModel, WorkDeclarationModel } from '../models';
 import type { AuthUser } from '../types/auth';
 import { badRequest, forbidden } from '../utils/http-error';
 import { calculateCreditedPoint } from './kpi.service';
@@ -61,7 +61,11 @@ const documentStatus = (completed: boolean, deadline: Date | null) => {
  * users. Management.assignment is the persisted eOffice-to-internal-user map;
  * no legacy ingest rows are included here.
  */
-export const performanceOverviewService = async (actor: AuthUser, query: Record<string, unknown> = {}) => {
+export const performanceOverviewService = async (
+  actor: AuthUser,
+  query: Record<string, unknown> = {},
+  options: { documentLimit?: number; sourceLimit?: number | null; deadlineRange?: { start: Date; end: Date } } = {},
+) => {
   const period = parsePeriod(query.period);
   const users = await UserModel.find(userFilterFor(actor))
     .select('_id username fullName position email department role')
@@ -74,22 +78,41 @@ export const performanceOverviewService = async (actor: AuthUser, query: Record<
   if (actor.organization) contextFilter.organizationId = actor.organization;
   else if (actor.role.code !== 'ADMIN') contextFilter._id = null;
 
-  const sourceContexts = await OfficeDocumentContextModel.find(contextFilter)
+  const sourceContextQuery = OfficeDocumentContextModel.find(contextFilter)
     .select('externalDocumentId observation statusSync management')
-    .sort({ observedAt: -1 })
-    .limit(2_000)
-    .lean();
+    .sort({ observedAt: -1 });
+  if (options.sourceLimit === null) {
+    // Export must cover the requested deadline range, not only recent rows.
+  } else if (options.sourceLimit !== undefined) sourceContextQuery.limit(options.sourceLimit);
+  else sourceContextQuery.limit(2_000);
+  const workDeclarationQuery = WorkDeclarationModel.find({
+      ...(actor.organization ? { organization: actor.organization } : isOrganizationViewer(actor) ? {} : { _id: null }),
+      createdBy: { $in: [...userIds] },
+      status: { $in: ['APPROVED', 'PENDING_COMPLETION', 'COMPLETED'] },
+    })
+      .select('createdBy title description workEndAt declaredPoint pointAdjustment completion approval status workSource kpiImport')
+      .sort({ workEndAt: -1 });
+  if (options.sourceLimit !== null) workDeclarationQuery.limit(options.sourceLimit ?? 2_000);
+  const [sourceContexts, workDeclarations] = await Promise.all([
+    sourceContextQuery.lean(),
+    workDeclarationQuery.lean(),
+  ]);
 
-  const documents = sourceContexts
+  const incomingDocuments = sourceContexts
     .map((context: any) => {
+      const imported = context.management?.kpiImport ?? null;
       const deadline = parseVietnamDate(
         context.management?.overrides?.dueDate ?? context.observation?.dueDate,
         true,
       );
-      const completed = context.statusSync?.completed === true;
-      const completedAt = contextCompletedAt(context);
-      const appearsInPeriod = (deadline && vietnamPeriodKey(deadline) === period)
-        || (completedAt && vietnamPeriodKey(completedAt) === period);
+      const completed = imported
+        ? Number(imported.completedQuantity ?? 0) >= Number(imported.assignedQuantity ?? 1)
+        : context.statusSync?.completed === true;
+      const completedAt = imported?.completedAt ? new Date(imported.completedAt) : contextCompletedAt(context);
+      const appearsInPeriod = options.deadlineRange
+        ? Boolean(deadline && deadline >= options.deadlineRange.start && deadline <= options.deadlineRange.end)
+        : (deadline && vietnamPeriodKey(deadline) === period)
+          || (completedAt && vietnamPeriodKey(completedAt) === period);
       const assignment = context.management?.assignment ?? {};
       const ownerId = idOf(assignment.userId);
       const scopeAllows = isSpecialist(actor)
@@ -100,7 +123,8 @@ export const performanceOverviewService = async (actor: AuthUser, query: Record<
       if (!appearsInPeriod || !scopeAllows) return null;
 
       const point = Number(
-        context.management?.manualScore
+        imported?.point
+          ?? context.management?.manualScore
           ?? context.management?.overrides?.point
           ?? context.observation?.point
           ?? 0,
@@ -121,8 +145,9 @@ export const performanceOverviewService = async (actor: AuthUser, query: Record<
         doKhan: context.management?.overrides?.priority ?? context.observation?.priority ?? '',
         deadline,
         point: Number.isFinite(point) ? point : 0,
+        reworkCount: Math.max(0, Number(imported?.reworkCount ?? context.observation?.reworkCount ?? 0) || 0),
         creditedPoint: completed
-          ? calculateCreditedPoint(Number.isFinite(point) ? point : 0, Number(context.observation?.reworkCount ?? 0), lateWorkingDays)
+          ? calculateCreditedPoint(Number.isFinite(point) ? point : 0, Number(imported?.reworkCount ?? context.observation?.reworkCount ?? 0), lateWorkingDays)
           : 0,
         lateWorkingDays,
         submittedAt: completedAt,
@@ -151,6 +176,51 @@ export const performanceOverviewService = async (actor: AuthUser, query: Record<
       };
     })
     .filter(Boolean) as any[];
+
+  const externalWork = workDeclarations
+    .map((work: any) => {
+      const deadline = work.workEndAt ? new Date(work.workEndAt) : null;
+      const completed = work.status === 'COMPLETED';
+      const completedAt = completed && work.completion?.confirmedAt
+        ? new Date(work.completion.confirmedAt)
+        : null;
+      const appearsInPeriod = options.deadlineRange
+        ? Boolean(deadline && deadline >= options.deadlineRange.start && deadline <= options.deadlineRange.end)
+        : (deadline && vietnamPeriodKey(deadline) === period)
+          || (completedAt && vietnamPeriodKey(completedAt) === period);
+      if (!appearsInPeriod) return null;
+      const ownerId = idOf(work.createdBy);
+      const owner = users.find((user: any) => idOf(user._id) === ownerId);
+      if (!owner) return null;
+      const point = Number(work.pointAdjustment?.status === 'APPROVED'
+        ? work.pointAdjustment.approvedPoint
+        : work.declaredPoint ?? 0);
+      const reworkCount = work.workSource === 'KPI_IMPORT'
+        ? Math.max(0, Number(work.kpiImport?.reworkCount ?? 0))
+        : (work.approval?.history ?? []).filter((item: any) => item.action === 'RETURNED').length;
+      const submittedAt = work.completion?.submittedAt ? new Date(work.completion.submittedAt) : null;
+      const lateWorkingDays = completed && deadline && submittedAt
+        ? workingDaysLate(deadline, submittedAt)
+        : 0;
+      return {
+        id: idOf(work._id), source: 'WORK_DECLARATION', documentId: idOf(work._id), soDen: '',
+        soKyHieu: 'Công việc ngoài hệ thống', trichYeu: work.title ?? '', ngayDen: '', doKhan: '',
+        product: 'Công việc ngoài hệ thống', deadline,
+        point: Number.isFinite(point) ? point : 0, reworkCount,
+        creditedPoint: completed
+          ? calculateCreditedPoint(Number.isFinite(point) ? point : 0, reworkCount, lateWorkingDays)
+          : 0,
+        lateWorkingDays, submittedAt, completedAt, completed,
+        status: documentStatus(completed, deadline), processing: null, trackLogs: [],
+        owner: {
+          id: ownerId, username: owner.username, fullName: owner.fullName,
+          position: owner.position ?? null,
+          department: owner.department ? { id: idOf(owner.department), name: owner.department.name, code: owner.department.code } : null,
+        },
+      };
+    })
+    .filter(Boolean) as any[];
+  const documents = [...incomingDocuments, ...externalWork];
 
   const perUser = new Map(users.map((user: any) => [idOf(user._id), {
     user,
@@ -244,7 +314,7 @@ export const performanceOverviewService = async (actor: AuthUser, query: Record<
       scope: { role: actor.role.code, userId: actor.id, organizationId: actor.organization, departmentId: actor.department },
       summary: { ...summary, projectedPoint: summary.totalPoint + summary.pendingPoint },
       assignees,
-      documents: documents.slice(0, 250),
+      documents: documents.slice(0, options.documentLimit ?? 250),
     },
   };
 };

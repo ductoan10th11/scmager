@@ -10,7 +10,7 @@ export const WORK_DECLARATION_STATUSES = [
   'CANCELLED',
 ] as const;
 
-export const WORK_DECLARATION_SOURCES = ['SELF_REPORTED', 'MANAGER_ASSIGNED'] as const;
+export const WORK_DECLARATION_SOURCES = ['SELF_REPORTED', 'MANAGER_ASSIGNED', 'KPI_IMPORT'] as const;
 
 const approvalHistorySchema = new Schema(
   {
@@ -50,6 +50,59 @@ const completionSchema = new Schema(
   { _id: false },
 );
 
+const kpiImportSchema = new Schema(
+  {
+    importKey: { type: String, trim: true, default: '', index: true },
+    product: { type: String, trim: true, default: '' },
+    assignedQuantity: { type: Number, min: 0, default: 1 },
+    completedQuantity: { type: Number, min: 0, default: 0 },
+    reworkCount: { type: Number, min: 0, default: 0 },
+    importedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    importedAt: { type: Date, default: null },
+  },
+  { _id: false },
+);
+
+const pointAdjustmentHistorySchema = new Schema(
+  {
+    action: {
+      type: String,
+      enum: ['REQUESTED', 'FORWARDED', 'APPROVED', 'REJECTED', 'CANCELLED'],
+      required: true,
+    },
+    actor: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    fromApprover: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    toApprover: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    requestedPoint: { type: Number, min: 0, default: null },
+    approvedPoint: { type: Number, min: 0, default: null },
+    note: { type: String, trim: true, default: null },
+    actedAt: { type: Date, default: Date.now },
+  },
+  { _id: false },
+);
+
+const pointAdjustmentSchema = new Schema(
+  {
+    status: {
+      type: String,
+      enum: ['NONE', 'PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'],
+      default: 'NONE',
+      index: true,
+    },
+    requestedPoint: { type: Number, min: 0, default: null },
+    approvedPoint: { type: Number, min: 0, default: null },
+    reason: { type: String, trim: true, default: '' },
+    requestedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    requestedAt: { type: Date, default: null },
+    currentApprover: { type: Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+    decidedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    decidedAt: { type: Date, default: null },
+    decisionNote: { type: String, trim: true, default: '' },
+    history: { type: [pointAdjustmentHistorySchema], default: [] },
+  },
+  { _id: false },
+);
+
 const workDeclarationSchema = new Schema(
   {
     organization: { type: Schema.Types.ObjectId, ref: 'Organization', required: true, index: true },
@@ -68,6 +121,10 @@ const workDeclarationSchema = new Schema(
     status: { type: String, enum: [...WORK_DECLARATION_STATUSES], default: 'DRAFT', index: true },
     approval: { type: approvalSchema, default: () => ({}) },
     completion: { type: completionSchema, default: () => ({}) },
+    // Keep the assigned score immutable. Any later re-evaluation is captured
+    // here so KPI exports can show both the original and approved score.
+    pointAdjustment: { type: pointAdjustmentSchema, default: () => ({}) },
+    kpiImport: { type: kpiImportSchema, default: () => ({}) },
   },
   { timestamps: true },
 );
@@ -77,7 +134,9 @@ workDeclarationSchema.index({ department: 1, status: 1, createdAt: -1 });
 workDeclarationSchema.index({ createdBy: 1, status: 1, createdAt: -1 });
 workDeclarationSchema.index({ 'approval.currentApprover': 1, status: 1, createdAt: -1 });
 workDeclarationSchema.index({ 'approval.history.actor': 1, 'approval.history.action': 1, status: 1, createdAt: -1 });
+workDeclarationSchema.index({ 'pointAdjustment.currentApprover': 1, 'pointAdjustment.status': 1, createdAt: -1 });
 workDeclarationSchema.index({ sourceDocument: 1, createdBy: 1, createdAt: -1 });
+workDeclarationSchema.index({ organization: 1, workSource: 1, 'kpiImport.importKey': 1 });
 workDeclarationSchema.index({ organization: 1, _id: 1, revision: 1 });
 
 export const WorkDeclarationModel = models.WorkDeclaration

@@ -26,10 +26,16 @@ const declarationToTask = (declaration) => ({
   estimatedMinutes: declaration.durationMinutes,
   assignedTo: declaration.createdBy,
   declaredPoint: declaration.declaredPoint,
+  effectivePoint: declaration.pointAdjustment?.status === 'APPROVED'
+    ? declaration.pointAdjustment.approvedPoint
+    : declaration.declaredPoint,
+  pointAdjustment: declaration.pointAdjustment,
   approval: declaration.approval,
   completion: declaration.completion,
   department: declaration.department,
   createdBy: declaration.createdBy,
+  assignedBy: declaration.assignedBy,
+  workSource: declaration.workSource,
   sourceDocument: declaration.sourceDocument,
   revision: declaration.revision,
   rawStatus: declaration.status,
@@ -119,10 +125,14 @@ const toAssignee = (user, tasks = [], timelineDate = new Date()) => {
           dueAt: task.dueAt,
           description: task.description,
           declaredPoint: task.declaredPoint,
+          effectivePoint: task.effectivePoint,
+          pointAdjustment: task.pointAdjustment,
           approval: task.approval,
           completion: task.completion,
           department: task.department,
           createdBy: task.createdBy,
+          assignedBy: task.assignedBy,
+          workSource: task.workSource,
           createdAt: task.createdAt,
           sourceDocument: task.sourceDocument,
           revision: task.revision,
@@ -276,6 +286,26 @@ export const AssignmentService = {
 
   returnCompletion(taskId, payload) {
     return http(`/api/work-declarations/${taskId}/completion/return`, { method: 'POST', body: payload })
+  },
+
+  requestPointAdjustment(taskId, payload) {
+    return http(`/api/work-declarations/${taskId}/point-adjustment/request`, { method: 'POST', body: payload })
+  },
+
+  approvePointAdjustment(taskId, payload) {
+    return http(`/api/work-declarations/${taskId}/point-adjustment/approve`, { method: 'POST', body: payload })
+  },
+
+  rejectPointAdjustment(taskId, payload) {
+    return http(`/api/work-declarations/${taskId}/point-adjustment/reject`, { method: 'POST', body: payload })
+  },
+
+  forwardPointAdjustment(taskId, payload) {
+    return http(`/api/work-declarations/${taskId}/point-adjustment/forward`, { method: 'POST', body: payload })
+  },
+
+  cancelPointAdjustment(taskId, payload) {
+    return http(`/api/work-declarations/${taskId}/point-adjustment/cancel`, { method: 'POST', body: payload })
   },
 
   async updateTaskTime(taskId, payload) {

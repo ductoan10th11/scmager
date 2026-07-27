@@ -1,14 +1,19 @@
 import { NextFunction, Request, Response } from 'express';
 import {
   approveWorkDeclarationService,
+  approveWorkDeclarationPointAdjustmentService,
   cancelWorkDeclarationService,
+  cancelWorkDeclarationPointAdjustmentService,
   confirmWorkDeclarationCompletionService,
   createWorkDeclarationService,
   forwardWorkDeclarationService,
+  forwardWorkDeclarationPointAdjustmentService,
   getWorkDeclarationService,
   listAssignmentParticipantsService,
   listWorkDeclarationsService,
   returnWorkDeclarationService,
+  rejectWorkDeclarationPointAdjustmentService,
+  requestWorkDeclarationPointAdjustmentService,
   returnWorkDeclarationCompletionService,
   rescheduleWorkDeclarationService,
   submitWorkDeclarationService,
@@ -41,6 +46,21 @@ export const submitWorkDeclaration = async (req: Request, res: Response, next: N
 };
 export const approveWorkDeclaration = async (req: Request, res: Response, next: NextFunction) => {
   try { res.status(200).json(await approveWorkDeclarationService(currentUser(req), req.params.id, req.body)); } catch (error) { next(error); }
+};
+export const requestWorkDeclarationPointAdjustment = async (req: Request, res: Response, next: NextFunction) => {
+  try { res.status(200).json(await requestWorkDeclarationPointAdjustmentService(currentUser(req), req.params.id, req.body)); } catch (error) { next(error); }
+};
+export const approveWorkDeclarationPointAdjustment = async (req: Request, res: Response, next: NextFunction) => {
+  try { res.status(200).json(await approveWorkDeclarationPointAdjustmentService(currentUser(req), req.params.id, req.body)); } catch (error) { next(error); }
+};
+export const rejectWorkDeclarationPointAdjustment = async (req: Request, res: Response, next: NextFunction) => {
+  try { res.status(200).json(await rejectWorkDeclarationPointAdjustmentService(currentUser(req), req.params.id, req.body)); } catch (error) { next(error); }
+};
+export const forwardWorkDeclarationPointAdjustment = async (req: Request, res: Response, next: NextFunction) => {
+  try { res.status(200).json(await forwardWorkDeclarationPointAdjustmentService(currentUser(req), req.params.id, req.body)); } catch (error) { next(error); }
+};
+export const cancelWorkDeclarationPointAdjustment = async (req: Request, res: Response, next: NextFunction) => {
+  try { res.status(200).json(await cancelWorkDeclarationPointAdjustmentService(currentUser(req), req.params.id, req.body)); } catch (error) { next(error); }
 };
 export const returnWorkDeclaration = async (req: Request, res: Response, next: NextFunction) => {
   try { res.status(200).json(await returnWorkDeclarationService(currentUser(req), req.params.id, req.body)); } catch (error) { next(error); }

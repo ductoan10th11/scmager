@@ -6,7 +6,9 @@ import { AuthUser } from '../types/auth';
 import { badRequest, conflict, forbidden, notFound } from '../utils/http-error';
 import {
   enqueueWorkDeclarationNotification,
+  markAllWorkDeclarationPointAdjustmentNotificationsRead,
   markAllWorkDeclarationNotificationsRead,
+  markWorkDeclarationPointAdjustmentNotificationsRead,
   markWorkDeclarationNotificationsRead,
 } from './notification.service';
 import { AuditLogModel } from '../models/audit-log.model';
@@ -147,6 +149,14 @@ const parseDeclarationPayload = (body: Record<string, unknown>) => {
     durationMinutes: Math.max(1, Math.round((workEndAt.getTime() - workStartAt.getTime()) / 60_000)),
     declaredPoint,
   };
+};
+
+const parsePoint = (value: unknown, field: string) => {
+  const point = Number(value);
+  if (!Number.isFinite(point) || point < 0 || point > 1_000_000) {
+    throw badRequest(`${field} must be a non-negative number.`);
+  }
+  return point;
 };
 
 const parseWorkSource = (value: unknown, assignedByLeader: boolean) => {
@@ -646,6 +656,202 @@ export const forwardWorkDeclarationService = async (actor: AuthUser, id: unknown
     return current;
   });
   await markWorkDeclarationNotificationsRead(actor.id, declarationId);
+  emitDeclarationChanged(declaration);
+  return { data: await reload(declarationId) };
+};
+
+export const requestWorkDeclarationPointAdjustmentService = async (
+  actor: AuthUser,
+  id: unknown,
+  body: Record<string, unknown>,
+) => {
+  const declarationId = assertObjectId(id, 'id');
+  const revision = expectedRevision(body);
+  const requestedPoint = parsePoint(body.requestedPoint, 'requestedPoint');
+  const reason = normalizeText(body.reason, 'reason', true) as string;
+  const declaration = await runWorkDeclarationMutation(async (session) => {
+    const current = await loadCurrentForMutation(actor, declarationId, revision, session);
+    if (idOf(current.createdBy) !== actor.id) throw forbidden('Only the assignee can request a point adjustment.');
+    if (current.workSource !== 'MANAGER_ASSIGNED' || !current.assignedBy) {
+      throw conflict('Only directly assigned work can request a point adjustment.');
+    }
+    if (current.status !== 'APPROVED') throw conflict('Only active approved work can request a point adjustment.');
+    if (current.pointAdjustment?.status === 'PENDING') throw conflict('A point adjustment is already pending.');
+
+    const now = new Date();
+    const approverId = idOf(current.assignedBy);
+    const history = [...(current.pointAdjustment?.history ?? [])];
+    history.push({
+      action: 'REQUESTED', actor: actor.id, fromApprover: null, toApprover: approverId,
+      requestedPoint, approvedPoint: null, note: reason, actedAt: now,
+    });
+    current.pointAdjustment = {
+      status: 'PENDING', requestedPoint, approvedPoint: null, reason,
+      requestedBy: actor.id, requestedAt: now, currentApprover: approverId,
+      decidedBy: null, decidedAt: null, decisionNote: '', history,
+    };
+    await saveRevisioned(current, session);
+    await createAudit(actor, 'WORK_DECLARATION_POINT_ADJUSTMENT_REQUESTED', current, {
+      originalPoint: current.declaredPoint, requestedPoint, reason, approverId, revision: current.revision,
+    }, session);
+    await enqueueWorkDeclarationNotification({
+      session, recipient: approverId, actor: actor.id,
+      type: 'WORK_DECLARATION_POINT_ADJUSTMENT_REQUESTED', title: 'Có kiến nghị điều chỉnh điểm',
+      message: `${current.title}: ${current.declaredPoint} điểm -> đề xuất ${requestedPoint} điểm`,
+      entityId: declarationId, organizationId: idOf(current.organization), revision: current.revision,
+      metadata: { requestedPoint, reason },
+    });
+    return current;
+  });
+  emitDeclarationChanged(declaration);
+  return { data: await reload(declarationId) };
+};
+
+export const approveWorkDeclarationPointAdjustmentService = async (
+  actor: AuthUser,
+  id: unknown,
+  body: Record<string, unknown>,
+) => {
+  const declarationId = assertObjectId(id, 'id');
+  const revision = expectedRevision(body);
+  const declaration = await runWorkDeclarationMutation(async (session) => {
+    const current = await loadCurrentForMutation(actor, declarationId, revision, session);
+    const adjustment = current.pointAdjustment;
+    if (adjustment?.status !== 'PENDING') throw conflict('Point adjustment is not pending approval.');
+    if (idOf(adjustment.currentApprover) !== actor.id) throw forbidden('You are not the current point adjustment approver.');
+    const approvedPoint = body.approvedPoint === undefined
+      ? parsePoint(adjustment.requestedPoint, 'requestedPoint')
+      : parsePoint(body.approvedPoint, 'approvedPoint');
+    const decisionNote = normalizeText(body.note, 'note') ?? '';
+    const now = new Date();
+    adjustment.status = 'APPROVED'; adjustment.approvedPoint = approvedPoint;
+    adjustment.currentApprover = actor.id; adjustment.decidedBy = actor.id;
+    adjustment.decidedAt = now; adjustment.decisionNote = decisionNote;
+    adjustment.history.push({
+      action: 'APPROVED', actor: actor.id, fromApprover: actor.id, toApprover: null,
+      requestedPoint: adjustment.requestedPoint, approvedPoint, note: decisionNote || null, actedAt: now,
+    });
+    await saveRevisioned(current, session);
+    await createAudit(actor, 'WORK_DECLARATION_POINT_ADJUSTMENT_APPROVED', current, {
+      originalPoint: current.declaredPoint, requestedPoint: adjustment.requestedPoint,
+      approvedPoint, note: decisionNote, revision: current.revision,
+    }, session);
+    await enqueueWorkDeclarationNotification({
+      session, recipient: idOf(current.createdBy), actor: actor.id,
+      type: 'WORK_DECLARATION_POINT_ADJUSTMENT_APPROVED', title: 'Kiến nghị điểm đã được duyệt',
+      message: `${current.title}: điểm hiệu lực ${approvedPoint}`, entityId: declarationId,
+      organizationId: idOf(current.organization), revision: current.revision,
+      metadata: { approvedPoint, originalPoint: current.declaredPoint },
+    });
+    return current;
+  });
+  await markAllWorkDeclarationPointAdjustmentNotificationsRead(declarationId);
+  emitDeclarationChanged(declaration);
+  return { data: await reload(declarationId) };
+};
+
+export const rejectWorkDeclarationPointAdjustmentService = async (
+  actor: AuthUser,
+  id: unknown,
+  body: Record<string, unknown>,
+) => {
+  const declarationId = assertObjectId(id, 'id');
+  const revision = expectedRevision(body);
+  const note = normalizeText(body.note, 'note', true) as string;
+  const declaration = await runWorkDeclarationMutation(async (session) => {
+    const current = await loadCurrentForMutation(actor, declarationId, revision, session);
+    const adjustment = current.pointAdjustment;
+    if (adjustment?.status !== 'PENDING') throw conflict('Point adjustment is not pending approval.');
+    if (idOf(adjustment.currentApprover) !== actor.id) throw forbidden('You are not the current point adjustment approver.');
+    const now = new Date();
+    adjustment.status = 'REJECTED'; adjustment.currentApprover = actor.id;
+    adjustment.decidedBy = actor.id; adjustment.decidedAt = now; adjustment.decisionNote = note;
+    adjustment.history.push({
+      action: 'REJECTED', actor: actor.id, fromApprover: actor.id, toApprover: null,
+      requestedPoint: adjustment.requestedPoint, approvedPoint: null, note, actedAt: now,
+    });
+    await saveRevisioned(current, session);
+    await createAudit(actor, 'WORK_DECLARATION_POINT_ADJUSTMENT_REJECTED', current, {
+      originalPoint: current.declaredPoint, requestedPoint: adjustment.requestedPoint, note, revision: current.revision,
+    }, session);
+    await enqueueWorkDeclarationNotification({
+      session, recipient: idOf(current.createdBy), actor: actor.id,
+      type: 'WORK_DECLARATION_POINT_ADJUSTMENT_REJECTED', title: 'Kiến nghị điểm chưa được duyệt',
+      message: current.title, entityId: declarationId, organizationId: idOf(current.organization), revision: current.revision,
+      metadata: { note },
+    });
+    return current;
+  });
+  await markAllWorkDeclarationPointAdjustmentNotificationsRead(declarationId);
+  emitDeclarationChanged(declaration);
+  return { data: await reload(declarationId) };
+};
+
+export const forwardWorkDeclarationPointAdjustmentService = async (
+  actor: AuthUser,
+  id: unknown,
+  body: Record<string, unknown>,
+) => {
+  const declarationId = assertObjectId(id, 'id');
+  const revision = expectedRevision(body);
+  const targetId = assertObjectId(body.approverId, 'approverId');
+  const note = normalizeText(body.note, 'note', true) as string;
+  const declaration = await runWorkDeclarationMutation(async (session) => {
+    const current = await loadCurrentForMutation(actor, declarationId, revision, session);
+    const adjustment = current.pointAdjustment;
+    if (adjustment?.status !== 'PENDING') throw conflict('Point adjustment is not pending approval.');
+    if (idOf(adjustment.currentApprover) !== actor.id) throw forbidden('You are not the current point adjustment approver.');
+    await ensureForwardTarget(actor, targetId);
+    const now = new Date();
+    adjustment.currentApprover = targetId;
+    adjustment.history.push({
+      action: 'FORWARDED', actor: actor.id, fromApprover: actor.id, toApprover: targetId,
+      requestedPoint: adjustment.requestedPoint, approvedPoint: null, note, actedAt: now,
+    });
+    await saveRevisioned(current, session);
+    await createAudit(actor, 'WORK_DECLARATION_POINT_ADJUSTMENT_FORWARDED', current, {
+      targetId, requestedPoint: adjustment.requestedPoint, note, revision: current.revision,
+    }, session);
+    await enqueueWorkDeclarationNotification({
+      session, recipient: targetId, actor: actor.id,
+      type: 'WORK_DECLARATION_POINT_ADJUSTMENT_FORWARDED', title: 'Kiến nghị điểm được chuyển duyệt',
+      message: current.title, entityId: declarationId, organizationId: idOf(current.organization), revision: current.revision,
+      metadata: { note, requestedPoint: adjustment.requestedPoint },
+    });
+    return current;
+  });
+  await markWorkDeclarationPointAdjustmentNotificationsRead(actor.id, declarationId);
+  emitDeclarationChanged(declaration);
+  return { data: await reload(declarationId) };
+};
+
+export const cancelWorkDeclarationPointAdjustmentService = async (
+  actor: AuthUser,
+  id: unknown,
+  body: Record<string, unknown>,
+) => {
+  const declarationId = assertObjectId(id, 'id');
+  const revision = expectedRevision(body);
+  const declaration = await runWorkDeclarationMutation(async (session) => {
+    const current = await loadCurrentForMutation(actor, declarationId, revision, session);
+    const adjustment = current.pointAdjustment;
+    if (adjustment?.status !== 'PENDING') throw conflict('Point adjustment is not pending approval.');
+    if (idOf(current.createdBy) !== actor.id || idOf(adjustment.requestedBy) !== actor.id) {
+      throw forbidden('Only the requester can cancel a point adjustment.');
+    }
+    const now = new Date();
+    adjustment.status = 'CANCELLED'; adjustment.decidedBy = actor.id; adjustment.decidedAt = now;
+    adjustment.history.push({
+      action: 'CANCELLED', actor: actor.id, fromApprover: null, toApprover: null,
+      requestedPoint: adjustment.requestedPoint, approvedPoint: null, note: null, actedAt: now,
+    });
+    await saveRevisioned(current, session);
+    await createAudit(actor, 'WORK_DECLARATION_POINT_ADJUSTMENT_CANCELLED', current, {
+      requestedPoint: adjustment.requestedPoint, revision: current.revision,
+    }, session);
+    return current;
+  });
+  await markAllWorkDeclarationPointAdjustmentNotificationsRead(declarationId);
   emitDeclarationChanged(declaration);
   return { data: await reload(declarationId) };
 };

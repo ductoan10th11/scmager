@@ -21,7 +21,7 @@ extensionOfficeDocumentContextRoutes.post(
 );
 
 export const officeDocumentContextRoutes = Router();
-officeDocumentContextRoutes.get("/", listOfficeDocumentContext);
+officeDocumentContextRoutes.get("/", requireAuth, listOfficeDocumentContext);
 officeDocumentContextRoutes.post(
   "/",
   requireAuth,
@@ -32,7 +32,7 @@ officeDocumentContextRoutes.post(
   requireAuth,
   ingestIncomingBySymbol,
 );
-officeDocumentContextRoutes.get("/:id", getOfficeDocumentContext);
+officeDocumentContextRoutes.get("/:id", requireAuth, getOfficeDocumentContext);
 officeDocumentContextRoutes.patch(
   "/:id",
   requireAuth,
