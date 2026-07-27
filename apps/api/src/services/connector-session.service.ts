@@ -1,4 +1,4 @@
-import type { FencedConnectorIdentity } from "../repositories/tenant-source.repository";
+import type { FencedConnectorIdentity } from "./connector-run.types";
 import { secretProvider } from "../secrets/secret-provider";
 import { decryptIngestAccount } from "./connector-ingest-account.service";
 import {

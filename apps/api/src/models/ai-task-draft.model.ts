@@ -7,6 +7,9 @@ const aiTaskPayloadSchema = new Schema(
     workStartAt: { type: Date, required: true },
     workEndAt: { type: Date, required: true },
     declaredPoint: { type: Number, required: true, min: 0 },
+    assigneeId: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    assigneeUsername: { type: String, trim: true, default: '' },
+    assigneeFullName: { type: String, trim: true, default: '' },
   },
   { _id: false },
 );

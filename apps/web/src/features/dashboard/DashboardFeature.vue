@@ -36,6 +36,7 @@ const deadlines = ref({
   todayTasks: [],
   pendingReviewTasks: [],
   overdueDocuments: [],
+  dueSoonDocuments: [],
   currentDocuments: [],
   slaUnassignedDocuments: [],
 })
@@ -52,61 +53,22 @@ const roleTitle = computed(() => ({
 const metrics = computed(() => {
   const tasks = summary.value.tasks ?? {}
   const documents = summary.value.documents ?? {}
-  if (['ADMIN', 'OFFICE_CHIEF'].includes(roleCode.value)) {
-    return [
-      { label: 'Văn bản đã ingest', value: documents.total ?? 0, icon: FileText, tone: 'text-blue-700 bg-blue-50', route: '/office-documents' },
-      { label: 'Đang lấy chi tiết', value: documents.pending ?? 0, icon: Clock3, tone: 'text-violet-700 bg-violet-50', route: '/office-documents' },
-      { label: 'Việc chờ duyệt', value: tasks.pendingReview ?? 0, icon: ClipboardCheck, tone: 'text-amber-700 bg-amber-50', route: '/assignments' },
-      { label: 'Văn bản quá hạn', value: documents.overdue ?? 0, icon: AlertTriangle, tone: 'text-rose-700 bg-rose-50', route: '/office-documents' },
-    ]
-  }
-  if (roleCode.value === 'DEPARTMENT_LEADER') {
-    return [
-      { label: 'Văn bản đang xử lý', value: documents.currentForScope ?? 0, icon: FileText, tone: 'text-blue-700 bg-blue-50', route: '/office-documents' },
-      { label: 'Việc chờ duyệt', value: tasks.pendingReview ?? 0, icon: ClipboardCheck, tone: 'text-violet-700 bg-violet-50', route: '/assignments' },
-      { label: 'Việc cần bổ sung', value: tasks.revisionRequested ?? 0, icon: RotateCcw, tone: 'text-orange-700 bg-orange-50', route: '/assignments' },
-      { label: 'Việc đã duyệt', value: tasks.done ?? 0, icon: CheckCircle2, tone: 'text-emerald-700 bg-emerald-50', route: '/assignments' },
-    ]
-  }
-  if (roleCode.value === 'SPECIALIST') {
-    return [
-      { label: 'Văn bản chờ tôi xử lý', value: documents.currentForScope ?? 0, icon: FileText, tone: 'text-blue-700 bg-blue-50', route: '/office-documents' },
-      { label: 'Văn bản đã chuyển', value: documents.processedByScope ?? 0, icon: CheckCircle2, tone: 'text-emerald-700 bg-emerald-50', route: '/office-documents' },
-      { label: 'Việc chờ duyệt', value: tasks.pendingReview ?? 0, icon: Clock3, tone: 'text-amber-700 bg-amber-50', route: '/assignments' },
-      { label: 'Việc cần bổ sung', value: tasks.revisionRequested ?? 0, icon: RotateCcw, tone: 'text-orange-700 bg-orange-50', route: '/assignments' },
-    ]
-  }
   return [
-    { label: 'Tổng văn bản', value: documents.total ?? 0, icon: FileText, tone: 'text-blue-700 bg-blue-50', route: '/office-documents' },
+    { label: 'Số văn bản tháng này', value: documents.monthly ?? 0, icon: FileText, tone: 'text-blue-700 bg-blue-50', route: '/office-documents' },
+    { label: 'Văn bản đang làm', value: documents.currentForScope ?? 0, icon: Clock3, tone: 'text-violet-700 bg-violet-50', route: '/office-documents' },
     { label: 'Văn bản quá hạn', value: documents.overdue ?? 0, icon: AlertTriangle, tone: 'text-rose-700 bg-rose-50', route: '/office-documents' },
-    { label: 'Việc chờ duyệt', value: tasks.pendingReview ?? 0, icon: ClipboardCheck, tone: 'text-violet-700 bg-violet-50', route: '/assignments' },
-    { label: 'Việc quá thời hạn', value: tasks.overdue ?? 0, icon: Clock3, tone: 'text-amber-700 bg-amber-50', route: '/assignments' },
+    { label: 'Công việc hôm nay', value: tasks.today ?? 0, icon: ClipboardCheck, tone: 'text-amber-700 bg-amber-50', route: '/assignments' },
   ]
 })
 
 const priorityItems = computed(() => {
   const rows = []
-  const addTasks = (items, label, tone) => {
-    for (const item of items ?? []) rows.push({ ...item, kind: 'task', label, tone })
-  }
   const addDocuments = (items, label, tone) => {
     for (const item of items ?? []) rows.push({ ...item, kind: 'document', label, tone })
   }
 
-  if (roleCode.value === 'SPECIALIST') {
-    addDocuments(deadlines.value.currentDocuments, 'Đang xử lý', 'text-blue-700 bg-blue-50')
-    addTasks(deadlines.value.overdueTasks, 'Quá hạn', 'text-rose-700 bg-rose-50')
-    addTasks(deadlines.value.dueSoonTasks, 'Gần hạn', 'text-amber-700 bg-amber-50')
-  } else if (roleCode.value === 'DEPARTMENT_LEADER') {
-    addDocuments(deadlines.value.currentDocuments, 'Đang xử lý', 'text-blue-700 bg-blue-50')
-    addTasks(deadlines.value.pendingReviewTasks, 'Chờ duyệt', 'text-violet-700 bg-violet-50')
-    addTasks(deadlines.value.overdueTasks, 'Quá hạn', 'text-rose-700 bg-rose-50')
-    addDocuments(deadlines.value.overdueDocuments, 'Văn bản quá hạn', 'text-amber-700 bg-amber-50')
-  } else {
-    addDocuments(deadlines.value.overdueDocuments, 'Quá hạn', 'text-rose-700 bg-rose-50')
-    addTasks(deadlines.value.pendingReviewTasks, 'Chờ duyệt', 'text-violet-700 bg-violet-50')
-    addTasks(deadlines.value.overdueTasks, 'Việc quá hạn', 'text-rose-700 bg-rose-50')
-  }
+  addDocuments(deadlines.value.overdueDocuments, 'Quá hạn', 'text-rose-700 bg-rose-50')
+  addDocuments(deadlines.value.dueSoonDocuments, 'Đến hạn', 'text-amber-700 bg-amber-50')
   return rows.slice(0, 12)
 })
 
@@ -189,7 +151,7 @@ onMounted(fetchDashboard)
             <div class="flex items-center justify-between border-b border-zinc-100 px-4 py-3">
               <div>
                 <h2 class="text-sm font-bold text-zinc-900">Ưu tiên xử lý</h2>
-                <p class="mt-0.5 text-xs text-zinc-500">Các hồ sơ và nhiệm vụ cần chú ý trước</p>
+              <p class="mt-0.5 text-xs text-zinc-500">Văn bản đến quá hạn hoặc sắp đến hạn xử lý</p>
               </div>
               <AlertTriangle class="h-4 w-4 text-amber-500" />
             </div>

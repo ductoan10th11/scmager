@@ -625,6 +625,7 @@ export type ExtractedTrackLogPoint = {
   point: number;
   trackLogId: string;
   comment: string;
+  trackLog: TrackLogItem;
 };
 
 const TRACK_LOG_POINT_PATTERNS = [
@@ -659,7 +660,7 @@ export function getLatestTrackLogPoint(trackLogs: TrackLogItem[]): ExtractedTrac
 
     const point = Number(match[1].replace(',', '.'));
     if (Number.isFinite(point) && point >= 0) {
-      return { point, trackLogId: String(log.id ?? ''), comment: content };
+      return { point, trackLogId: String(log.id ?? ''), comment: content, trackLog: log };
     }
   }
 

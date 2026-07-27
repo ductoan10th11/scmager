@@ -7,7 +7,6 @@ import DashboardPage from '../pages/DashboardPage.vue'
 import MainLayout from '../layouts/MainLayout.vue'
 import {
   OfficeDocumentsPage,
-  IngestDocumentsPage,
   IngestMonitorPage,
   ConnectorsPage,
   OrganizationDepartmentsPage,
@@ -135,12 +134,6 @@ const routes = [
         name: 'OfficeDocuments',
         component: OfficeDocumentsPage,
         meta: { requiresAuth: true, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
-      },
-      {
-        path: 'ingest-documents',
-        name: 'IngestDocuments',
-        component: IngestDocumentsPage,
-        meta: { requiresAuth: true, roles: ['ADMIN'] },
       },
       {
         path: 'connectors', name: 'Connectors', component: ConnectorsPage,

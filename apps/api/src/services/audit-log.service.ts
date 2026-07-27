@@ -1,6 +1,6 @@
 import { isValidObjectId } from 'mongoose';
 import { auditLogRepository } from '../repositories/audit-log.repository';
-import { IncomingDocumentModel, TaskModel, WorkDeclarationModel } from '../models';
+import { OfficeDocumentContextModel, TaskModel, WorkDeclarationModel } from '../models';
 import { AuthUser } from '../types/auth';
 import { badRequest, forbidden } from '../utils/http-error';
 
@@ -41,16 +41,12 @@ const applyDateFilter = (filter: Record<string, unknown>, query: Record<string, 
 
 const ensureEntityAccess = async (actor: AuthUser, entityModel: string, entityId: string) => {
   if (entityModel === 'IncomingDocument') {
-    const doc = await IncomingDocumentModel.findById(entityId).select('organization currentDepartment currentAssignee currentAssignees');
+    const doc = await OfficeDocumentContextModel.findById(entityId).select('organizationId management.assignment');
     if (!doc) throw forbidden('Access denied.');
-    if (!isAdmin(actor) && actor.organization && idOf((doc as any).organization) !== actor.organization) throw forbidden('Access denied.');
-    if (isDeptLeader(actor) && idOf((doc as any).currentDepartment) !== actor.department) throw forbidden('Access denied.');
+    if (!isAdmin(actor) && actor.organization && idOf((doc as any).organizationId) !== actor.organization) throw forbidden('Access denied.');
+    if (isDeptLeader(actor) && idOf((doc as any).management?.assignment?.departmentId) !== actor.department) throw forbidden('Access denied.');
     if (isSpecialist(actor)) {
-      const assignees = [idOf((doc as any).currentAssignee), ...((doc as any).currentAssignees ?? []).map(idOf)];
-      const relatedTask = assignees.includes(actor.id)
-        ? true
-        : Boolean(await TaskModel.exists({ sourceDocument: entityId, assignedTo: actor.id }));
-      if (!relatedTask) throw forbidden('Access denied.');
+      if (idOf((doc as any).management?.assignment?.userId) !== actor.id) throw forbidden('Access denied.');
     }
     return;
   }
@@ -93,7 +89,7 @@ const scopedBaseFilter = async (actor: AuthUser) => {
   if (isDeptLeader(actor)) {
     if (!actor.department) throw forbidden('Department leader has no department assigned.');
     const [documents, tasks, declarations] = await Promise.all([
-      IncomingDocumentModel.find({ currentDepartment: actor.department }).select('_id').lean(),
+      OfficeDocumentContextModel.find({ pageType: 'incoming', 'management.assignment.departmentId': actor.department }).select('_id').lean(),
       TaskModel.find({
         $or: [{ department: actor.department }, { assignedDepartment: actor.department }],
       }).select('_id').lean(),
@@ -116,12 +112,9 @@ const scopedBaseFilter = async (actor: AuthUser) => {
     ]);
     const taskIds = tasks.map((item) => item._id);
     const sourceDocumentIds = tasks.map((item: any) => item.sourceDocument).filter(Boolean);
-    const documents = await IncomingDocumentModel.find({
-      $or: [
-        { currentAssignee: actor.id },
-        { currentAssignees: actor.id },
-        { _id: { $in: sourceDocumentIds } },
-      ],
+    const documents = await OfficeDocumentContextModel.find({
+      pageType: 'incoming',
+      $or: [{ 'management.assignment.userId': actor.id }, { _id: { $in: sourceDocumentIds } }],
     }).select('_id').lean();
     filter.$or = [
       { entityModel: 'Task', entityId: { $in: taskIds } },

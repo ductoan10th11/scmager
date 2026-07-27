@@ -52,7 +52,7 @@ const reconcileWorkDeclarationNotifications = async (recipient: string) => {
   const staleIds = pending.filter((notification: any) => {
     const declaration: any = currentById.get(String(notification.relatedId));
     return !declaration
-      || declaration.status !== 'PENDING_APPROVAL'
+      || !['PENDING_APPROVAL', 'PENDING_COMPLETION'].includes(declaration.status)
       || String(declaration.approval?.currentApprover ?? '') !== recipient;
   }).map((item: any) => String(item._id));
   if (!staleIds.length) return;

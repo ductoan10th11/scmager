@@ -2,11 +2,10 @@ import ConnectorModel from "../models/connector.model";
 import DeadLetterModel from "../models/dead-letter.model";
 import IngestJobModel from "../models/ingest-job.model";
 import IngestRunModel from "../models/ingest-run.model";
-import type { FencedConnectorIdentity } from "../repositories/tenant-source.repository";
+import type { FencedConnectorIdentity } from "./connector-run.types";
 import { connectorSessionFactory, type ConnectorSession } from "./connector-session.service";
 import { connectorService, isScheduledWindow } from "./connector.service";
 import { nextScheduledRunAt } from "./connector.service";
-import { connectorLangsonSourceAdapter } from "./connector-langson-adapter.service";
 
 export type FencedRun = FencedConnectorIdentity & {
   runId: string;
@@ -109,7 +108,12 @@ const reserveConnectorBudget = async (
   return result.modifiedCount === 1;
 };
 
-let sourceAdapter: ConnectorSourceAdapter = connectorLangsonSourceAdapter;
+// Document discovery is now extension-owned and persists only
+// OfficeDocumentContext. Keep the generic worker alive for non-document jobs,
+// but never recreate the retired Document/OutgoingDocument collections.
+let sourceAdapter: ConnectorSourceAdapter = {
+  async ingest(): Promise<void> {},
+};
 
 export const canStartSourceRequest = (
   runType: "SCHEDULED" | "MANUAL",

@@ -5,14 +5,18 @@ export const WORK_DECLARATION_STATUSES = [
   'PENDING_APPROVAL',
   'RETURNED',
   'APPROVED',
+  'PENDING_COMPLETION',
+  'COMPLETED',
   'CANCELLED',
 ] as const;
+
+export const WORK_DECLARATION_SOURCES = ['SELF_REPORTED', 'MANAGER_ASSIGNED'] as const;
 
 const approvalHistorySchema = new Schema(
   {
     action: {
       type: String,
-      enum: ['SUBMITTED', 'FORWARDED', 'APPROVED', 'RETURNED', 'SELF_APPROVED'],
+      enum: ['SUBMITTED', 'FORWARDED', 'APPROVED', 'RETURNED', 'SELF_APPROVED', 'COMPLETION_SUBMITTED', 'COMPLETED'],
       required: true,
     },
     actor: { type: Schema.Types.ObjectId, ref: 'User', required: true },
@@ -35,12 +39,25 @@ const approvalSchema = new Schema(
   { _id: false },
 );
 
+const completionSchema = new Schema(
+  {
+    submittedAt: { type: Date, default: null },
+    confirmedAt: { type: Date, default: null },
+    returnedAt: { type: Date, default: null },
+    submittedResult: { type: String, trim: true, default: '' },
+    confirmationNote: { type: String, trim: true, default: null },
+  },
+  { _id: false },
+);
+
 const workDeclarationSchema = new Schema(
   {
     organization: { type: Schema.Types.ObjectId, ref: 'Organization', required: true, index: true },
     department: { type: Schema.Types.ObjectId, ref: 'Department', default: null, index: true },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    sourceDocument: { type: Schema.Types.ObjectId, ref: 'Document', default: null, index: true },
+    assignedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+    workSource: { type: String, enum: [...WORK_DECLARATION_SOURCES], default: 'SELF_REPORTED', index: true },
+    sourceDocument: { type: Schema.Types.ObjectId, ref: 'OfficeDocumentContext', default: null, index: true },
     title: { type: String, required: true, trim: true, index: 'text' },
     description: { type: String, trim: true, default: '' },
     workStartAt: { type: Date, required: true, index: true },
@@ -50,6 +67,7 @@ const workDeclarationSchema = new Schema(
     revision: { type: Number, required: true, default: 1, min: 1, index: true },
     status: { type: String, enum: [...WORK_DECLARATION_STATUSES], default: 'DRAFT', index: true },
     approval: { type: approvalSchema, default: () => ({}) },
+    completion: { type: completionSchema, default: () => ({}) },
   },
   { timestamps: true },
 );

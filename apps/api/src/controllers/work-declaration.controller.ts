@@ -2,14 +2,17 @@ import { NextFunction, Request, Response } from 'express';
 import {
   approveWorkDeclarationService,
   cancelWorkDeclarationService,
+  confirmWorkDeclarationCompletionService,
   createWorkDeclarationService,
   forwardWorkDeclarationService,
   getWorkDeclarationService,
   listAssignmentParticipantsService,
   listWorkDeclarationsService,
   returnWorkDeclarationService,
+  returnWorkDeclarationCompletionService,
   rescheduleWorkDeclarationService,
   submitWorkDeclarationService,
+  submitWorkDeclarationCompletionService,
   updateWorkDeclarationService,
 } from '../services/work-declaration.service';
 
@@ -47,4 +50,13 @@ export const forwardWorkDeclaration = async (req: Request, res: Response, next: 
 };
 export const cancelWorkDeclaration = async (req: Request, res: Response, next: NextFunction) => {
   try { res.status(200).json(await cancelWorkDeclarationService(currentUser(req), req.params.id, req.body)); } catch (error) { next(error); }
+};
+export const submitWorkDeclarationCompletion = async (req: Request, res: Response, next: NextFunction) => {
+  try { res.status(200).json(await submitWorkDeclarationCompletionService(currentUser(req), req.params.id, req.body)); } catch (error) { next(error); }
+};
+export const confirmWorkDeclarationCompletion = async (req: Request, res: Response, next: NextFunction) => {
+  try { res.status(200).json(await confirmWorkDeclarationCompletionService(currentUser(req), req.params.id, req.body)); } catch (error) { next(error); }
+};
+export const returnWorkDeclarationCompletion = async (req: Request, res: Response, next: NextFunction) => {
+  try { res.status(200).json(await returnWorkDeclarationCompletionService(currentUser(req), req.params.id, req.body)); } catch (error) { next(error); }
 };

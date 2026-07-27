@@ -36,7 +36,7 @@ const taskSchema = new Schema(
   {
     organization: { type: Schema.Types.ObjectId, ref: 'Organization', required: true, index: true },
     department: { type: Schema.Types.ObjectId, ref: 'Department', default: null, index: true },
-    sourceDocument: { type: Schema.Types.ObjectId, ref: 'IncomingDocument', default: null, index: true },
+    sourceDocument: { type: Schema.Types.ObjectId, ref: 'OfficeDocumentContext', default: null, index: true },
     parentTask: { type: Schema.Types.ObjectId, ref: 'Task', default: null, index: true },
     type: { type: String, enum: [...TASK_TYPES], required: true, index: true },
     source: { type: String, enum: [...DOCUMENT_SOURCES], default: 'MANUAL', index: true },

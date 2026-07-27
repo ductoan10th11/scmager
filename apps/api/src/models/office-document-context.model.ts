@@ -116,6 +116,20 @@ const managementSchema = new Schema(
 
 const officeDocumentContextSchema = new Schema(
   {
+    // Extension requests are signed but do not carry an authenticated user.
+    // Resolve and persist the tenant once from the observed eOffice people.
+    organizationId: {
+      type: Schema.Types.ObjectId,
+      ref: "Organization",
+      default: null,
+      index: true,
+    },
+    tenantResolution: {
+      type: String,
+      enum: ["SENDER", "RECIPIENT", "DRAFTING_USER", "DEPARTMENT", "AMBIGUOUS", "UNRESOLVED", "MANUAL"],
+      default: "UNRESOLVED",
+      index: true,
+    },
     origin: {
       type: String,
       enum: ["EXTENSION", "MANUAL", "MANUAL_INGEST"],
@@ -145,6 +159,7 @@ officeDocumentContextSchema.index(
   { unique: true },
 );
 officeDocumentContextSchema.index({ pageType: 1, updatedAt: -1 });
+officeDocumentContextSchema.index({ organizationId: 1, pageType: 1, updatedAt: -1 });
 officeDocumentContextSchema.index({
   pageType: 1,
   "statusSync.completed": 1,

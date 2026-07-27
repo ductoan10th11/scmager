@@ -1,264 +1,250 @@
-import { Types } from 'mongoose';
-import { DocumentModel, UserModel } from '../models';
-import { AuthUser } from '../types/auth';
-import { forbidden } from '../utils/http-error';
-import { documentWorkflowFiltersFor } from './document-workflow.service';
+import { OfficeDocumentContextModel, UserModel } from '../models';
+import type { AuthUser } from '../types/auth';
+import { badRequest, forbidden } from '../utils/http-error';
+import { calculateCreditedPoint } from './kpi.service';
+import { vietnamPeriodKey, workingDaysLate } from './work-policy.service';
+import { getLatestTrackLog } from './langson-dwr.service';
 
 const idOf = (value: any) => String(value?._id ?? value ?? '');
-const objectIdOf = (value: any) => new Types.ObjectId(idOf(value));
-const isAdmin = (actor: AuthUser) => actor.role.code === 'ADMIN';
-const isOrgLeader = (actor: AuthUser) => ['OFFICE_CHIEF', 'COMMUNE_LEADER'].includes(actor.role.code);
-const isDepartmentLeader = (actor: AuthUser) => actor.role.code === 'DEPARTMENT_LEADER';
 const isSpecialist = (actor: AuthUser) => actor.role.code === 'SPECIALIST';
+const isDepartmentLeader = (actor: AuthUser) => actor.role.code === 'DEPARTMENT_LEADER';
+const isOrganizationViewer = (actor: AuthUser) => ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER'].includes(actor.role.code);
 
-const completedExpr = {
-  $or: [
-    { $eq: ['$ingest.completed', true] },
-    { $in: ['$processing.status', ['COMPLETED', 'MANUALLY_PROCESSED']] },
-  ],
+const parsePeriod = (value: unknown) => {
+  if (value === undefined || value === null || value === '') return vietnamPeriodKey(new Date());
+  const period = String(value);
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) throw badRequest('period must use YYYY-MM.');
+  return period;
 };
 
-const pendingExpr = {
-  $and: [
-    { $ne: ['$ingest.completed', true] },
-    { $not: [{ $in: ['$processing.status', ['COMPLETED', 'MANUALLY_PROCESSED']] }] },
-  ],
-};
-
-const baseDocumentFilterFor = async (actor: AuthUser) => {
-  const filter: Record<string, unknown> = { deadline: { $ne: null } };
-  if (isSpecialist(actor)) {
-    const scope = await documentWorkflowFiltersFor(actor, { includeDepartment: false });
-    Object.assign(filter, scope.participant);
-  } else if (isDepartmentLeader(actor)) {
-    const scope = await documentWorkflowFiltersFor(actor);
-    Object.assign(filter, scope.participant);
+const parseVietnamDate = (value: unknown, endOfDay = false): Date | null => {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  const raw = String(value).trim();
+  const match = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2}))?/);
+  if (match) {
+    const [, day, month, year, hour, minute] = match;
+    return new Date(`${year}-${month}-${day}T${hour ?? (endOfDay ? '23' : '00')}:${minute ?? (endOfDay ? '59' : '00')}:${endOfDay && !hour ? '59' : '00'}+07:00`);
   }
-  return filter;
-};
-
-const castWorkflowFilter = (filter: Record<string, unknown>) => {
-  const next = { ...filter };
-  for (const key of ['processing.assignees.userId', 'processing.currentAssignee.userId']) {
-    const value: any = next[key];
-    if (value?.$in) next[key] = { $in: value.$in.map(objectIdOf) };
-    else if (value) next[key] = objectIdOf(value);
-  }
-  return next;
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
 
 const userFilterFor = (actor: AuthUser) => {
   const filter: Record<string, unknown> = { status: 'ACTIVE' };
+  if (actor.organization) filter.organization = actor.organization;
   if (isSpecialist(actor)) filter._id = actor.id;
-  if (!isAdmin(actor)) {
-    if (!actor.organization) throw forbidden('User has no organization assigned.');
-    filter.organization = actor.organization;
-  }
   if (isDepartmentLeader(actor)) {
     if (!actor.department) throw forbidden('Department leader has no department assigned.');
     filter.department = actor.department;
   }
+  if (!actor.organization && !isOrganizationViewer(actor)) throw forbidden('User has no organization assigned.');
   return filter;
 };
 
-const toNumber = (value: unknown) => Number(value ?? 0) || 0;
+const contextCompletedAt = (context: any) => {
+  if (context.statusSync?.completed !== true) return null;
+  const latest = getLatestTrackLog(context.statusSync?.trackLogs ?? []) as any;
+  return parseVietnamDate(
+    latest?.completedAt ?? latest?.processingAt ?? latest?.updatedAt ?? context.statusSync?.completedAt,
+  ) ?? parseVietnamDate(context.statusSync?.completedAt);
+};
 
-const toDocumentItem = (doc: any) => ({
-  id: idOf(doc),
-  soKyHieu: doc.soKyHieu,
-  trichYeu: doc.trichYeu,
-  deadline: doc.deadline,
-  point: doc.point ?? 0,
-  doKhan: doc.doKhan,
-  completed: Boolean(doc.ingest?.completed) || ['COMPLETED', 'MANUALLY_PROCESSED'].includes(doc.processing?.status),
-  processingStatus: doc.processing?.status ?? 'UNASSIGNED',
-  currentAssignee: doc.processing?.currentAssignee ?? null,
-});
+const documentStatus = (completed: boolean, deadline: Date | null) => {
+  if (completed) return 'COMPLETED';
+  if (deadline && deadline.getTime() < Date.now()) return 'OVERDUE';
+  return 'IN_PROGRESS';
+};
 
-export const performanceOverviewService = async (actor: AuthUser) => {
-  const now = new Date();
-  const in24h = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-  const in3d = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000);
-  const documentFilter = castWorkflowFilter(await baseDocumentFilterFor(actor));
-  const userFilter = userFilterFor(actor);
-
-  const users = await UserModel.find(userFilter)
+/**
+ * KPI is derived from the same extension-origin incoming documents shown to
+ * users. Management.assignment is the persisted eOffice-to-internal-user map;
+ * no legacy ingest rows are included here.
+ */
+export const performanceOverviewService = async (actor: AuthUser, query: Record<string, unknown> = {}) => {
+  const period = parsePeriod(query.period);
+  const users = await UserModel.find(userFilterFor(actor))
     .select('_id username fullName position email department role')
     .populate('department', '_id name code')
     .populate('role', '_id code name level')
-    .limit(isAdmin(actor) || isOrgLeader(actor) ? 500 : 200)
+    .limit(isOrganizationViewer(actor) ? 500 : 200)
     .lean();
-  const userIds = users.map((user: any) => user._id).filter(Boolean);
+  const userIds = new Set(users.map((user: any) => idOf(user._id)));
+  const contextFilter: Record<string, unknown> = { pageType: 'incoming' };
+  if (actor.organization) contextFilter.organizationId = actor.organization;
+  else if (actor.role.code !== 'ADMIN') contextFilter._id = null;
 
-  const [
-    summaryRaw,
-    urgencyRaw,
-    assigneeRaw,
-    overdueDocuments,
-    dueSoonDocuments,
-    highPointDocuments,
-  ] = await Promise.all([
-    DocumentModel.aggregate([
-      { $match: documentFilter },
-      {
-        $group: {
-          _id: null,
-          totalDocuments: { $sum: 1 },
-          completedDocuments: { $sum: { $cond: [completedExpr, 1, 0] } },
-          pendingDocuments: { $sum: { $cond: [pendingExpr, 1, 0] } },
-          overdueDocuments: {
-            $sum: { $cond: [{ $and: [pendingExpr, { $lt: ['$deadline', now] }] }, 1, 0] },
-          },
-          dueSoonDocuments: {
-            $sum: { $cond: [{ $and: [pendingExpr, { $gte: ['$deadline', now] }, { $lte: ['$deadline', in24h] }] }, 1, 0] },
-          },
-          totalPoint: { $sum: { $ifNull: ['$point', 0] } },
-          completedPoint: { $sum: { $cond: [completedExpr, { $ifNull: ['$point', 0] }, 0] } },
-          pendingPoint: { $sum: { $cond: [pendingExpr, { $ifNull: ['$point', 0] }, 0] } },
-          overduePoint: {
-            $sum: { $cond: [{ $and: [pendingExpr, { $lt: ['$deadline', now] }] }, { $ifNull: ['$point', 0] }, 0] },
-          },
-          dueSoonPoint: {
-            $sum: { $cond: [{ $and: [pendingExpr, { $gte: ['$deadline', now] }, { $lte: ['$deadline', in24h] }] }, { $ifNull: ['$point', 0] }, 0] },
-          },
-        },
-      },
-    ]),
-    DocumentModel.aggregate([
-      { $match: documentFilter },
-      {
-        $group: {
-          _id: { $ifNull: ['$doKhan', 'Không rõ'] },
-          total: { $sum: 1 },
-          point: { $sum: { $ifNull: ['$point', 0] } },
-          overdue: { $sum: { $cond: [{ $and: [pendingExpr, { $lt: ['$deadline', now] }] }, 1, 0] } },
-          completed: { $sum: { $cond: [completedExpr, 1, 0] } },
-        },
-      },
-      { $sort: { point: -1, total: -1 } },
-    ]),
-    userIds.length
-      ? DocumentModel.aggregate([
-        { $match: { deadline: { $ne: null }, 'processing.assignees.userId': { $in: userIds } } },
-        { $unwind: '$processing.assignees' },
-        { $match: { 'processing.assignees.userId': { $in: userIds } } },
-        {
-          $group: {
-            _id: '$processing.assignees.userId',
-            totalDocuments: { $sum: 1 },
-            completedDocuments: { $sum: { $cond: [{ $eq: ['$processing.assignees.status', 'PROCESSED'] }, 1, 0] } },
-            pendingDocuments: { $sum: { $cond: [{ $eq: ['$processing.assignees.status', 'PENDING'] }, 1, 0] } },
-            overdueDocuments: {
-              $sum: {
-                $cond: [
-                  { $and: [{ $eq: ['$processing.assignees.status', 'PENDING'] }, { $lt: ['$deadline', now] }] },
-                  1,
-                  0,
-                ],
-              },
-            },
-            totalPoint: { $sum: { $ifNull: ['$point', 0] } },
-            completedPoint: { $sum: { $cond: [{ $eq: ['$processing.assignees.status', 'PROCESSED'] }, { $ifNull: ['$point', 0] }, 0] } },
-            pendingPoint: { $sum: { $cond: [{ $eq: ['$processing.assignees.status', 'PENDING'] }, { $ifNull: ['$point', 0] }, 0] } },
-            overduePoint: {
-              $sum: {
-                $cond: [
-                  { $and: [{ $eq: ['$processing.assignees.status', 'PENDING'] }, { $lt: ['$deadline', now] }] },
-                  { $ifNull: ['$point', 0] },
-                  0,
-                ],
-              },
-            },
-          },
-        },
-      ])
-      : Promise.resolve([]),
-    DocumentModel.find({ ...documentFilter, deadline: { $ne: null, $lt: now }, 'ingest.completed': { $ne: true }, 'processing.status': { $nin: ['COMPLETED', 'MANUALLY_PROCESSED'] } })
-      .select('soKyHieu trichYeu deadline point doKhan ingest processing')
-      .sort({ deadline: 1, point: -1 })
-      .limit(12)
-      .lean(),
-    DocumentModel.find({ ...documentFilter, deadline: { $gte: now, $lte: in3d }, 'ingest.completed': { $ne: true }, 'processing.status': { $nin: ['COMPLETED', 'MANUALLY_PROCESSED'] } })
-      .select('soKyHieu trichYeu deadline point doKhan ingest processing')
-      .sort({ deadline: 1, point: -1 })
-      .limit(12)
-      .lean(),
-    DocumentModel.find(documentFilter)
-      .select('soKyHieu trichYeu deadline point doKhan ingest processing')
-      .sort({ point: -1, deadline: 1 })
-      .limit(12)
-      .lean(),
-  ]);
+  const sourceContexts = await OfficeDocumentContextModel.find(contextFilter)
+    .select('externalDocumentId observation statusSync management')
+    .sort({ observedAt: -1 })
+    .limit(2_000)
+    .lean();
 
-  const summary = summaryRaw[0] ?? {};
-  const byUser = new Map(assigneeRaw.map((item: any) => [idOf(item._id), item]));
-  const assignees = users.map((user: any) => {
-    const row: any = byUser.get(idOf(user)) ?? {};
-    const totalPoint = toNumber(row.totalPoint);
-    const completedPoint = toNumber(row.completedPoint);
-    return {
+  const documents = sourceContexts
+    .map((context: any) => {
+      const deadline = parseVietnamDate(
+        context.management?.overrides?.dueDate ?? context.observation?.dueDate,
+        true,
+      );
+      const completed = context.statusSync?.completed === true;
+      const completedAt = contextCompletedAt(context);
+      const appearsInPeriod = (deadline && vietnamPeriodKey(deadline) === period)
+        || (completedAt && vietnamPeriodKey(completedAt) === period);
+      const assignment = context.management?.assignment ?? {};
+      const ownerId = idOf(assignment.userId);
+      const scopeAllows = isSpecialist(actor)
+        ? ownerId === actor.id
+        : isDepartmentLeader(actor)
+          ? userIds.has(ownerId)
+          : true;
+      if (!appearsInPeriod || !scopeAllows) return null;
+
+      const point = Number(
+        context.management?.manualScore
+          ?? context.management?.overrides?.point
+          ?? context.observation?.point
+          ?? 0,
+      );
+      const lateWorkingDays = completed && deadline && completedAt
+        ? workingDaysLate(deadline, completedAt)
+        : 0;
+      const status = documentStatus(completed, deadline);
+      const owner = users.find((user: any) => idOf(user._id) === ownerId);
+      return {
+        id: idOf(context._id),
+        source: 'OFFICE_CONTEXT',
+        documentId: context.externalDocumentId,
+        soDen: '',
+        soKyHieu: context.management?.overrides?.soKyHieu ?? context.observation?.soKyHieu ?? '',
+        trichYeu: context.management?.overrides?.subject ?? context.observation?.subject ?? '',
+        ngayDen: context.management?.overrides?.receivedDate ?? context.observation?.receivedDate ?? '',
+        doKhan: context.management?.overrides?.priority ?? context.observation?.priority ?? '',
+        deadline,
+        point: Number.isFinite(point) ? point : 0,
+        creditedPoint: completed
+          ? calculateCreditedPoint(Number.isFinite(point) ? point : 0, Number(context.observation?.reworkCount ?? 0), lateWorkingDays)
+          : 0,
+        lateWorkingDays,
+        submittedAt: completedAt,
+        completedAt,
+        completed,
+        status,
+        processing: context.statusSync?.processing ?? null,
+        trackLogs: context.statusSync?.trackLogs ?? [],
+        owner: owner
+          ? {
+              id: idOf(owner._id),
+              username: owner.username,
+              fullName: owner.fullName,
+              position: owner.position ?? null,
+              department: owner.department ? { id: idOf(owner.department), name: owner.department.name, code: owner.department.code } : null,
+            }
+          : {
+              id: ownerId || null,
+              username: null,
+              fullName: assignment.fullName || 'Chưa map được người xử lý',
+              position: null,
+              department: assignment.departmentId
+                ? { id: idOf(assignment.departmentId), name: assignment.departmentName ?? '', code: '' }
+                : null,
+            },
+      };
+    })
+    .filter(Boolean) as any[];
+
+  const perUser = new Map(users.map((user: any) => [idOf(user._id), {
+    user,
+    totalPoint: 0,
+    monthlyKpi: 0,
+    pendingPoint: 0,
+    documentCount: 0,
+    completedDocumentCount: 0,
+    inProgressDocumentCount: 0,
+    overdueDocumentCount: 0,
+    lateWorkingDays: 0,
+  }]));
+  const summary = {
+    totalDocuments: documents.length,
+    completedDocuments: 0,
+    inProgressDocuments: 0,
+    overdueDocuments: 0,
+    totalPoint: 0,
+    pendingPoint: 0,
+    lateWorkingDays: 0,
+    unmappedDocuments: 0,
+  };
+
+  for (const document of documents) {
+    if (document.completed) summary.completedDocuments += 1;
+    else summary.inProgressDocuments += 1;
+    if (document.status === 'OVERDUE') summary.overdueDocuments += 1;
+    if (document.completed) {
+      summary.totalPoint += Number(document.creditedPoint ?? 0);
+      summary.lateWorkingDays += Number(document.lateWorkingDays ?? 0);
+    } else {
+      summary.pendingPoint += Number(document.point ?? 0);
+    }
+
+    const row = document.owner.id ? perUser.get(document.owner.id) : null;
+    if (!row) {
+      summary.unmappedDocuments += 1;
+      continue;
+    }
+    row.documentCount += 1;
+    if (document.completed) {
+      row.completedDocumentCount += 1;
+      row.totalPoint += Number(document.creditedPoint ?? 0);
+      row.monthlyKpi += Number(document.creditedPoint ?? 0);
+      row.lateWorkingDays += Number(document.lateWorkingDays ?? 0);
+    } else {
+      row.inProgressDocumentCount += 1;
+      if (document.status === 'OVERDUE') row.overdueDocumentCount += 1;
+      row.pendingPoint += Number(document.point ?? 0);
+    }
+  }
+
+  const assignees = [...perUser.values()]
+    .map((row: any) => ({
       user: {
-        id: idOf(user),
-        username: user.username,
-        fullName: user.fullName,
-        position: user.position ?? null,
-        email: user.email,
-        role: user.role ? { code: user.role.code, name: user.role.name, level: user.role.level } : null,
-        department: user.department ? { id: idOf(user.department), name: user.department.name, code: user.department.code } : null,
+        id: idOf(row.user._id),
+        username: row.user.username,
+        fullName: row.user.fullName,
+        position: row.user.position ?? null,
+        email: row.user.email,
+        department: row.user.department ? { id: idOf(row.user.department), name: row.user.department.name, code: row.user.department.code } : null,
+        role: row.user.role ? { code: row.user.role.code, name: row.user.role.name, level: row.user.role.level } : null,
       },
-      totalDocuments: toNumber(row.totalDocuments),
-      completedDocuments: toNumber(row.completedDocuments),
-      pendingDocuments: toNumber(row.pendingDocuments),
-      overdueDocuments: toNumber(row.overdueDocuments),
-      totalPoint,
-      completedPoint,
-      pendingPoint: toNumber(row.pendingPoint),
-      overduePoint: toNumber(row.overduePoint),
-      completionRate: totalPoint ? Math.round((completedPoint / totalPoint) * 100) : 0,
-    };
-  }).sort((left, right) => (
-    right.overduePoint - left.overduePoint
-    || right.pendingPoint - left.pendingPoint
-    || right.totalPoint - left.totalPoint
-  ));
+      totalPoint: row.totalPoint,
+      monthlyKpi: row.monthlyKpi,
+      pendingPoint: row.pendingPoint,
+      projectedPoint: row.totalPoint + row.pendingPoint,
+      documentCount: row.documentCount,
+      completedDocumentCount: row.completedDocumentCount,
+      inProgressDocumentCount: row.inProgressDocumentCount,
+      overdueDocumentCount: row.overdueDocumentCount,
+      lateWorkingDays: row.lateWorkingDays,
+    }))
+    .sort((left, right) => {
+      const priority = (row: any) => row.user.role?.code === 'SPECIALIST' && row.documentCount > 0 ? 0 : row.documentCount > 0 ? 1 : 2;
+      return priority(left) - priority(right)
+        || right.projectedPoint - left.projectedPoint
+        || right.inProgressDocumentCount - left.inProgressDocumentCount
+        || left.user.fullName.localeCompare(right.user.fullName, 'vi');
+    });
 
-  const totalPoint = toNumber(summary.totalPoint);
-  const completedPoint = toNumber(summary.completedPoint);
+  documents.sort((left, right) => {
+    const statusRank = { OVERDUE: 0, IN_PROGRESS: 1, COMPLETED: 2 } as Record<string, number>;
+    return statusRank[left.status] - statusRank[right.status]
+      || (right.deadline?.getTime?.() ?? 0) - (left.deadline?.getTime?.() ?? 0);
+  });
+
   return {
     data: {
-      generatedAt: now.toISOString(),
-      scope: {
-        role: actor.role.code,
-        userId: actor.id,
-        organizationId: actor.organization ?? null,
-        departmentId: actor.department ?? null,
-      },
-      summary: {
-        totalDocuments: toNumber(summary.totalDocuments),
-        completedDocuments: toNumber(summary.completedDocuments),
-        pendingDocuments: toNumber(summary.pendingDocuments),
-        overdueDocuments: toNumber(summary.overdueDocuments),
-        dueSoonDocuments: toNumber(summary.dueSoonDocuments),
-        totalPoint,
-        completedPoint,
-        pendingPoint: toNumber(summary.pendingPoint),
-        overduePoint: toNumber(summary.overduePoint),
-        dueSoonPoint: toNumber(summary.dueSoonPoint),
-        completionRate: totalPoint ? Math.round((completedPoint / totalPoint) * 100) : 0,
-      },
-      urgency: urgencyRaw.map((item: any) => ({
-        label: item._id || 'Không rõ',
-        total: toNumber(item.total),
-        point: toNumber(item.point),
-        overdue: toNumber(item.overdue),
-        completed: toNumber(item.completed),
-      })),
+      period,
+      scope: { role: actor.role.code, userId: actor.id, organizationId: actor.organization, departmentId: actor.department },
+      summary: { ...summary, projectedPoint: summary.totalPoint + summary.pendingPoint },
       assignees,
-      documents: {
-        overdue: overdueDocuments.map(toDocumentItem),
-        dueSoon: dueSoonDocuments.map(toDocumentItem),
-        highPoint: highPointDocuments.map(toDocumentItem),
-      },
+      documents: documents.slice(0, 250),
     },
   };
 };

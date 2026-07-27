@@ -16,7 +16,6 @@ export const DepartmentDetailPage = lazyPage(() => import('../pages/DepartmentDe
 export const AssignmentPage = lazyPage(() => import('../pages/AssignmentPage.vue'))
 export const PerformancePage = lazyPage(() => import('../pages/PerformancePage.vue'))
 export const OfficeDocumentsPage = lazyPage(() => import('../pages/OfficeDocumentsPage.vue'))
-export const IngestDocumentsPage = lazyPage(() => import('../pages/IngestDocumentsPage.vue'))
 export const IngestMonitorPage = lazyPage(() => import('../pages/IngestMonitorPage.vue'))
 export const ConnectorsPage = lazyPage(() => import('../pages/ConnectorsPage.vue'))
 export const SettingsPage = lazyPage(() => import('../pages/SettingsPage.vue'))
@@ -34,7 +33,6 @@ const preloadableRouteComponents = {
   '/assignments': AssignmentPage,
   '/performance': PerformancePage,
   '/office-documents': OfficeDocumentsPage,
-  '/ingest-documents': IngestDocumentsPage,
   '/ingest-monitor': IngestMonitorPage,
   '/connectors': ConnectorsPage,
   '/settings': SettingsPage,

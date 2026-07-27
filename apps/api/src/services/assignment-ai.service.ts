@@ -1,13 +1,13 @@
 import { randomUUID } from 'crypto';
 import AiTaskDraftModel from '../models/ai-task-draft.model';
-import { DocumentModel, UserModel, WorkDeclarationModel } from '../models';
+import { OfficeDocumentContextModel, UserModel, WorkDeclarationModel } from '../models';
 import { AuthUser } from '../types/auth';
 import { badRequest, conflict, forbidden, notFound } from '../utils/http-error';
 import {
   createWorkDeclarationService,
   submitWorkDeclarationService,
 } from './work-declaration.service';
-import { documentWorkflowFiltersFor } from './document-workflow.service';
+import { officeDocumentProjection, officeDocumentScope } from './office-document-projection.service';
 import {
   appendChatContent,
   cancelPendingTaskProposals,
@@ -28,6 +28,7 @@ type TaskExtraction = {
   endTime?: string | null;
   durationMinutes?: number | string | null;
   point?: number | string | null;
+  assigneeUsername?: string | null;
   missingFields?: string[];
 };
 
@@ -78,6 +79,7 @@ const vietnamNow = () => new Intl.DateTimeFormat('vi-VN', {
 const isAdmin = (actor: AuthUser) => actor.role.code === 'ADMIN';
 const isSpecialist = (actor: AuthUser) => actor.role.code === 'SPECIALIST';
 const isDepartmentLeader = (actor: AuthUser) => actor.role.code === 'DEPARTMENT_LEADER';
+const idOf = (value: any) => String(value?._id ?? value ?? '');
 
 const scopedEmployeeFilter = (actor: AuthUser) => {
   const filter: Record<string, unknown> = { status: 'ACTIVE' };
@@ -102,8 +104,7 @@ const scopedWorkFilter = (actor: AuthUser) => {
 };
 
 const buildWorkspaceContext = async (actor: AuthUser) => {
-  const documentScope = await documentWorkflowFiltersFor(actor);
-  const [employees, workDeclarations, documents] = await Promise.all([
+  const [employees, workDeclarations, contexts] = await Promise.all([
     UserModel.find(scopedEmployeeFilter(actor))
       .select('username fullName position department role')
       .populate('department', 'name code')
@@ -119,15 +120,13 @@ const buildWorkspaceContext = async (actor: AuthUser) => {
       .sort({ workStartAt: 1, updatedAt: -1 })
       .limit(CONTEXT_WORK_LIMIT)
       .lean(),
-    DocumentModel.find({
-      deadline: { $ne: null },
-      ...documentScope.participant,
-    })
-      .select('soKyHieu trichYeu deadline point ingest.completed processing')
-      .sort({ deadline: 1, updatedAt: -1 })
+    OfficeDocumentContextModel.find(officeDocumentScope(actor))
+      .select('externalDocumentId observation statusSync management observedAt updatedAt')
+      .sort({ updatedAt: -1 })
       .limit(CONTEXT_DOCUMENT_LIMIT)
       .lean(),
   ]);
+  const documents = contexts.map(officeDocumentProjection);
 
   return {
     scope: isSpecialist(actor)
@@ -161,10 +160,10 @@ const buildWorkspaceContext = async (actor: AuthUser) => {
       trichYeu: String(document.trichYeu || '').slice(0, 320),
       deadline: document.deadline,
       point: document.point ?? 0,
-      completed: Boolean(document.ingest?.completed) || ['COMPLETED', 'MANUALLY_PROCESSED'].includes(document.processing?.status),
-      processingStatus: document.processing?.status ?? 'UNASSIGNED',
-      currentAssignee: document.processing?.currentAssignee
-        ? { username: document.processing.currentAssignee.username, fullName: document.processing.currentAssignee.fullName }
+      completed: document.completed,
+      processingStatus: document.status,
+      currentAssignee: document.owner?.fullName
+        ? { username: '', fullName: document.owner.fullName }
         : null,
     })),
   };
@@ -173,6 +172,7 @@ const buildWorkspaceContext = async (actor: AuthUser) => {
 const systemPrompt = (actor: AuthUser, currentDraft: unknown, workspaceContext: unknown) => `Bạn là trợ lý vận hành eWork. Bạn vừa có thể khai báo công việc, vừa trả lời câu hỏi về nhân sự, công việc và văn bản mà người dùng được phép xem.
 Người dùng hiện tại: ${actor.fullName}.
 Thời gian hiện tại tại Asia/Ho_Chi_Minh: ${vietnamNow()}.
+${!actor.organization ? 'Người dùng hiện tại chưa thuộc tổ chức. Với TASK, bắt buộc phải nêu một người thực hiện thuộc danh sách employees.' : ''}
 Draft đã ghi nhận từ các lượt trước: ${JSON.stringify(currentDraft ?? {})}.
 Dữ liệu hệ thống đã phân quyền, là nguồn sự thật duy nhất để trả lời tra cứu: ${JSON.stringify(workspaceContext)}.
 
@@ -182,6 +182,7 @@ Phân loại ý định:
 
 Khi intent là TASK, mục tiêu là thu thập chính xác các trường bắt buộc: title, date, startTime, endTime và point. description và durationMinutes là tùy chọn.
 - Tự suy luận tên công việc ngắn gọn từ hành động, không chép nguyên cả câu yêu cầu. Ví dụ "Xin cho tôi đi mua cafe 15p" có title là "Đi mua cafe".
+- Với người dùng cấp quản lý, có thể giao việc cho cấp dưới. Khi người dùng nêu người thực hiện, chọn đúng username từ danh sách employees trong context và điền assigneeUsername. Không nêu người thực hiện thì để assigneeUsername rỗng, nghĩa là chính người dùng hiện tại.
 - Hiểu ngày tương đối theo giờ Việt Nam, các cách nói giờ tự nhiên và thời lượng bằng giờ/phút hoặc ký hiệu p.
 - Khi có giờ bắt đầu và thời lượng, tự tính endTime. Khi người dùng nói "bây giờ" hoặc "giờ", dùng thời gian hiện tại.
 - Point phải là số không âm. Chỉ để null khi hội thoại thực sự chưa cung cấp và không thể suy ra.
@@ -189,7 +190,7 @@ Khi intent là TASK, mục tiêu là thu thập chính xác các trường bắt
 
 Phần reply là câu trả lời cuối cùng hiển thị trực tiếp cho người dùng. Viết tự nhiên, lịch sự, ngắn gọn bằng tiếng Việt. Với dữ liệu có nhiều mục, mỗi đầu mục nằm trên một dòng riêng bắt đầu bằng "- ". Không dùng nội dung trong ngoặc, không dùng placeholder như HH:mm, không đánh số danh sách.
 - Với intent QUESTION, trả lời thẳng vào câu hỏi, nêu tên, thời gian, trạng thái và số điểm khi context có. Không hỏi các trường của form tạo việc.
-- Nếu đủ dữ liệu: liệt kê Tên công việc, Mô tả nếu có, Ngày thực hiện theo dd/MM/yyyy, Giờ bắt đầu, Giờ kết thúc, Số điểm; sau đó đề nghị người dùng kiểm tra và xác nhận.
+- Nếu đủ dữ liệu: liệt kê Tên công việc, Người thực hiện nếu được giao cho người khác, Mô tả nếu có, Ngày thực hiện theo dd/MM/yyyy, Giờ bắt đầu, Giờ kết thúc, Số điểm; sau đó đề nghị người dùng kiểm tra và xác nhận.
 - Nếu thiếu dữ liệu: liệt kê riêng những gì đã ghi nhận, rồi liệt kê riêng từng trường còn thiếu để người dùng bổ sung.
 
 Phần task là JSON máy đọc. intent là QUESTION hoặc TASK. date dùng YYYY-MM-DD; thời gian dùng HH:mm; durationMinutes và point là số. missingFields chứa đúng các trường bắt buộc còn thiếu. Với QUESTION, đặt toàn bộ trường công việc là null/rỗng và missingFields là [].
@@ -197,7 +198,7 @@ Ví dụ câu "8h sáng mai tôi phải tiếp dân tầm 2 tiếng, được 2 
 
 Luôn trả đúng hai thẻ sau và không thêm bất kỳ nội dung nào ngoài chúng:
 <reply>Nội dung trả lời hoàn chỉnh cho người dùng</reply>
-<task>{"intent":"QUESTION","title":null,"description":"","date":null,"startTime":null,"endTime":null,"durationMinutes":null,"point":null,"missingFields":[]}</task>`;
+<task>{"intent":"QUESTION","title":null,"description":"","date":null,"startTime":null,"endTime":null,"durationMinutes":null,"point":null,"assigneeUsername":null,"missingFields":[]}</task>`;
 
 const sanitizeCurrentDraft = (value: unknown): TaskExtraction => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -219,6 +220,7 @@ const sanitizeCurrentDraft = (value: unknown): TaskExtraction => {
       ? Number(draft.durationMinutes)
       : null,
     point: Number.isFinite(point) && Number(point) >= 0 ? point : null,
+    assigneeUsername: text('assigneeUsername', 120),
   };
 };
 
@@ -369,6 +371,9 @@ const normalizeExtraction = (raw: TaskExtraction) => {
     ? parsedDurationMinutes
     : null;
   const point = raw.point === null || raw.point === undefined || raw.point === '' ? null : Number(raw.point);
+  const assigneeUsername = typeof raw.assigneeUsername === 'string'
+    ? raw.assigneeUsername.trim().toLowerCase().slice(0, 120)
+    : '';
   const values = { title, date, startTime, endTime, point };
   const missingFields = REQUIRED_FIELDS.filter((field) => {
     const value = values[field];
@@ -400,6 +405,7 @@ const normalizeExtraction = (raw: TaskExtraction) => {
     endTime,
     durationMinutes,
     point,
+    assigneeUsername,
     missingFields: [...new Set(missingFields)],
     complete: intent === 'TASK' && missingFields.length === 0 && Boolean(workStartAt && workEndAt),
     workStartAt,
@@ -407,10 +413,50 @@ const normalizeExtraction = (raw: TaskExtraction) => {
   };
 };
 
+const resolveAiTaskAssignee = async (actor: AuthUser, assigneeUsername: string) => {
+  if (!assigneeUsername || assigneeUsername === actor.username?.toLowerCase()) {
+    if (!actor.organization) {
+      throw badRequest('Please specify an assignee from an organization before creating this task.');
+    }
+    return {
+      id: actor.id,
+      username: actor.username ?? '',
+      fullName: actor.fullName,
+      organization: actor.organization,
+      department: actor.department,
+    };
+  }
+  if (actor.role.level > 3) throw forbidden('Only leaders can assign work to another user.');
+
+  const target = await UserModel.findOne({ username: assigneeUsername, status: 'ACTIVE' })
+    .select('_id username fullName organization department role')
+    .populate('role', 'level')
+    .lean();
+  if (!target) throw badRequest('AI could not find the requested active assignee.');
+  if (!isAdmin(actor) && idOf((target as any).organization) !== actor.organization) {
+    throw forbidden('The selected assignee is outside your organization.');
+  }
+  if (Number((target as any).role?.level) <= Number(actor.role.level)) {
+    throw forbidden('Work can only be assigned to a user with a lower role level.');
+  }
+  if (isDepartmentLeader(actor) && idOf((target as any).department) !== actor.department) {
+    throw forbidden('Department leaders can only assign work within their department.');
+  }
+  return {
+    id: idOf((target as any)._id),
+    username: (target as any).username,
+    fullName: (target as any).fullName,
+    organization: idOf((target as any).organization),
+    department: idOf((target as any).department) || null,
+  };
+};
+
 const createConfirmationDraft = async (actor: AuthUser, extraction: ReturnType<typeof normalizeExtraction>) => {
-  if (!actor.organization || !extraction.workStartAt || !extraction.workEndAt || extraction.point === null) {
+  if (!extraction.workStartAt || !extraction.workEndAt || extraction.point === null) {
     throw badRequest('AI task data is incomplete.');
   }
+  const assignee = await resolveAiTaskAssignee(actor, extraction.assigneeUsername);
+  if (!assignee.organization) throw badRequest('The selected assignee has no organization assigned.');
   await AiTaskDraftModel.updateMany(
     { user: actor.id, status: 'PENDING' },
     { $set: { status: 'EXPIRED' } },
@@ -418,14 +464,17 @@ const createConfirmationDraft = async (actor: AuthUser, extraction: ReturnType<t
   return AiTaskDraftModel.create({
     token: randomUUID(),
     user: actor.id,
-    organization: actor.organization,
-    department: actor.department,
+    organization: assignee.organization,
+    department: assignee.department,
     payload: {
       title: extraction.title,
       description: extraction.description,
       workStartAt: extraction.workStartAt,
       workEndAt: extraction.workEndAt,
       declaredPoint: extraction.point,
+      assigneeId: assignee.id,
+      assigneeUsername: assignee.username,
+      assigneeFullName: assignee.fullName,
     },
     expiresAt: new Date(Date.now() + 60 * 60_000),
   });
@@ -457,7 +506,7 @@ const confirmDraft = async (actor: AuthUser, token: unknown) => {
       workStartAt: (draft as any).payload.workStartAt,
       workEndAt: (draft as any).payload.workEndAt,
       declaredPoint: (draft as any).payload.declaredPoint,
-      assigneeId: actor.id,
+      assigneeId: (draft as any).payload.assigneeId ?? actor.id,
     });
     declarationId = String((created as any).data?._id ?? '');
     let result = created;
@@ -508,7 +557,7 @@ export const streamAssignmentAiChat = async (
   body: Record<string, unknown>,
   handlers: StreamHandlers,
 ) => {
-  if (!actor.organization) throw forbidden('User has no organization assigned.');
+  if (!actor.organization && !isAdmin(actor)) throw forbidden('User has no organization assigned.');
   const message = String(body.message ?? '').normalize('NFC').trim();
   if (!message || message.length > 1500) throw badRequest('message is required and must not exceed 1500 characters.');
   const proposalToken = body.proposalToken ?? body.confirmationToken;
@@ -561,9 +610,10 @@ export const streamAssignmentAiChat = async (
   }
 
   let confirmationToken: string | null = null;
+  let confirmationDraft: any = null;
   if (extraction.complete) {
-    const draft = await createConfirmationDraft(actor, extraction);
-    confirmationToken = String((draft as any).token);
+    confirmationDraft = await createConfirmationDraft(actor, extraction);
+    confirmationToken = String(confirmationDraft.token);
   }
   const draftPayload = {
     intent: extraction.intent,
@@ -574,6 +624,11 @@ export const streamAssignmentAiChat = async (
     endTime: extraction.endTime || null,
     durationMinutes: extraction.durationMinutes,
     point: extraction.point,
+    assigneeUsername: extraction.assigneeUsername || null,
+    assignee: confirmationDraft ? {
+      username: confirmationDraft.payload.assigneeUsername,
+      fullName: confirmationDraft.payload.assigneeFullName,
+    } : null,
     missingFields: extraction.missingFields,
     complete: extraction.complete,
     confirmationToken,

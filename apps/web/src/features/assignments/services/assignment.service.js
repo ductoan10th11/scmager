@@ -1,12 +1,14 @@
 import { http } from '@/shared/api/http'
 
-const ACTIVE_STATUSES = new Set(['DRAFT', 'TODO', 'IN_PROGRESS', 'PENDING_REVIEW', 'REVISION_REQUESTED', 'APPROVED'])
+const ACTIVE_STATUSES = new Set(['DRAFT', 'TODO', 'IN_PROGRESS', 'PENDING_REVIEW', 'REVISION_REQUESTED', 'APPROVED', 'PENDING_COMPLETION'])
 
 const DECLARATION_STATUS = {
   DRAFT: 'DRAFT',
   PENDING_APPROVAL: 'PENDING_REVIEW',
   RETURNED: 'REVISION_REQUESTED',
   APPROVED: 'APPROVED',
+  PENDING_COMPLETION: 'PENDING_COMPLETION',
+  COMPLETED: 'COMPLETED',
   CANCELLED: 'CANCELLED',
 }
 
@@ -25,12 +27,13 @@ const declarationToTask = (declaration) => ({
   assignedTo: declaration.createdBy,
   declaredPoint: declaration.declaredPoint,
   approval: declaration.approval,
+  completion: declaration.completion,
   department: declaration.department,
   createdBy: declaration.createdBy,
   sourceDocument: declaration.sourceDocument,
   revision: declaration.revision,
   rawStatus: declaration.status,
-  editable: declaration.status !== 'CANCELLED',
+  editable: ['DRAFT', 'RETURNED', 'APPROVED'].includes(declaration.status),
 })
 
 const taskTypeForStatus = (status, userTotalHours) => {
@@ -117,6 +120,7 @@ const toAssignee = (user, tasks = [], timelineDate = new Date()) => {
           description: task.description,
           declaredPoint: task.declaredPoint,
           approval: task.approval,
+          completion: task.completion,
           department: task.department,
           createdBy: task.createdBy,
           createdAt: task.createdAt,
@@ -260,6 +264,18 @@ export const AssignmentService = {
       method: 'POST',
       body: payload,
     })
+  },
+
+  submitCompletion(taskId, payload) {
+    return http(`/api/work-declarations/${taskId}/completion/submit`, { method: 'POST', body: payload })
+  },
+
+  confirmCompletion(taskId, payload) {
+    return http(`/api/work-declarations/${taskId}/completion/confirm`, { method: 'POST', body: payload })
+  },
+
+  returnCompletion(taskId, payload) {
+    return http(`/api/work-declarations/${taskId}/completion/return`, { method: 'POST', body: payload })
   },
 
   async updateTaskTime(taskId, payload) {

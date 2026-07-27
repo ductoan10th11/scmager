@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuth } from '@/features/auth/composables/useAuth'
 import { preloadProtectedRouteComponents, preloadRouteComponent } from '@/router/page-loaders'
-import { Activity, BarChart3, Building2, CalendarRange, FileText, LayoutDashboard, ChevronLeft, ChevronRight, Users, Database } from 'lucide-vue-next'
+import { Activity, BarChart3, Building2, CalendarRange, FileText, LayoutDashboard, ChevronLeft, ChevronRight, Users } from 'lucide-vue-next'
 import NotificationPopover from '@/features/notifications/NotificationPopover.vue'
 
 const route = useRoute()
@@ -29,7 +29,6 @@ const navItems = computed(() => {
     { name: 'Hiệu suất',     path: '/performance',    icon: BarChart3,       roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
     { name: 'Lịch công việc', path: '/assignments',   icon: CalendarRange,   roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
     // --- Quản trị ---
-    { name: 'Ingest',        path: '/ingest-documents', icon: Database,       roles: ['ADMIN'] },
     { name: 'Ingest cron',   path: '/ingest-monitor', icon: Activity,         roles: ['ADMIN'] },
     { name: 'Connector ingest', path: '/connectors', icon: Activity,          roles: ['ADMIN'] },
     { name: 'Phòng ban',     path: '/my-department',  icon: Building2,       roles: ['DEPARTMENT_LEADER'] },

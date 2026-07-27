@@ -1,5 +1,5 @@
 import mongoose, { isValidObjectId } from 'mongoose';
-import { DepartmentModel, DocumentModel, WorkDeclarationModel } from '../models';
+import { DepartmentModel, OfficeDocumentContextModel, WorkDeclarationModel } from '../models';
 import { workDeclarationRepository } from '../repositories/work-declaration.repository';
 import { userRepository } from '../repositories/user.repository';
 import { AuthUser } from '../types/auth';
@@ -147,6 +147,13 @@ const parseDeclarationPayload = (body: Record<string, unknown>) => {
     durationMinutes: Math.max(1, Math.round((workEndAt.getTime() - workStartAt.getTime()) / 60_000)),
     declaredPoint,
   };
+};
+
+const parseWorkSource = (value: unknown, assignedByLeader: boolean) => {
+  if (assignedByLeader) return 'MANAGER_ASSIGNED';
+  if (value === undefined || value === null || value === '') return 'SELF_REPORTED';
+  if (value !== 'SELF_REPORTED') throw badRequest('workSource is managed by the server.');
+  return 'SELF_REPORTED';
 };
 
 const ensureSameOrganization = (actor: AuthUser, entity: any) => {
@@ -449,7 +456,7 @@ export const createWorkDeclarationService = async (actor: AuthUser, body: Record
   let sourceDocument: string | null = null;
   if (body.sourceDocument !== undefined && body.sourceDocument !== null && body.sourceDocument !== '') {
     sourceDocument = assertObjectId(body.sourceDocument, 'sourceDocument');
-    const source = await DocumentModel.findOne({ _id: sourceDocument, organizationId: owner.organization }).select('_id');
+    const source = await OfficeDocumentContextModel.findOne({ _id: sourceDocument, organizationId: owner.organization, pageType: 'incoming' }).select('_id');
     if (!source) throw notFound('Source document not found.');
   }
   const now = new Date();
@@ -457,11 +464,13 @@ export const createWorkDeclarationService = async (actor: AuthUser, body: Record
     const policy = await getEffectiveWorkPolicy(owner.organization);
     await ensureNoScheduleOverlap(owner.organization, owner.id, payload.workStartAt, payload.workEndAt, undefined, session);
     await ensureDailyCapacity(owner.organization, owner.id, payload.workStartAt, payload.workEndAt, policy, undefined, session);
+    const workSource = parseWorkSource(body.workSource, owner.assignedByLeader);
     const [created] = await WorkDeclarationModel.create([{
       ...payload, organization: owner.organization, department: owner.department, createdBy: owner.id,
+      assignedBy: owner.assignedByLeader ? actor.id : null, workSource,
       sourceDocument, revision: 1, status: owner.assignedByLeader ? 'APPROVED' : 'DRAFT',
       approval: owner.assignedByLeader ? {
-        currentApprover: null, submittedAt: now, approvedAt: now,
+        currentApprover: actor.id, submittedAt: now, approvedAt: now,
         history: [{ action: 'APPROVED', actor: actor.id, fromApprover: actor.id, toApprover: owner.id, note: 'Công việc được giao trực tiếp.', actedAt: now }],
       } : undefined,
     }], { session: session ?? undefined });
@@ -514,7 +523,9 @@ export const rescheduleWorkDeclarationService = async (
 
   const declaration = await runWorkDeclarationMutation(async (session) => {
     const current = await loadCurrentForMutation(actor, declarationId, revision, session);
-    if ((current as any).status === 'CANCELLED') throw conflict('Cancelled declarations cannot be rescheduled.');
+    if (!['DRAFT', 'RETURNED', 'APPROVED'].includes((current as any).status)) {
+      throw conflict('Only draft, returned or approved work can be rescheduled.');
+    }
     const ownerId = idOf((current as any).createdBy);
     const organization = idOf((current as any).organization);
     const policy = await getEffectiveWorkPolicy(organization);
@@ -544,7 +555,7 @@ export const submitWorkDeclarationService = async (actor: AuthUser, id: unknown,
     history.push({ action: 'SUBMITTED', actor: actor.id, fromApprover: null, toApprover: approverId, note, actedAt: now });
     if (selfApproved) {
       history.push({ action: 'SELF_APPROVED', actor: actor.id, fromApprover: actor.id, toApprover: actor.id, note, actedAt: now });
-      Object.assign(current, { status: 'APPROVED', approval: { currentApprover: null, submittedAt: now, approvedAt: now, returnedAt: null, history } });
+      Object.assign(current, { status: 'APPROVED', approval: { currentApprover: actor.id, submittedAt: now, approvedAt: now, returnedAt: null, history } });
       await saveRevisioned(current, session);
       await createAudit(actor, 'WORK_DECLARATION_SELF_APPROVED', current, { note, revision: current.revision }, session);
     } else {
@@ -583,7 +594,7 @@ export const approveWorkDeclarationService = async (actor: AuthUser, id: unknown
       await ensureDailyCapacity(organization, ownerId, editedPayload.workStartAt, editedPayload.workEndAt, policy, declarationId, session);
       Object.assign(current, editedPayload);
     }
-    current.status = 'APPROVED'; current.approval.currentApprover = null; current.approval.approvedAt = now;
+    current.status = 'APPROVED'; current.approval.currentApprover = actor.id; current.approval.approvedAt = now;
     current.approval.history.push({ action: 'APPROVED', actor: actor.id, fromApprover: actor.id, toApprover: null, note, actedAt: now });
     await saveRevisioned(current, session);
     await createAudit(actor, 'WORK_DECLARATION_APPROVED', current, { note, editedFields: hasEdits ? editableFields.filter((field) => Object.prototype.hasOwnProperty.call(body, field)) : [], revision: current.revision }, session);
@@ -623,7 +634,7 @@ export const forwardWorkDeclarationService = async (actor: AuthUser, id: unknown
   const note = normalizeText(body.note, 'note', true) as string;
   const declaration = await runWorkDeclarationMutation(async (session) => {
     const current = await loadCurrentForMutation(actor, declarationId, revision, session);
-    if (current.status !== 'PENDING_APPROVAL') throw conflict('Work declaration is not pending approval.');
+    if (!['PENDING_APPROVAL', 'PENDING_COMPLETION'].includes(current.status)) throw conflict('Work declaration is not pending approval.');
     if (idOf(current.approval?.currentApprover) !== actor.id) throw forbidden('You are not the current approver.');
     await ensureForwardTarget(actor, targetId);
     const now = new Date();
@@ -635,6 +646,73 @@ export const forwardWorkDeclarationService = async (actor: AuthUser, id: unknown
     return current;
   });
   await markWorkDeclarationNotificationsRead(actor.id, declarationId);
+  emitDeclarationChanged(declaration);
+  return { data: await reload(declarationId) };
+};
+
+export const submitWorkDeclarationCompletionService = async (actor: AuthUser, id: unknown, body: Record<string, unknown>) => {
+  const declarationId = assertObjectId(id, 'id');
+  const revision = expectedRevision(body);
+  const result = normalizeText(body.result, 'result', true) as string;
+  const declaration = await runWorkDeclarationMutation(async (session) => {
+    const current = await loadCurrentForMutation(actor, declarationId, revision, session);
+    if (idOf(current.createdBy) !== actor.id) throw forbidden('Only the assignee can submit a work result.');
+    if (current.status !== 'APPROVED') throw conflict('Only approved work can submit a result.');
+    const approverId = idOf(current.approval?.currentApprover);
+    if (!approverId) throw conflict('Work has no approver for completion confirmation.');
+    const now = new Date();
+    current.status = 'PENDING_COMPLETION';
+    current.completion = { ...((current as any).completion?.toObject?.() ?? (current as any).completion), submittedAt: now, submittedResult: result, returnedAt: null };
+    current.approval.history.push({ action: 'COMPLETION_SUBMITTED', actor: actor.id, fromApprover: null, toApprover: approverId, note: result, actedAt: now });
+    await saveRevisioned(current, session);
+    await createAudit(actor, 'WORK_DECLARATION_COMPLETION_SUBMITTED', current, { revision: current.revision }, session);
+    await enqueueWorkDeclarationNotification({ session, recipient: approverId, actor: actor.id, type: 'WORK_DECLARATION_SUBMITTED', title: 'Có kết quả công việc chờ xác nhận', message: current.title, entityId: declarationId, organizationId: idOf(current.organization), revision: current.revision });
+    return current;
+  });
+  emitDeclarationChanged(declaration);
+  return { data: await reload(declarationId) };
+};
+
+export const confirmWorkDeclarationCompletionService = async (actor: AuthUser, id: unknown, body: Record<string, unknown>) => {
+  const declarationId = assertObjectId(id, 'id');
+  const revision = expectedRevision(body);
+  const note = normalizeText(body.note, 'note') ?? null;
+  const declaration = await runWorkDeclarationMutation(async (session) => {
+    const current = await loadCurrentForMutation(actor, declarationId, revision, session);
+    if (current.status !== 'PENDING_COMPLETION') throw conflict('Work result is not pending confirmation.');
+    if (idOf(current.approval?.currentApprover) !== actor.id) throw forbidden('You are not the current approver.');
+    const now = new Date();
+    current.status = 'COMPLETED';
+    current.completion = { ...((current as any).completion?.toObject?.() ?? (current as any).completion), confirmedAt: now, confirmationNote: note };
+    current.approval.history.push({ action: 'COMPLETED', actor: actor.id, fromApprover: actor.id, toApprover: null, note, actedAt: now });
+    await saveRevisioned(current, session);
+    await createAudit(actor, 'WORK_DECLARATION_COMPLETED', current, { revision: current.revision }, session);
+    await enqueueWorkDeclarationNotification({ session, recipient: idOf(current.createdBy), actor: actor.id, type: 'WORK_DECLARATION_APPROVED', title: 'Kết quả công việc đã được xác nhận', message: current.title, entityId: declarationId, organizationId: idOf(current.organization), revision: current.revision });
+    return current;
+  });
+  await markAllWorkDeclarationNotificationsRead(declarationId);
+  emitDeclarationChanged(declaration);
+  return { data: await reload(declarationId) };
+};
+
+export const returnWorkDeclarationCompletionService = async (actor: AuthUser, id: unknown, body: Record<string, unknown>) => {
+  const declarationId = assertObjectId(id, 'id');
+  const revision = expectedRevision(body);
+  const note = normalizeText(body.note, 'note', true) as string;
+  const declaration = await runWorkDeclarationMutation(async (session) => {
+    const current = await loadCurrentForMutation(actor, declarationId, revision, session);
+    if (current.status !== 'PENDING_COMPLETION') throw conflict('Work result is not pending confirmation.');
+    if (idOf(current.approval?.currentApprover) !== actor.id) throw forbidden('You are not the current approver.');
+    const now = new Date();
+    current.status = 'APPROVED';
+    current.completion = { ...((current as any).completion?.toObject?.() ?? (current as any).completion), returnedAt: now, confirmationNote: note };
+    current.approval.history.push({ action: 'RETURNED', actor: actor.id, fromApprover: actor.id, toApprover: idOf(current.createdBy), note, actedAt: now });
+    await saveRevisioned(current, session);
+    await createAudit(actor, 'WORK_DECLARATION_COMPLETION_RETURNED', current, { note, revision: current.revision }, session);
+    await enqueueWorkDeclarationNotification({ session, recipient: idOf(current.createdBy), actor: actor.id, type: 'WORK_DECLARATION_RETURNED', title: 'Kết quả công việc cần làm lại', message: current.title, entityId: declarationId, organizationId: idOf(current.organization), revision: current.revision, metadata: { note } });
+    return current;
+  });
+  await markAllWorkDeclarationNotificationsRead(declarationId);
   emitDeclarationChanged(declaration);
   return { data: await reload(declarationId) };
 };

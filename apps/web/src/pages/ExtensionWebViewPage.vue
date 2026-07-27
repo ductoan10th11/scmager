@@ -15,7 +15,6 @@ const booting = ref(true)
 const loading = ref(false)
 const error = ref('')
 const payload = ref(null)
-const legacyOutgoingDocuments = ref([])
 const incomingContexts = ref([])
 const outgoingContexts = ref([])
 const declarations = ref([])
@@ -63,7 +62,7 @@ const legacyIncomingDocuments = computed(() => (overview.value.ingestDocuments?.
 const documents = computed(() => {
   const items = documentTab.value === 'incoming'
     ? [...legacyIncomingDocuments.value, ...incomingContexts.value.map(toContextDocument)]
-    : [...legacyOutgoingDocuments.value.map((item) => toLegacyDocument(item, 'outgoing')), ...outgoingContexts.value.map(toContextDocument)]
+    : outgoingContexts.value.map(toContextDocument)
   return items.sort((left, right) => {
     const byArrivalDate = incomingDateRank(right.ngayDen) - incomingDateRank(left.ngayDen)
     if (byArrivalDate) return byArrivalDate
@@ -134,18 +133,16 @@ const loadWorkspace = async () => {
   loading.value = true
   error.value = ''
   try {
-    const [overviewResult, declarationResult, approvalResult, outgoingResult, incomingContextResult, outgoingContextResult] = await Promise.all([
+    const [overviewResult, declarationResult, approvalResult, incomingContextResult, outgoingContextResult] = await Promise.all([
       http('/api/extension/overview?limit=50'),
       http('/api/work-declarations?limit=100'),
       canApprove.value ? http('/api/work-declarations?pendingForMe=true&limit=30') : Promise.resolve({ data: [] }),
-      http('/api/ingest-documents/outgoing?limit=50'),
       http('/api/office-document-contexts?pageType=incoming&limit=50'),
       http('/api/office-document-contexts?pageType=outgoing,outgoing_c2&limit=50'),
     ])
     payload.value = overviewResult
     declarations.value = declarationResult?.data ?? []
     approvals.value = approvalResult?.data ?? []
-    legacyOutgoingDocuments.value = outgoingResult?.data ?? []
     incomingContexts.value = incomingContextResult?.data ?? []
     outgoingContexts.value = outgoingContextResult?.data ?? []
   } catch (requestError) {
@@ -203,7 +200,7 @@ const approve = async (item) => {
 }
 
 const openTaskForm = () => { setDefaultTaskTime(); showTaskForm.value = true }
-const signOut = async () => { await logout(); payload.value = null; declarations.value = []; approvals.value = []; legacyOutgoingDocuments.value = []; incomingContexts.value = []; outgoingContexts.value = [] }
+const signOut = async () => { await logout(); payload.value = null; declarations.value = []; approvals.value = []; incomingContexts.value = []; outgoingContexts.value = [] }
 watch(activeTab, () => { error.value = '' })
 watch(isOverlayLoading, (active) => {
   if (active) startLoadingDots()

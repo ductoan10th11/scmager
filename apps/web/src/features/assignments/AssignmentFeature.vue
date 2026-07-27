@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useAuth } from '@/features/auth/composables/useAuth'
 import { useRoute, useRouter } from 'vue-router'
 import { http } from '@/shared/api/http'
@@ -174,7 +175,7 @@ onMounted(async () => {
   await Promise.all([refreshResources(), loadAiChatHistory()])
   if (!route.query.sourceDocument) return
   try {
-    const result = await http(`/api/ingest-documents/${route.query.sourceDocument}`)
+    const result = await http(`/api/office-document-contexts/${route.query.sourceDocument}`)
     const document = result.data
     formTitle.value = `Xử lý văn bản ${document.soKyHieu || 'đến'}`
     formDesc.value = document.trichYeu || ''
@@ -677,7 +678,7 @@ function finishCreatePointer() {
   formStartTime.value = timelineMinutesToTime(selection.start)
   formEndTime.value = timelineMinutesToTime(selection.end)
   closeAiModal()
-  openForm(selection.assignee.id)
+  openForm(selection.assignee.id, true)
 }
 
 // --- FORM STATE ---
@@ -710,9 +711,10 @@ const canCreateForAssignee = (assignee) => {
   return Number(currentUser.value?.role?.level) < Number(assignee?.roleLevel)
 }
 
-const openForm = (assigneeId = idOf(currentUser.value)) => {
+const openForm = (assigneeId = idOf(currentUser.value), lockedAssignee = false) => {
   formError.value = ''
   formAssignee.value = String(assigneeId ?? '')
+  formAssigneeLocked.value = lockedAssignee
   isFormOpen.value = true
 }
 
@@ -723,6 +725,7 @@ const closeForm = () => {
   }, 400)
 }
 const formAssignee = ref('')
+const formAssigneeLocked = ref(false)
 const formTitle = ref('')
 const formDesc = ref('')
 const formDate = ref(vietnamDateKey(new Date()))
@@ -744,6 +747,8 @@ const formSelectedUser = computed(() => {
   }
 })
 
+const assignableResources = computed(() => resources.value.filter((resource) => canCreateForAssignee(resource)))
+
 const calculatedDurationHours = computed(() => {
   if (!formStartTime.value || !formEndTime.value) return 0
   const [sH, sM] = formStartTime.value.split(':').map(Number)
@@ -764,7 +769,12 @@ const predictedStatus = computed(() => {
   return 'danger'
 })
 
-const isFormValid = computed(() => Boolean(formSelectedUser.value) && formTitle.value.trim().length > 0 && Number(calculatedDurationHours.value) > 0 && Number.isFinite(Number(formPoint.value)) && Number(formPoint.value) >= 0)
+const isFormValid = computed(() => Boolean(formSelectedUser.value)
+  && canCreateForAssignee(formSelectedUser.value)
+  && formTitle.value.trim().length > 0
+  && Number(calculatedDurationHours.value) > 0
+  && Number.isFinite(Number(formPoint.value))
+  && Number(formPoint.value) >= 0)
 
 const resetForm = () => {
   const now = new Date()
@@ -772,6 +782,7 @@ const resetForm = () => {
   formDesc.value = ''
   formPoint.value = '0'
   formAssignee.value = String(idOf(currentUser.value) ?? '')
+  formAssigneeLocked.value = false
   formSourceDocument.value = ''
   formDate.value = vietnamDateKey(now)
   formStartTime.value = vietnamTime(now)
@@ -783,6 +794,9 @@ const isTaskTimeOpen = ref(false)
 const taskTimeTarget = ref(null)
 const taskTimeForm = ref({ start: '', end: '' })
 const updatingTaskTime = ref(false)
+const completionResult = ref('')
+const completionNote = ref('')
+const completionSaving = ref(false)
 
 const openTaskTime = (task, assignee) => {
   if (!task.id) return
@@ -791,6 +805,8 @@ const openTaskTime = (task, assignee) => {
     start: task.start,
     end: task.end,
   }
+  completionResult.value = task.completion?.submittedResult ?? ''
+  completionNote.value = ''
   isTaskTimeOpen.value = true
 }
 
@@ -818,6 +834,40 @@ const submitTaskTime = async () => {
   } finally {
     updatingTaskTime.value = false
   }
+}
+
+const canSubmitCompletion = computed(() => {
+  const task = taskTimeTarget.value?.task
+  return task?.rawStatus === 'APPROVED' && String(idOf(task.createdBy)) === String(idOf(currentUser.value))
+})
+const canConfirmCompletion = computed(() => {
+  const task = taskTimeTarget.value?.task
+  return task?.rawStatus === 'PENDING_COMPLETION' && String(idOf(task.approval?.currentApprover)) === String(idOf(currentUser.value))
+})
+const submitCompletion = async () => {
+  const task = taskTimeTarget.value?.task
+  if (!task?.id || !completionResult.value.trim()) return
+  completionSaving.value = true
+  try {
+    await AssignmentService.submitCompletion(task.id, { result: completionResult.value.trim(), revision: task.revision })
+    isTaskTimeOpen.value = false
+    await refreshResources()
+  } catch (error) {
+    timelineError.value = (await staleMessage(error)) || 'Không thể nộp kết quả.'
+  } finally { completionSaving.value = false }
+}
+const confirmCompletion = async (returned = false) => {
+  const task = taskTimeTarget.value?.task
+  if (!task?.id || (returned && !completionNote.value.trim())) return
+  completionSaving.value = true
+  try {
+    const action = returned ? AssignmentService.returnCompletion : AssignmentService.confirmCompletion
+    await action(task.id, { note: completionNote.value.trim() || undefined, revision: task.revision })
+    isTaskTimeOpen.value = false
+    await refreshResources()
+  } catch (error) {
+    timelineError.value = (await staleMessage(error)) || 'Không thể xác nhận kết quả.'
+  } finally { completionSaving.value = false }
 }
 
 const submitAssignment = async () => {
@@ -877,6 +927,8 @@ const declarationStatusMeta = {
   PENDING_APPROVAL: { label: 'Chờ duyệt', class: 'bg-amber-50 text-amber-700' },
   PENDING_REVIEW: { label: 'Chờ duyệt', class: 'bg-amber-50 text-amber-700' },
   APPROVED: { label: 'Đã duyệt', class: 'bg-emerald-50 text-emerald-700' },
+  PENDING_COMPLETION: { label: 'Chờ xác nhận', class: 'bg-blue-50 text-blue-700' },
+  COMPLETED: { label: 'Hoàn thành', class: 'bg-emerald-50 text-emerald-700' },
   RETURNED: { label: 'Đã trả lại', class: 'bg-rose-50 text-rose-700' },
   REVISION_REQUESTED: {
     label: 'Đã trả lại',
@@ -892,6 +944,8 @@ const approvalActionLabel = (action) =>
     APPROVED: 'Đã duyệt',
     RETURNED: 'Trả lại',
     SELF_APPROVED: 'Tự duyệt',
+    COMPLETION_SUBMITTED: 'Đã nộp kết quả',
+    COMPLETED: 'Đã xác nhận hoàn thành',
   })[action] ?? action
 
 const approvalDurationHours = computed(() => {
@@ -1639,6 +1693,9 @@ onBeforeUnmount(() => {
                         <div v-if="msg.proposal.description" class="flex gap-3 py-2">
                           <span class="w-24 shrink-0 font-semibold text-zinc-400">Mô tả</span><span class="text-zinc-700">{{ msg.proposal.description }}</span>
                         </div>
+                        <div v-if="msg.proposal.assignee?.fullName" class="flex gap-3 py-2">
+                          <span class="w-24 shrink-0 font-semibold text-zinc-400">Người thực hiện</span><strong class="text-zinc-800">{{ msg.proposal.assignee.fullName }}</strong>
+                        </div>
                         <div class="flex gap-3 py-2">
                           <span class="w-24 shrink-0 font-semibold text-zinc-400">Ngày</span><strong class="text-zinc-800">{{ aiDisplayDate(msg.proposal.date) }}</strong>
                         </div>
@@ -1707,7 +1764,7 @@ onBeforeUnmount(() => {
               <!-- Người thực hiện -->
               <div v-if="!isSpecialist" class="space-y-2.5">
                 <label class="text-[11px] font-bold text-zinc-500 uppercase tracking-wider">Người thực hiện</label>
-                <div v-if="formSelectedUser" class="flex h-14 items-center gap-3 rounded-xl border border-zinc-200/80 bg-zinc-50 px-4">
+                <div v-if="formAssigneeLocked && formSelectedUser" class="flex h-14 items-center gap-3 rounded-xl border border-zinc-200/80 bg-zinc-50 px-4">
                   <Avatar class="h-8 w-8 border border-zinc-100"
                     ><AvatarImage :src="formSelectedUser.avatar" /><AvatarFallback>{{ formSelectedUser.name?.[0] }}</AvatarFallback></Avatar
                   >
@@ -1721,6 +1778,16 @@ onBeforeUnmount(() => {
                   </div>
                   <span class="ml-auto shrink-0 rounded-full bg-zinc-200 px-2 py-1 text-[9px] font-bold uppercase text-zinc-500">Đã khóa</span>
                 </div>
+                <Select v-else v-model="formAssignee">
+                  <SelectTrigger class="h-12 rounded-xl border-zinc-200/80 bg-white text-sm font-semibold">
+                    <SelectValue placeholder="Chọn người thực hiện" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem v-for="person in assignableResources" :key="person.id" :value="String(person.id)">
+                      {{ person.name }} · {{ person.role }}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
 
               <!-- Tên & Mô tả -->
@@ -2037,13 +2104,20 @@ onBeforeUnmount(() => {
             </p>
           </div>
 
+          <div v-if="canSubmitCompletion || canConfirmCompletion || taskTimeTarget?.task?.completion?.submittedResult" class="mt-5 rounded-lg border border-emerald-100 bg-emerald-50/40 p-4">
+            <p class="text-[11px] font-bold uppercase text-emerald-700">Kết quả công việc</p>
+            <Textarea v-if="canSubmitCompletion" v-model="completionResult" class="mt-3 min-h-24 resize-none bg-white" placeholder="Nêu kết quả đã thực hiện..." />
+            <p v-else class="mt-2 whitespace-pre-wrap text-sm text-zinc-700">{{ taskTimeTarget?.task?.completion?.submittedResult || 'Chưa nộp kết quả.' }}</p>
+            <Textarea v-if="canConfirmCompletion" v-model="completionNote" class="mt-3 min-h-20 resize-none bg-white" placeholder="Ghi chú xác nhận hoặc lý do trả lại..." />
+          </div>
+
           <div v-if="taskTimeTarget?.task?.sourceDocument" class="mt-4 rounded-lg border border-blue-100 bg-blue-50/60 px-4 py-3">
             <p class="text-[10px] font-bold uppercase text-blue-500">Văn bản liên quan</p>
             <p class="mt-1 text-sm font-bold text-blue-900">
-              {{ taskTimeTarget.task.sourceDocument.soKyHieu || 'Văn bản đến' }}
+              {{ taskTimeTarget.task.sourceDocument.observation?.soKyHieu || taskTimeTarget.task.sourceDocument.management?.overrides?.soKyHieu || 'Văn bản đến' }}
             </p>
             <p class="mt-1 line-clamp-2 text-xs text-blue-800/70">
-              {{ taskTimeTarget.task.sourceDocument.trichYeu }}
+              {{ taskTimeTarget.task.sourceDocument.observation?.subject || taskTimeTarget.task.sourceDocument.management?.overrides?.subject }}
             </p>
           </div>
 
@@ -2088,6 +2162,11 @@ onBeforeUnmount(() => {
 
         <div class="flex justify-end gap-2 border-t border-zinc-100 bg-white px-6 py-4">
           <Button variant="outline" class="rounded-full" @click="isTaskTimeOpen = false">Đóng</Button>
+          <Button v-if="canSubmitCompletion" class="rounded-full bg-blue-600 text-white hover:bg-blue-700" :disabled="completionSaving || !completionResult.trim()" @click="submitCompletion">Nộp kết quả</Button>
+          <template v-if="canConfirmCompletion">
+            <Button variant="outline" class="rounded-full border-rose-200 text-rose-700 hover:bg-rose-50" :disabled="completionSaving || !completionNote.trim()" @click="confirmCompletion(true)">Trả lại</Button>
+            <Button class="rounded-full bg-emerald-600 text-white hover:bg-emerald-700" :disabled="completionSaving" @click="confirmCompletion(false)">Xác nhận hoàn thành</Button>
+          </template>
           <Button v-if="taskTimeTarget?.task?.editable" class="rounded-full bg-indigo-600 hover:bg-indigo-700 text-white" :disabled="updatingTaskTime" @click="submitTaskTime"> Lưu thời gian </Button>
         </div>
       </DialogContent>

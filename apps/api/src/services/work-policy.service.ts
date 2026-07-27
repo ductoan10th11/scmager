@@ -44,6 +44,24 @@ export const vietnamDaysTouched = (startAt: Date, endAt: Date): string[] => {
   return days;
 };
 
+export const vietnamPeriodKey = (value: Date): string => vietnamDateKey(value).slice(0, 7);
+
+export const workingDaysLate = (deadline: Date, submittedAt: Date): number => {
+  const deadlineKey = vietnamDateKey(deadline);
+  const submittedKey = vietnamDateKey(submittedAt);
+  if (submittedKey <= deadlineKey) return 0;
+
+  let cursor = vietnamDayBounds(deadlineKey).start;
+  const submittedStart = vietnamDayBounds(submittedKey).start.getTime();
+  let days = 0;
+  while (cursor.getTime() < submittedStart) {
+    cursor = new Date(cursor.getTime() + 24 * 60 * 60 * 1000);
+    const weekday = new Date(cursor.getTime() + VIETNAM_OFFSET_MS).getUTCDay();
+    if (weekday !== 0 && weekday !== 6) days += 1;
+  }
+  return days;
+};
+
 export const overlapMinutes = (startAt: Date, endAt: Date, rangeStart: Date, rangeEnd: Date): number => (
   Math.max(0, Math.round((Math.min(endAt.getTime(), rangeEnd.getTime()) - Math.max(startAt.getTime(), rangeStart.getTime())) / 60_000))
 );

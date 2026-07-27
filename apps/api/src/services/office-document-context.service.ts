@@ -157,6 +157,160 @@ const normalizeSender = (value: unknown) => {
   };
 };
 
+const usernameVariants = (value: unknown) => {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw) return [];
+  const withoutLangsonSuffix = raw.replace(/\.lsn$/u, "");
+  return [...new Set([raw, withoutLangsonSuffix].filter(Boolean))];
+};
+
+const normalizedIdentity = (value: unknown) =>
+  String(value ?? "")
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+
+type TenantResolution = "SENDER" | "RECIPIENT" | "DRAFTING_USER" | "DEPARTMENT" | "AMBIGUOUS" | "UNRESOLVED";
+
+type TenantMatch = {
+  organizationId: string | null;
+  resolution: TenantResolution;
+};
+
+type ResolvedManagementAssignment = {
+  departmentId: unknown | null;
+  departmentName: string;
+  userId: unknown | null;
+  fullName: string;
+};
+
+const tenantFromUsernames = async (
+  values: unknown[],
+  resolution: Exclude<TenantResolution, "DEPARTMENT" | "AMBIGUOUS" | "UNRESOLVED">,
+): Promise<TenantMatch | null> => {
+  const usernames = [...new Set(values.flatMap(usernameVariants))];
+  if (!usernames.length) return null;
+  const users = await UserModel.find({
+    username: { $in: usernames },
+    status: "ACTIVE",
+    organization: { $ne: null },
+  }).select("organization").lean();
+  const organizations = [...new Set(users.map((user: any) => String(user.organization ?? "")).filter(Boolean))];
+  if (!organizations.length) return null;
+  if (organizations.length !== 1) return { organizationId: null, resolution: "AMBIGUOUS" };
+  return { organizationId: organizations[0], resolution };
+};
+
+const tenantFromDepartments = async (values: unknown[]): Promise<TenantMatch | null> => {
+  const names = new Set(values.map(normalizedIdentity).filter(Boolean));
+  if (!names.size) return null;
+  const departments = await DepartmentModel.find({ isActive: true, organization: { $ne: null } })
+    .select("name organization")
+    .lean();
+  const organizations = [...new Set(
+    departments
+      .filter((department: any) => names.has(normalizedIdentity(department.name)))
+      .map((department: any) => String(department.organization ?? ""))
+      .filter(Boolean),
+  )];
+  if (!organizations.length) return null;
+  if (organizations.length !== 1) return { organizationId: null, resolution: "AMBIGUOUS" };
+  return { organizationId: organizations[0], resolution: "DEPARTMENT" };
+};
+
+const resolveContextTenant = async (context: { pageType: string; observation: any }): Promise<TenantMatch> => {
+  const observation = context.observation ?? {};
+  const senderIds = [observation.sender?.userId, observation.senderUserId];
+  const recipientIds = (observation.recipients ?? [])
+    .filter((recipient: any) => recipient?.entityType === "person")
+    .map((recipient: any) => recipient.userId);
+  const draftingIds = [observation.draftingUserId];
+  const userGroups = context.pageType === "incoming"
+    ? [[senderIds, "SENDER"], [recipientIds, "RECIPIENT"], [draftingIds, "DRAFTING_USER"]] as const
+    : [[senderIds, "SENDER"], [draftingIds, "DRAFTING_USER"], [recipientIds, "RECIPIENT"]] as const;
+
+  for (const [ids, resolution] of userGroups) {
+    const match = await tenantFromUsernames(ids, resolution);
+    if (match) return match;
+  }
+
+  return (await tenantFromDepartments([
+    observation.sender?.department,
+    observation.senderDepartment,
+    observation.draftingUnit,
+    ...(observation.recipients ?? []).map((recipient: any) => recipient.department || recipient.fullName),
+  ])) ?? { organizationId: null, resolution: "UNRESOLVED" };
+};
+
+/**
+ * Extension observations identify people by their eOffice username, while the
+ * application assigns KPI by its internal User id. The main recipient is the
+ * first authoritative owner of an incoming document; never infer ownership
+ * from collaborators or "Đồng xử lý" recipients.
+ */
+const assignmentFromUsernames = async (
+  values: unknown[],
+  organizationId: string | null,
+): Promise<ResolvedManagementAssignment | null> => {
+  const usernames = [...new Set(values.flatMap(usernameVariants))];
+  if (!usernames.length) return null;
+  const filter: Record<string, unknown> = {
+    username: { $in: usernames },
+    status: "ACTIVE",
+  };
+  if (organizationId) filter.organization = organizationId;
+  const users = await UserModel.find(filter)
+    .select("_id fullName department organization")
+    .lean();
+  const uniqueUsers = [...new Map(users.map((user: any) => [String(user._id), user])).values()];
+  if (uniqueUsers.length !== 1) return null;
+
+  const user: any = uniqueUsers[0];
+  const department = user.department
+    ? await DepartmentModel.findOne({
+        _id: user.department,
+        isActive: true,
+        ...(organizationId ? { organization: organizationId } : {}),
+      })
+        .select("_id name")
+        .lean()
+    : null;
+  return {
+    departmentId: department?._id ?? null,
+    departmentName: department?.name ?? "",
+    userId: user._id,
+    fullName: user.fullName ?? "",
+  };
+};
+
+const resolveContextManagementAssignment = async (
+  context: { pageType: string; observation: any },
+  organizationId: string | null,
+): Promise<ResolvedManagementAssignment | null> => {
+  const observation = context.observation ?? {};
+  const recipients = Array.isArray(observation.recipients)
+    ? observation.recipients
+    : [];
+  const mainRecipientIds = recipients
+    .filter((recipient: any) => recipient?.entityType === "person" && recipient?.role === "main")
+    .map((recipient: any) => recipient.userId);
+  const draftingIds = [observation.draftingUserId];
+  const senderIds = [observation.sender?.userId, observation.senderUserId];
+
+  // Incoming documents belong to the person receiving the work. Outgoing
+  // records are supporting evidence, so prefer their drafter/sender instead.
+  const groups = context.pageType === "incoming"
+    ? [mainRecipientIds, draftingIds, senderIds]
+    : [draftingIds, senderIds, mainRecipientIds];
+  for (const ids of groups) {
+    const assignment = await assignmentFromUsernames(ids, organizationId);
+    if (assignment) return assignment;
+  }
+  return null;
+};
+
 export const normalizeOfficeDocumentContext = (payload: unknown) => {
   const body = record(payload, "Request body");
   const allowed = new Set([
@@ -268,16 +422,43 @@ export const normalizeOfficeDocumentContext = (payload: unknown) => {
 
 export const upsertOfficeDocumentContext = async (payload: unknown) => {
   const normalized = normalizeOfficeDocumentContext(payload);
+  const tenant = await resolveContextTenant(normalized);
   const filter = {
     sourceHost: normalized.sourceHost,
     pageType: normalized.pageType,
     externalDocumentId: normalized.externalDocumentId,
   };
+  const previous = await OfficeDocumentContextModel.findOne(filter)
+    .select("management.assignment management.updatedBy")
+    .lean();
+  // Any management edit, including intentionally clearing an assignment, is
+  // authoritative over extension-derived ownership.
+  const isManaged = Boolean(previous?.management?.updatedBy);
+  const assignment = isManaged
+    ? null
+    : await resolveContextManagementAssignment(normalized, tenant.organizationId);
   const observedAt = new Date();
   const update = () =>
     OfficeDocumentContextModel.findOneAndUpdate(
       filter,
-      { $set: { ...normalized, observedAt } },
+      {
+        $set: {
+          ...normalized,
+          ...(tenant.organizationId ? {
+            organizationId: tenant.organizationId,
+            tenantResolution: tenant.resolution,
+          } : {}),
+          ...(assignment
+            ? {
+                "management.assignment.departmentId": assignment.departmentId,
+                "management.assignment.departmentName": assignment.departmentName,
+                "management.assignment.userId": assignment.userId,
+                "management.assignment.fullName": assignment.fullName,
+              }
+            : {}),
+          observedAt,
+        },
+      },
       { new: true, runValidators: true },
     );
   const existing = await update();
@@ -296,6 +477,13 @@ export const upsertOfficeDocumentContext = async (payload: unknown) => {
   try {
     const created = await OfficeDocumentContextModel.create({
       ...normalized,
+      organizationId: tenant.organizationId,
+      tenantResolution: tenant.resolution,
+      ...(assignment
+        ? {
+            management: { assignment },
+          }
+        : {}),
       observedAt,
     });
     return {
@@ -321,6 +509,51 @@ export const upsertOfficeDocumentContext = async (payload: unknown) => {
       },
     };
   }
+};
+
+/** One-time repair for extension contexts received before tenant/owner mapping. */
+export const backfillOfficeDocumentContextTenants = async () => {
+  const contexts = await OfficeDocumentContextModel.find({
+    $or: [
+      { organizationId: null },
+      { "management.assignment.userId": null, "management.updatedBy": null },
+    ],
+  })
+    .select("pageType observation organizationId management.assignment management.updatedBy")
+    .lean();
+  let resolved = 0;
+  let ambiguous = 0;
+  let assignmentResolved = 0;
+  for (const context of contexts as any[]) {
+    const tenant = context.organizationId
+      ? { organizationId: String(context.organizationId), resolution: "UNRESOLVED" as TenantResolution }
+      : await resolveContextTenant(context);
+    const assignment = context.management?.updatedBy || context.management?.assignment?.userId
+      ? null
+      : await resolveContextManagementAssignment(context, tenant.organizationId);
+    const update: Record<string, unknown> = {};
+    if (!context.organizationId) {
+      update.organizationId = tenant.organizationId;
+      update.tenantResolution = tenant.resolution;
+    }
+    if (assignment) {
+      update["management.assignment.departmentId"] = assignment.departmentId;
+      update["management.assignment.departmentName"] = assignment.departmentName;
+      update["management.assignment.userId"] = assignment.userId;
+      update["management.assignment.fullName"] = assignment.fullName;
+      assignmentResolved += 1;
+    }
+    await OfficeDocumentContextModel.updateOne(
+      { _id: context._id },
+      Object.keys(update).length ? { $set: update } : {},
+    );
+    if (!context.organizationId) {
+      if (tenant.organizationId) resolved += 1;
+      else if (tenant.resolution === "AMBIGUOUS") ambiguous += 1;
+    }
+  }
+  const unresolved = contexts.filter((context: any) => !context.organizationId).length - resolved - ambiguous;
+  return { scanned: contexts.length, resolved, ambiguous, unresolved, assignmentResolved };
 };
 
 export const listOfficeDocumentContexts = async (
@@ -1068,6 +1301,8 @@ export const createManagedOfficeDocumentContext = async (
   const created = await OfficeDocumentContextModel.create({
     ...normalized,
     ...management,
+    organizationId: actor.organization ?? null,
+    tenantResolution: "MANUAL",
     origin: "MANUAL",
     observedAt: new Date(),
   });

@@ -1,9 +1,6 @@
 import { Router } from 'express';
 import {
   extensionOverview,
-  lookupExtensionIncomingDocumentPoint,
-  receiveExtensionIncomingDocuments,
-  receiveExtensionOutgoingDocument,
 } from '../controllers/extension.controller';
 import { requireAuth } from '../middlewares/auth.middleware';
 import { forbidden } from '../utils/http-error';
@@ -26,8 +23,5 @@ router.use(requireAuth);
 router.use(extensionGate);
 
 router.get('/overview', extensionOverview);
-router.get('/incoming-documents/lookup', lookupExtensionIncomingDocumentPoint);
-router.post('/incoming-documents', receiveExtensionIncomingDocuments);
-router.post('/outgoing-documents', receiveExtensionOutgoingDocument);
 
 export default router;
