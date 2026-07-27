@@ -5,10 +5,10 @@ import {
   setIngestSocketConnectionHandler,
 } from '../realtime/ingest.socket';
 import {
-  runSprint,
-  type DocumentIngestLogInfo,
-  type SprintSummary,
-} from './langson-ingest.service';
+  runExtensionStatusOnlyIngest,
+  type ExtensionStatusSyncLogInfo,
+  type ExtensionStatusSyncSummary,
+} from './extension-status-ingest.service';
 
 export type IngestCronLogLevel = 'INFO' | 'WARN' | 'ERROR';
 export type IngestCronLogEvent =
@@ -19,7 +19,7 @@ export type IngestCronLogEvent =
   | 'TICK_SCHEDULED'
   | 'TICK_SUCCEEDED'
   | 'TICK_FAILED'
-  | 'DOC_ENRICHED'
+  | 'DOC_SYNCED'
   | 'RUN_REQUESTED';
 
 export interface IngestCronLog {
@@ -28,7 +28,7 @@ export interface IngestCronLog {
   level: IngestCronLogLevel;
   event: IngestCronLogEvent;
   message: string;
-  summary?: SprintSummary;
+  summary?: ExtensionStatusSyncSummary;
   error?: string;
   actor?: {
     id: string;
@@ -45,7 +45,7 @@ export interface IngestCronStatus {
   nextRunAt: string | null;
   lastStartedAt: string | null;
   lastFinishedAt: string | null;
-  lastSummary: SprintSummary | null;
+  lastSummary: ExtensionStatusSyncSummary | null;
   lastError: string;
   logSize: number;
 }
@@ -74,7 +74,7 @@ let running = false;
 let nextRunAt: Date | null = null;
 let lastStartedAt: Date | null = null;
 let lastFinishedAt: Date | null = null;
-let lastSummary: SprintSummary | null = null;
+let lastSummary: ExtensionStatusSyncSummary | null = null;
 let lastError = '';
 const logs: IngestCronLog[] = [];
 
@@ -189,11 +189,11 @@ const scheduleNext = () => {
   );
 };
 
-const documentLogMessage = (info: DocumentIngestLogInfo) => {
+const documentLogMessage = (info: ExtensionStatusSyncLogInfo) => {
   return [
     info.soKyHieu || '-',
-    `Ngày đến ${info.ngayDen || '-'}`,
-    `Tình trạng: ${info.completed ? 'Xong' : 'Đang xử lý'}`,
+    `ID ${info.documentId}`,
+    `Tình trạng: ${info.status}`,
   ].join(' | ');
 };
 
@@ -208,20 +208,20 @@ async function executeSprint(scheduleAfter: boolean): Promise<void> {
   try {
     lastStartedAt = new Date();
     lastError = '';
-    pushLog('INFO', 'TICK_STARTED', 'Ingest sprint started.');
+    pushLog('INFO', 'TICK_STARTED', 'Status-only ingest started for extension documents.');
 
-    const summary = await runSprint({}, {
-      onDocumentEnriched: (info) => {
-        pushLog('INFO', 'DOC_ENRICHED', documentLogMessage(info));
+    const summary = await runExtensionStatusOnlyIngest({
+      onDocumentSynced: (info) => {
+        pushLog('INFO', 'DOC_SYNCED', documentLogMessage(info));
       },
     });
     lastSummary = summary;
     lastFinishedAt = new Date();
     if (summary.errors.length) {
       lastError = summary.errors[0];
-      pushLog('WARN', 'TICK_SUCCEEDED', 'Ingest sprint completed with recoverable errors.', { summary });
+      pushLog('WARN', 'TICK_SUCCEEDED', 'Status-only ingest completed with recoverable errors.', { summary });
     } else {
-      pushLog('INFO', 'TICK_SUCCEEDED', 'Ingest sprint completed.', { summary });
+      pushLog('INFO', 'TICK_SUCCEEDED', 'Status-only ingest completed.', { summary });
     }
   } catch (error) {
     lastFinishedAt = new Date();
@@ -272,6 +272,19 @@ export const ingestCronService = {
       scheduleNext();
     }
     return { data: status() };
+  },
+
+  // Deployment-owned switch: the worker remains stoppable from the existing
+  // admin screen, while a restart can resume the approved status-only job.
+  startSystem() {
+    if (!enabled) {
+      enabled = true;
+      pushLog('INFO', 'CRON_STARTED', 'Status-only ingest enabled by deployment configuration.');
+      runDetached(true);
+    } else if (!running && !timer) {
+      scheduleNext();
+    }
+    return status();
   },
 
   stop(actor: AuthUser) {

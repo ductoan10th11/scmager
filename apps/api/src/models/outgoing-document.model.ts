@@ -1,9 +1,9 @@
-import { Schema, model, models } from 'mongoose';
+import { Schema, model, models } from "mongoose";
 
 const personSchema = new Schema(
   {
-    username: { type: String, trim: true, default: '' },
-    fullName: { type: String, trim: true, default: '' },
+    username: { type: String, trim: true, default: "" },
+    fullName: { type: String, trim: true, default: "" },
   },
   { _id: false },
 );
@@ -11,7 +11,7 @@ const personSchema = new Schema(
 const trackLogSchema = new Schema(
   {
     sender: { type: personSchema, default: () => ({}) },
-    content: { type: String, trim: true, default: '' },
+    content: { type: String, trim: true, default: "" },
     receivedAt: { type: String, default: null },
     processingAt: { type: String, default: null },
     completedAt: { type: String, default: null },
@@ -22,20 +22,38 @@ const trackLogSchema = new Schema(
 
 const outgoingDocumentSchema = new Schema(
   {
-    documentId: { type: String, required: true, trim: true, unique: true, index: true },
-    soKyHieu: { type: String, trim: true, default: '', index: true },
-    trichYeu: { type: String, trim: true, default: '', index: 'text' },
-    ngayBanHanh: { type: String, trim: true, default: '', index: true },
-    doKhan: { type: String, trim: true, default: '' },
-    nguoiSoan: { type: String, trim: true, default: '' },
-    nguoiKy: { type: String, trim: true, default: '' },
+    organizationId: {
+      type: Schema.Types.ObjectId,
+      ref: "Organization",
+      default: null,
+      index: true,
+    },
+    connectorId: {
+      type: Schema.Types.ObjectId,
+      ref: "Connector",
+      default: null,
+      index: true,
+    },
+    sourceSystem: { type: String, default: null, trim: true },
+    externalSourceId: { type: String, default: null, trim: true },
+    documentId: { type: String, required: true, trim: true, index: true },
+    soKyHieu: { type: String, trim: true, default: "", index: true },
+    trichYeu: { type: String, trim: true, default: "", index: "text" },
+    ngayBanHanh: { type: String, trim: true, default: "", index: true },
+    doKhan: { type: String, trim: true, default: "" },
+    nguoiSoan: { type: String, trim: true, default: "" },
+    nguoiKy: { type: String, trim: true, default: "" },
     // An outgoing document is stored only through one or more incoming source
     // documents. This makes an orphan outgoing record impossible to create.
-    sourceDocuments: { type: [{ type: Schema.Types.ObjectId, ref: 'Document' }], default: [], index: true },
+    sourceDocuments: {
+      type: [{ type: Schema.Types.ObjectId, ref: "Document" }],
+      default: [],
+      index: true,
+    },
     sourceDocumentIds: { type: [String], default: [], index: true },
     trackLogs: { type: [trackLogSchema], default: [] },
     ingest: {
-      source: { type: String, default: 'LANGSON_DWR', index: true },
+      source: { type: String, default: "LANGSON_DWR", index: true },
       fetchedAt: { type: Date, default: null },
     },
   },
@@ -44,7 +62,19 @@ const outgoingDocumentSchema = new Schema(
 
 outgoingDocumentSchema.index({ sourceDocuments: 1, updatedAt: -1 });
 outgoingDocumentSchema.index({ ngayBanHanh: -1, updatedAt: -1 });
+outgoingDocumentSchema.index(
+  { organizationId: 1, connectorId: 1, sourceSystem: 1, externalSourceId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      organizationId: { $type: "objectId" },
+      connectorId: { $type: "objectId" },
+      sourceSystem: { $type: "string" },
+      externalSourceId: { $type: "string" },
+    },
+  },
+);
 
-export const OutgoingDocumentModel = models.OutgoingDocument
-  || model('OutgoingDocument', outgoingDocumentSchema);
+export const OutgoingDocumentModel =
+  models.OutgoingDocument || model("OutgoingDocument", outgoingDocumentSchema);
 export default OutgoingDocumentModel;

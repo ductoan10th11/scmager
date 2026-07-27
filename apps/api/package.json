@@ -10,7 +10,10 @@
     "dev": "nodemon --exec tsx server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start:worker": "node dist/worker.js",
+    "migrate:tenant-scope": "node dist/src/scripts/migrate-tenant-scope.js",
+    "test": "tsx --test --experimental-test-coverage src/test/**/*.test.ts",
+    "test:ci": "tsx --test src/test/**/*.test.ts"
   },
   "dependencies": {
     "@types/multer": "^2.2.0",

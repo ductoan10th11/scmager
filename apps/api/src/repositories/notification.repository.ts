@@ -1,4 +1,5 @@
 import NotificationModel from '../models/notification.model';
+import type { ClientSession } from 'mongoose';
 
 const POPULATE_NOTIFICATION = [
   { path: 'actor', select: '_id username fullName email' },
@@ -31,6 +32,64 @@ export const notificationRepository = {
 
   create(data: Record<string, unknown>) {
     return NotificationModel.create(data);
+  },
+
+  upsertWorkDeclarationOutbox(data: Record<string, unknown>, session: ClientSession | null) {
+    const filter = {
+      recipient: data.recipient,
+      relatedModel: 'WorkDeclaration',
+      relatedId: data.relatedId,
+      type: data.type,
+      revision: data.revision,
+    };
+    return NotificationModel.updateOne(
+      filter,
+      {
+        $setOnInsert: {
+          ...data,
+          channels: ['IN_APP'],
+          outboxState: 'PENDING',
+          outboxAttempts: 0,
+          outboxNextAttemptAt: new Date(),
+        },
+      },
+      { upsert: true, session: session ?? undefined },
+    );
+  },
+
+  claimOutbox(now: Date, staleBefore: Date) {
+    return NotificationModel.findOneAndUpdate(
+      {
+        $or: [
+          { outboxState: 'PENDING', outboxNextAttemptAt: { $lte: now } },
+          { outboxState: 'PUBLISHING', outboxLockedAt: { $lte: staleBefore } },
+        ],
+      },
+      { $set: { outboxState: 'PUBLISHING', outboxLockedAt: now } },
+      { new: true, sort: { outboxNextAttemptAt: 1, createdAt: 1 } },
+    ).lean();
+  },
+
+  markOutboxPublished(id: string) {
+    return NotificationModel.updateOne(
+      { _id: id, outboxState: 'PUBLISHING' },
+      { $set: { outboxState: 'PUBLISHED', publishedAt: new Date(), deliveredAt: new Date(), outboxLockedAt: null, outboxLastError: null } },
+    );
+  },
+
+  rescheduleOutbox(id: string, attempts: number, nextAttemptAt: Date, error: string, deadLetter: boolean) {
+    return NotificationModel.updateOne(
+      { _id: id, outboxState: 'PUBLISHING' },
+      {
+        $set: {
+          outboxState: deadLetter ? 'DLQ' : 'PENDING',
+          outboxAttempts: attempts,
+          outboxNextAttemptAt: nextAttemptAt,
+          outboxLockedAt: null,
+          outboxLastError: error.slice(0, 500),
+        },
+      },
+    );
   },
 
   markRead(id: string, recipient: string) {

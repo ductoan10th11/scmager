@@ -69,10 +69,21 @@ const formatMs = (value) => {
 
 const compactSummary = (summary) => {
   if (!summary) return '—'
+  if (Object.hasOwn(summary, 'synced')) {
+    return [
+      `chọn ${summary.selected ?? 0}`,
+      `đồng bộ ${summary.synced ?? 0}`,
+      `hoàn tất ${summary.completed ?? 0}`,
+      `lỗi ${summary.failed ?? 0}`,
+    ].join(' · ')
+  }
   const d = summary.discovery ?? {}
   const e = summary.enrichment ?? {}
   return [
+    `total ${d.totalRecords ?? 0}`,
     `scan ${d.scannedItems ?? 0}`,
+    `skipMonth ${d.skippedOutsideDocumentMonth ?? 0}`,
+    `skipDl ${d.skippedWithoutDeadline ?? 0}`,
     `new ${d.inserted ?? 0}`,
     `enriched ${e.enriched ?? 0}`,
     `done ${e.completed ?? 0}`,

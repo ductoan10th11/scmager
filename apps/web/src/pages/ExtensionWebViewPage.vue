@@ -1,18 +1,23 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { BarChart3, CalendarDays, Check, ClipboardCheck, Clock3, FileText, LayoutDashboard, Loader2, LogOut, Plus, RefreshCw, UserRound, X } from 'lucide-vue-next'
+import { BarChart3, CalendarDays, Check, ClipboardCheck, Clock3, FileText, LayoutDashboard, Loader2, LogOut, Plus, RefreshCw, Send, UserRound, X } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import SlidingTabs from '@/components/ui/sliding-tabs/SlidingTabs.vue'
 import { http } from '@/shared/api/http'
 import { useAuth } from '@/features/auth/composables/useAuth'
 
 const { user, loadMe, login, logout } = useAuth()
 const activeTab = ref('overview')
+const documentTab = ref('incoming')
 const booting = ref(true)
 const loading = ref(false)
 const error = ref('')
 const payload = ref(null)
+const legacyOutgoingDocuments = ref([])
+const incomingContexts = ref([])
+const outgoingContexts = ref([])
 const declarations = ref([])
 const approvals = ref([])
 const showTaskForm = ref(false)
@@ -27,15 +32,46 @@ const overview = computed(() => payload.value?.data ?? {})
 const taskSummary = computed(() => overview.value.tasks?.summary ?? {})
 const documentSummary = computed(() => overview.value.ingestDocuments?.summary ?? {})
 const documentPerformance = computed(() => overview.value.ingestDocuments?.performance ?? {})
+const DOCUMENT_TABS = [
+  { id: 'incoming', label: 'Văn bản đến', icon: FileText },
+  { id: 'outgoing', label: 'Văn bản đi', icon: Send },
+]
 const incomingDateRank = (value) => {
   const match = String(value ?? '').match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
   return match ? Date.UTC(Number(match[3]), Number(match[2]) - 1, Number(match[1])) : 0
 }
-const documents = computed(() => [...(overview.value.ingestDocuments?.items ?? [])].sort((left, right) => {
-  const byArrivalDate = incomingDateRank(right.ngayDen) - incomingDateRank(left.ngayDen)
-  if (byArrivalDate) return byArrivalDate
-  return new Date(right.updatedAt ?? 0).getTime() - new Date(left.updatedAt ?? 0).getTime()
-}))
+const toLegacyDocument = (item, pageType) => ({ ...item, id: `ingest-${pageType}-${item.id || item._id}`, pageType, origin: 'ingest' })
+const toContextDocument = (context) => {
+  const observation = context?.observation ?? {}
+  return {
+    id: `extension-${context?._id || context?.id}`,
+    pageType: context?.pageType,
+    origin: 'extension',
+    soKyHieu: observation.soKyHieu || '',
+    trichYeu: observation.subject || '',
+    ngayDen: observation.receivedDate || observation.createdDate || '',
+    deadline: observation.dueDate || null,
+    point: observation.point ?? null,
+    doKhan: observation.priority || '',
+    nguoiXuLy: observation.sender?.fullName || observation.senderUser || '',
+    sender: observation.sender,
+    senderUser: observation.senderUser,
+    updatedAt: context?.updatedAt || context?.observedAt,
+  }
+}
+const legacyIncomingDocuments = computed(() => (overview.value.ingestDocuments?.items ?? []).map((item) => toLegacyDocument(item, 'incoming')))
+const documents = computed(() => {
+  const items = documentTab.value === 'incoming'
+    ? [...legacyIncomingDocuments.value, ...incomingContexts.value.map(toContextDocument)]
+    : [...legacyOutgoingDocuments.value.map((item) => toLegacyDocument(item, 'outgoing')), ...outgoingContexts.value.map(toContextDocument)]
+  return items.sort((left, right) => {
+    const byArrivalDate = incomingDateRank(right.ngayDen) - incomingDateRank(left.ngayDen)
+    if (byArrivalDate) return byArrivalDate
+    return new Date(right.updatedAt ?? 0).getTime() - new Date(left.updatedAt ?? 0).getTime()
+  })
+})
+const documentTabLabel = computed(() => documentTab.value === 'incoming' ? 'Văn bản đến' : 'Văn bản đi')
+const documentCount = computed(() => documents.value.length)
 const dayKey = (value) => {
   const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(value))
   const get = (type) => parts.find((part) => part.type === type)?.value ?? ''
@@ -47,16 +83,21 @@ const formatTime = (value) => value ? new Intl.DateTimeFormat('vi-VN', { hour: '
 const formatDate = (value) => value ? new Intl.DateTimeFormat('vi-VN', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(value)) : '—'
 const taskStatus = (value) => ({ DRAFT: 'Nháp', PENDING_APPROVAL: 'Chờ duyệt', RETURNED: 'Cần bổ sung', APPROVED: 'Đã duyệt', CANCELLED: 'Đã hủy' }[value] ?? value)
 const documentStatus = (item) => {
+  if (item?.origin === 'extension') return 'Extension'
+  if (item?.pageType === 'outgoing') return 'Đã ingest'
   if (item?.completed || ['COMPLETED', 'MANUALLY_PROCESSED'].includes(item?.processingStatus)) return 'Đã xử lý'
   if (item?.processingStatus === 'IN_PROGRESS') return 'Đang xử lý'
   return 'Chưa xác định'
 }
-const currentProcessor = (item) => item?.currentAssignee?.fullName
+const currentProcessor = (item) => item?.sender?.fullName
+  || item?.senderUser
+  || item?.currentAssignee?.fullName
   || item?.currentAssignee?.externalFullName
   || item?.currentAssignee?.username
   || item?.currentAssignee?.externalUsername
   || 'Chưa xác định'
 const latestTrackLogText = (item) => {
+  if (item?.origin === 'extension') return [item.sender?.fullName || item.senderUser, 'Dữ liệu extension'].filter(Boolean).join(' · ')
   const log = item?.latestTrackLog
   if (!log) return 'Chưa có tracklog.'
   const sender = log.sender?.fullName || log.sender?.username
@@ -93,14 +134,20 @@ const loadWorkspace = async () => {
   loading.value = true
   error.value = ''
   try {
-    const [overviewResult, declarationResult, approvalResult] = await Promise.all([
+    const [overviewResult, declarationResult, approvalResult, outgoingResult, incomingContextResult, outgoingContextResult] = await Promise.all([
       http('/api/extension/overview?limit=50'),
       http('/api/work-declarations?limit=100'),
       canApprove.value ? http('/api/work-declarations?pendingForMe=true&limit=30') : Promise.resolve({ data: [] }),
+      http('/api/ingest-documents/outgoing?limit=50'),
+      http('/api/office-document-contexts?pageType=incoming&limit=50'),
+      http('/api/office-document-contexts?pageType=outgoing,outgoing_c2&limit=50'),
     ])
     payload.value = overviewResult
     declarations.value = declarationResult?.data ?? []
     approvals.value = approvalResult?.data ?? []
+    legacyOutgoingDocuments.value = outgoingResult?.data ?? []
+    incomingContexts.value = incomingContextResult?.data ?? []
+    outgoingContexts.value = outgoingContextResult?.data ?? []
   } catch (requestError) {
     error.value = requestError.message || 'Không thể tải dữ liệu extension.'
   } finally {
@@ -156,7 +203,7 @@ const approve = async (item) => {
 }
 
 const openTaskForm = () => { setDefaultTaskTime(); showTaskForm.value = true }
-const signOut = async () => { await logout(); payload.value = null; declarations.value = []; approvals.value = [] }
+const signOut = async () => { await logout(); payload.value = null; declarations.value = []; approvals.value = []; legacyOutgoingDocuments.value = []; incomingContexts.value = []; outgoingContexts.value = [] }
 watch(activeTab, () => { error.value = '' })
 watch(isOverlayLoading, (active) => {
   if (active) startLoadingDots()
@@ -164,9 +211,14 @@ watch(isOverlayLoading, (active) => {
 }, { immediate: true })
 
 onMounted(async () => {
-  await loadMe()
-  if (user.value) await loadWorkspace()
-  booting.value = false
+  try {
+    await loadMe().catch(() => null)
+    if (user.value) await loadWorkspace()
+  } catch (err) {
+    error.value = err?.message || 'Không thể khởi tạo extension.'
+  } finally {
+    booting.value = false
+  }
 })
 
 onBeforeUnmount(stopLoadingDots)
@@ -174,7 +226,9 @@ onBeforeUnmount(stopLoadingDots)
 
 <template>
   <main class="extension-shell">
-    <section v-if="booting" class="center-state" />
+    <section v-if="booting" class="center-state">
+      <Loader2 class="h-8 w-8 animate-spin text-blue-600" />
+    </section>
     <section v-else-if="!user" class="login-view">
       <div class="brand"><span class="brand-mark"><LayoutDashboard class="h-5 w-5" /></span><div><strong>eWork</strong><small>Extension workspace</small></div></div>
       <form class="login-form" @submit.prevent="handleLogin">
@@ -192,19 +246,20 @@ onBeforeUnmount(stopLoadingDots)
           <div class="metric-grid">
             <article><span>Việc hôm nay</span><strong>{{ taskSummary.today ?? 0 }}</strong></article>
             <article><span>Quá hạn</span><strong class="danger">{{ taskSummary.overdue ?? 0 }}</strong></article>
-            <article><span>Văn bản có hạn</span><strong>{{ documentSummary.total ?? 0 }}</strong></article>
+            <article><span>{{ documentTabLabel }}</span><strong>{{ documentCount }}</strong></article>
             <article><span>Tổng điểm</span><strong>{{ documentPerformance.totalPoint ?? 0 }}</strong></article>
           </div>
           <section class="document-section">
             <header class="document-section-header">
-              <div><FileText class="h-4 w-4" /><h2>Văn bản đến</h2></div>
-              <span>{{ documentSummary.total ?? 0 }} bản</span>
+              <div><component :is="documentTab === 'incoming' ? FileText : Send" class="h-4 w-4" /><h2>{{ documentTabLabel }}</h2></div>
+              <span>{{ documentCount }} bản</span>
             </header>
+            <div class="extension-document-tabs"><SlidingTabs :tabs="DOCUMENT_TABS" v-model="documentTab" /></div>
             <article v-for="item in documents" :key="item.id" class="compact-document-card">
               <header>
                 <div>
                   <strong>{{ item.soKyHieu || '—' }}</strong>
-                  <span v-if="item.ngayDen">Ngày đến {{ item.ngayDen }}</span>
+                  <span v-if="item.ngayDen">{{ documentTab === 'incoming' ? 'Ngày đến' : 'Ngày ban hành' }} {{ item.ngayDen }}</span>
                 </div>
                 <b :class="{ done: documentStatus(item) === 'Đã xử lý' }">{{ documentStatus(item) }}</b>
               </header>
@@ -216,7 +271,7 @@ onBeforeUnmount(stopLoadingDots)
               </div>
               <p class="compact-document-log"><Clock3 class="h-3.5 w-3.5" />{{ latestTrackLogText(item) }}</p>
             </article>
-            <p v-if="!documents.length" class="empty">Chưa có văn bản đến đã ingest.</p>
+            <p v-if="!documents.length" class="empty">Chưa có {{ documentTabLabel.toLowerCase() }} từ ingest hoặc extension.</p>
           </section>
         </template>
         <template v-else-if="activeTab === 'assignment'"><div class="section-header"><div><h1>Lịch hôm nay</h1><p>{{ todayTasks.length }} công việc</p></div><div class="section-actions"><Button v-if="canApprove" variant="outline" size="sm" @click="showApprovals = true"><ClipboardCheck class="mr-1 h-4 w-4" />Duyệt {{ approvalCount }}</Button><Button size="sm" @click="openTaskForm"><Plus class="mr-1 h-4 w-4" />Khai báo</Button></div></div><section class="schedule"><article v-for="item in todayTasks" :key="item._id" class="schedule-item"><time>{{ formatTime(item.workStartAt) }}<br>{{ formatTime(item.workEndAt) }}</time><div><strong>{{ item.title }}</strong><span>{{ item.declaredPoint ?? 0 }} điểm · {{ taskStatus(item.status) }}</span></div></article><p v-if="!todayTasks.length" class="empty">Chưa có lịch công việc hôm nay.</p></section></template>
@@ -239,6 +294,7 @@ onBeforeUnmount(stopLoadingDots)
 .document-section-header h2 { margin: 0; font-size: 13px; }
 .document-section-header svg { color: #2563eb; }
 .document-section-header > span { color: #71717a; font-size: 11px; font-weight: 700; }
+.extension-document-tabs { padding: 8px 10px; border-bottom: 1px solid #f0f0f1; overflow-x: auto; }
 .incoming-document-card { padding: 12px; border-bottom: 1px solid #ececf0; }
 .incoming-document-card:last-of-type { border-bottom: 0; }
 .incoming-document-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }

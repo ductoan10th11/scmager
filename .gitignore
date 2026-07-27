@@ -5,6 +5,8 @@ build/
 .next/
 docs/
 scripts/
+!apps/api/src/scripts/
+!apps/api/src/scripts/*.ts
 _bmad
 _bmad-output
 

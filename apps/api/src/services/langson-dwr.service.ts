@@ -628,13 +628,13 @@ export type ExtractedTrackLogPoint = {
 };
 
 const TRACK_LOG_POINT_PATTERNS = [
-  /\[\s*p\s*:\s*(\d+)\s*\]/i,
-  /(?:^|\s)điểm\s*:\s*(\d+)\b/iu,
+  /\[\s*p\s*:\s*(\d+(?:[.,]\d+)?)\s*\]/i,
+  /(?:^|\s)điểm\s*:\s*(\d+(?:[.,]\d+)?)\b/iu,
 ];
 
 /**
- * A point belongs to the latest tracklog that contains either `[p:<integer>]`
- * or `Điểm: <integer>`.
+ * A point belongs to the latest tracklog that contains either `[p:<number>]`
+ * or `Điểm: <number>`. Decimal separators `.` and `,` are both accepted.
  * This makes a later correction in eOffice supersede an earlier point declaration.
  */
 export function getLatestTrackLogPoint(trackLogs: TrackLogItem[]): ExtractedTrackLogPoint | null {
@@ -657,8 +657,8 @@ export function getLatestTrackLogPoint(trackLogs: TrackLogItem[]): ExtractedTrac
       .find(Boolean);
     if (!match) continue;
 
-    const point = Number(match[1]);
-    if (Number.isSafeInteger(point)) {
+    const point = Number(match[1].replace(',', '.'));
+    if (Number.isFinite(point) && point >= 0) {
       return { point, trackLogId: String(log.id ?? ''), comment: content };
     }
   }

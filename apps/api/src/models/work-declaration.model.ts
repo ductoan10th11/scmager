@@ -47,6 +47,7 @@ const workDeclarationSchema = new Schema(
     workEndAt: { type: Date, required: true, index: true },
     durationMinutes: { type: Number, required: true, min: 1 },
     declaredPoint: { type: Number, required: true, min: 0 },
+    revision: { type: Number, required: true, default: 1, min: 1, index: true },
     status: { type: String, enum: [...WORK_DECLARATION_STATUSES], default: 'DRAFT', index: true },
     approval: { type: approvalSchema, default: () => ({}) },
   },
@@ -59,6 +60,7 @@ workDeclarationSchema.index({ createdBy: 1, status: 1, createdAt: -1 });
 workDeclarationSchema.index({ 'approval.currentApprover': 1, status: 1, createdAt: -1 });
 workDeclarationSchema.index({ 'approval.history.actor': 1, 'approval.history.action': 1, status: 1, createdAt: -1 });
 workDeclarationSchema.index({ sourceDocument: 1, createdBy: 1, createdAt: -1 });
+workDeclarationSchema.index({ organization: 1, _id: 1, revision: 1 });
 
 export const WorkDeclarationModel = models.WorkDeclaration
   || model('WorkDeclaration', workDeclarationSchema);

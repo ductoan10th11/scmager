@@ -1,16 +1,17 @@
-import mongoose from 'mongoose';
+import mongoose from "mongoose";
+import { getRuntimeConfig } from "./runtime-config";
 
 export const connectDB = async () => {
   try {
-    const mongoURI = process.env.MONGO_URI;
-    if (!mongoURI) {
-      throw new Error('MONGO_URI is not defined in environment variables');
-    }
+    const mongoURI = getRuntimeConfig().mongoUri;
 
     await mongoose.connect(mongoURI);
-    console.log('✅ MongoDB Connected Successfully');
+    console.log("MongoDB connected.");
   } catch (error) {
-    console.error('❌ MongoDB Connection Error:', error);
-    process.exit(1);
+    console.error(
+      "MongoDB connection failed:",
+      error instanceof Error ? error.message : "unknown error",
+    );
+    throw error;
   }
 };

@@ -3,6 +3,9 @@ import { ORGANIZATION_TYPES } from '../models/enums';
 import { organizationRepository } from '../repositories/organization.repository';
 import { AuthUser } from '../types/auth';
 import { badRequest, conflict, forbidden, notFound } from '../utils/http-error';
+import { AuditLogModel } from '../models/audit-log.model';
+import DepartmentModel from '../models/department.model';
+import UserModel from '../models/user.model';
 
 type OrganizationType = (typeof ORGANIZATION_TYPES)[number];
 
@@ -79,8 +82,21 @@ const isDuplicateKeyError = (error: unknown) => (
 );
 
 const ensureCanManageOrganizations = (actor: AuthUser) => {
-  if (actor.role.level <= 1) return;
+  // Organization topology is a platform boundary. Tenant administrators may
+  // manage users/departments inside their tenant but cannot alter its identity.
+  if (actor.role.code === 'ADMIN' && !actor.organization) return;
   throw forbidden('You cannot manage organizations.');
+};
+
+const writeOrganizationAudit = async (actor: AuthUser, action: string, organization: any, metadata: Record<string, unknown> = {}) => {
+  await AuditLogModel.create({
+    actor: actor.id,
+    action,
+    entityModel: 'Organization',
+    entityId: organization._id,
+    organization: organization._id,
+    metadata,
+  });
 };
 
 const toSafeOrganization = (organization: any) => {
@@ -182,6 +198,7 @@ export const organizationService = {
         address: normalizeText(payload.address, 'address'),
         isActive: assertBoolean(payload.isActive, 'isActive') ?? true,
       });
+      await writeOrganizationAudit(actor, 'ORGANIZATION_CREATED', organization, { type });
       const created = await organizationRepository.findById(String((organization as any)._id));
       return { data: toSafeOrganization(created) };
     } catch (error) {
@@ -192,14 +209,7 @@ export const organizationService = {
 
   async updateOrganization(actor: AuthUser, id: unknown, payload: UpdateOrganizationPayload) {
     const organizationId = assertObjectId(id, 'id');
-    // ADMIN: full access; org-level: only own org
-    if (actor.role.level === 0) {
-      // admin — no extra check
-    } else if (actor.organization && actor.organization === organizationId) {
-      // org-level user editing their own org — allowed
-    } else {
-      throw forbidden('You can only update your own organization.');
-    }
+    ensureCanManageOrganizations(actor);
 
     const organization = await organizationRepository.findRawById(organizationId as string);
     if (!organization) throw notFound('Organization not found.');
@@ -224,12 +234,23 @@ export const organizationService = {
     const isActive = assertBoolean(payload.isActive, 'isActive');
     if (isActive !== undefined) (organization as any).isActive = isActive;
 
+    if (isActive === false && (organization as any).isActive === false) {
+      const [activeDepartments, activeUsers] = await Promise.all([
+        DepartmentModel.exists({ organization: organizationId, isActive: true }),
+        UserModel.exists({ organization: organizationId, status: 'ACTIVE' }),
+      ]);
+      if (activeDepartments || activeUsers) {
+        throw conflict('Deactivate child departments and active users before deactivating an organization.');
+      }
+    }
+
     try {
       await organizationRepository.save(organization);
     } catch (error) {
       if (isDuplicateKeyError(error)) throw conflict('Organization code already exists under this parent.');
       throw error;
     }
+    await writeOrganizationAudit(actor, 'ORGANIZATION_UPDATED', organization, { fields: Object.keys(payload) });
 
     const updated = await organizationRepository.findById(String((organization as any)._id));
     return { data: toSafeOrganization(updated) };
@@ -242,7 +263,15 @@ export const organizationService = {
     const organization = await organizationRepository.findRawById(organizationId as string);
     if (!organization) throw notFound('Organization not found.');
 
+    const [activeDepartments, activeUsers] = await Promise.all([
+      DepartmentModel.exists({ organization: organizationId, isActive: true }),
+      UserModel.exists({ organization: organizationId, status: 'ACTIVE' }),
+    ]);
+    if (activeDepartments || activeUsers) {
+      throw conflict('Deactivate child departments and active users before deactivating an organization.');
+    }
     (organization as any).isActive = false;
     await organizationRepository.save(organization);
+    await writeOrganizationAudit(actor, 'ORGANIZATION_DEACTIVATED', organization);
   },
 };

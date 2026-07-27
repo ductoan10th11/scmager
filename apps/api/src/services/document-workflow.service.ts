@@ -117,7 +117,7 @@ export const resolveDocumentWorkflow = async (trackLogs: TrackLogItem[], complet
   const candidateUsernames = [...new Set(raw.participants.flatMap((participant) => usernameCandidates(participant.externalUsername)))];
   const users = candidateUsernames.length
     ? await UserModel.find({ username: { $in: candidateUsernames }, status: 'ACTIVE' })
-      .select('_id username fullName position')
+      .select('_id username fullName position department')
       .lean()
     : [];
   const userByUsername = new Map(users.map((user: any) => [String(user.username).toLowerCase(), user]));
@@ -132,6 +132,7 @@ export const resolveDocumentWorkflow = async (trackLogs: TrackLogItem[], complet
       fullName: user?.fullName ?? participant.fullName,
       externalFullName: participant.fullName,
       position: user?.position ?? null,
+      departmentId: user?.department ?? null,
       status: ['COMPLETED', 'MANUALLY_PROCESSED'].includes(raw.status) || participant.key !== raw.currentKey ? 'PROCESSED' : 'PENDING',
       assignedAt: participant.assignedAt,
       assignedTrackLogId: participant.assignedTrackLogId,

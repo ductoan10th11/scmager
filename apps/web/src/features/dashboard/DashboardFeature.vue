@@ -54,15 +54,15 @@ const metrics = computed(() => {
   const documents = summary.value.documents ?? {}
   if (['ADMIN', 'OFFICE_CHIEF'].includes(roleCode.value)) {
     return [
-      { label: 'Văn bản đã ingest', value: documents.total ?? 0, icon: FileText, tone: 'text-blue-700 bg-blue-50', route: '/documents' },
-      { label: 'Đang lấy chi tiết', value: documents.pending ?? 0, icon: Clock3, tone: 'text-violet-700 bg-violet-50', route: '/documents' },
+      { label: 'Văn bản đã ingest', value: documents.total ?? 0, icon: FileText, tone: 'text-blue-700 bg-blue-50', route: '/office-documents' },
+      { label: 'Đang lấy chi tiết', value: documents.pending ?? 0, icon: Clock3, tone: 'text-violet-700 bg-violet-50', route: '/office-documents' },
       { label: 'Việc chờ duyệt', value: tasks.pendingReview ?? 0, icon: ClipboardCheck, tone: 'text-amber-700 bg-amber-50', route: '/assignments' },
-      { label: 'Văn bản quá hạn', value: documents.overdue ?? 0, icon: AlertTriangle, tone: 'text-rose-700 bg-rose-50', route: '/documents' },
+      { label: 'Văn bản quá hạn', value: documents.overdue ?? 0, icon: AlertTriangle, tone: 'text-rose-700 bg-rose-50', route: '/office-documents' },
     ]
   }
   if (roleCode.value === 'DEPARTMENT_LEADER') {
     return [
-      { label: 'Văn bản đang xử lý', value: documents.currentForScope ?? 0, icon: FileText, tone: 'text-blue-700 bg-blue-50', route: '/documents' },
+      { label: 'Văn bản đang xử lý', value: documents.currentForScope ?? 0, icon: FileText, tone: 'text-blue-700 bg-blue-50', route: '/office-documents' },
       { label: 'Việc chờ duyệt', value: tasks.pendingReview ?? 0, icon: ClipboardCheck, tone: 'text-violet-700 bg-violet-50', route: '/assignments' },
       { label: 'Việc cần bổ sung', value: tasks.revisionRequested ?? 0, icon: RotateCcw, tone: 'text-orange-700 bg-orange-50', route: '/assignments' },
       { label: 'Việc đã duyệt', value: tasks.done ?? 0, icon: CheckCircle2, tone: 'text-emerald-700 bg-emerald-50', route: '/assignments' },
@@ -70,15 +70,15 @@ const metrics = computed(() => {
   }
   if (roleCode.value === 'SPECIALIST') {
     return [
-      { label: 'Văn bản chờ tôi xử lý', value: documents.currentForScope ?? 0, icon: FileText, tone: 'text-blue-700 bg-blue-50', route: '/documents' },
-      { label: 'Văn bản đã chuyển', value: documents.processedByScope ?? 0, icon: CheckCircle2, tone: 'text-emerald-700 bg-emerald-50', route: '/documents' },
+      { label: 'Văn bản chờ tôi xử lý', value: documents.currentForScope ?? 0, icon: FileText, tone: 'text-blue-700 bg-blue-50', route: '/office-documents' },
+      { label: 'Văn bản đã chuyển', value: documents.processedByScope ?? 0, icon: CheckCircle2, tone: 'text-emerald-700 bg-emerald-50', route: '/office-documents' },
       { label: 'Việc chờ duyệt', value: tasks.pendingReview ?? 0, icon: Clock3, tone: 'text-amber-700 bg-amber-50', route: '/assignments' },
       { label: 'Việc cần bổ sung', value: tasks.revisionRequested ?? 0, icon: RotateCcw, tone: 'text-orange-700 bg-orange-50', route: '/assignments' },
     ]
   }
   return [
-    { label: 'Tổng văn bản', value: documents.total ?? 0, icon: FileText, tone: 'text-blue-700 bg-blue-50', route: '/documents' },
-    { label: 'Văn bản quá hạn', value: documents.overdue ?? 0, icon: AlertTriangle, tone: 'text-rose-700 bg-rose-50', route: '/documents' },
+    { label: 'Tổng văn bản', value: documents.total ?? 0, icon: FileText, tone: 'text-blue-700 bg-blue-50', route: '/office-documents' },
+    { label: 'Văn bản quá hạn', value: documents.overdue ?? 0, icon: AlertTriangle, tone: 'text-rose-700 bg-rose-50', route: '/office-documents' },
     { label: 'Việc chờ duyệt', value: tasks.pendingReview ?? 0, icon: ClipboardCheck, tone: 'text-violet-700 bg-violet-50', route: '/assignments' },
     { label: 'Việc quá thời hạn', value: tasks.overdue ?? 0, icon: Clock3, tone: 'text-amber-700 bg-amber-50', route: '/assignments' },
   ]
@@ -119,7 +119,7 @@ const formatDateTime = (value) => value
   : 'Chưa đặt'
 
 const openItem = (item) => {
-  router.push(item.kind === 'document' ? `/documents/${item._id}` : '/assignments')
+  router.push(item.kind === 'document' ? '/office-documents' : '/assignments')
 }
 
 const fetchDashboard = async () => {

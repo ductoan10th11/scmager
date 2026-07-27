@@ -1,7 +1,7 @@
-import mongoose from 'mongoose';
-import { connectDB } from '../configs/mongo';
-import { documentRepository } from '../repositories/document.repository';
-import { outgoingDocumentRepository } from '../repositories/outgoing-document.repository';
+import mongoose from "mongoose";
+import { connectDB } from "../configs/mongo";
+import { documentRepository } from "../repositories/document.repository";
+import { outgoingDocumentRepository } from "../repositories/outgoing-document.repository";
 import {
   getCsrfToken,
   getDocCount,
@@ -12,9 +12,9 @@ import {
   isCompletedDocumentTrackLog,
   LANGSON_COMPLETED_RULE,
   deadlineDescendingFilter,
-} from './langson-dwr.service';
-import { resolveDocumentWorkflow } from './document-workflow.service';
-import { langson } from './langson-client.service';
+} from "./langson-dwr.service";
+import { resolveDocumentWorkflow } from "./document-workflow.service";
+import { langson } from "./langson-client.service";
 
 export interface IngestConfig {
   pageSize: number;
@@ -87,22 +87,29 @@ function envInt(name: string, fallback: number): number {
 function config(overrides: Partial<IngestConfig> = {}): IngestConfig {
   // One incoming record normally has only one or two related records. Keep the
   // complete eOffice graph responsive while the outer worker remains sequential.
-  const delayMinMs = envInt('LANGSON_INGEST_DELAY_MIN_MS', 50);
-  const delayMaxMs = envInt('LANGSON_INGEST_DELAY_MAX_MS', 150);
-  const dateTimeZone = process.env.LANGSON_INGEST_DATE_TIME_ZONE ?? 'Asia/Ho_Chi_Minh';
+  const delayMinMs = envInt("LANGSON_INGEST_DELAY_MIN_MS", 50);
+  const delayMaxMs = envInt("LANGSON_INGEST_DELAY_MAX_MS", 150);
+  const dateTimeZone =
+    process.env.LANGSON_INGEST_DATE_TIME_ZONE ?? "Asia/Ho_Chi_Minh";
 
   return {
-    pageSize: envInt('LANGSON_DWR_DOC_PAGE_LIMIT', 50),
+    pageSize: envInt("LANGSON_DWR_DOC_PAGE_LIMIT", 50),
     delayMinMs,
     delayMaxMs: Math.max(delayMinMs, delayMaxMs),
-    rateLimitMax: Math.max(1, envInt('LANGSON_INGEST_RATE_LIMIT_MAX', 8)),
-    rateLimitDurationMs: Math.max(1, envInt('LANGSON_INGEST_RATE_LIMIT_DURATION_MS', 1_000)),
-    orgPrefix: process.env.LANGSON_ORG_PREFIX ?? 'QLVB_LSN_XATHIENTAN.',
-    retryBaseDelayMs: envInt('LANGSON_INGEST_RETRY_BASE_DELAY_MS', 5_000),
-    retryMaxDelayMs: envInt('LANGSON_INGEST_RETRY_MAX_DELAY_MS', 15 * 60_000),
-    retryJitterRatio: Math.min(0.5, envInt('LANGSON_INGEST_RETRY_JITTER_PERCENT', 20) / 100),
-    maxAttempts: Math.max(1, envInt('LANGSON_INGEST_MAX_ATTEMPTS', 3)),
-    sessionHealDelayMs: envInt('LANGSON_INGEST_SESSION_HEAL_DELAY_MS', 2_000),
+    rateLimitMax: Math.max(1, envInt("LANGSON_INGEST_RATE_LIMIT_MAX", 8)),
+    rateLimitDurationMs: Math.max(
+      1,
+      envInt("LANGSON_INGEST_RATE_LIMIT_DURATION_MS", 1_000),
+    ),
+    orgPrefix: process.env.LANGSON_ORG_PREFIX ?? "QLVB_LSN_XATHIENTAN.",
+    retryBaseDelayMs: envInt("LANGSON_INGEST_RETRY_BASE_DELAY_MS", 5_000),
+    retryMaxDelayMs: envInt("LANGSON_INGEST_RETRY_MAX_DELAY_MS", 15 * 60_000),
+    retryJitterRatio: Math.min(
+      0.5,
+      envInt("LANGSON_INGEST_RETRY_JITTER_PERCENT", 20) / 100,
+    ),
+    maxAttempts: Math.max(1, envInt("LANGSON_INGEST_MAX_ATTEMPTS", 3)),
+    sessionHealDelayMs: envInt("LANGSON_INGEST_SESSION_HEAL_DELAY_MS", 2_000),
     dateTimeZone,
     ...overrides,
   };
@@ -115,19 +122,25 @@ async function sleep(ms: number): Promise<void> {
 
 function jitterDelayMs(c: IngestConfig): number {
   if (c.delayMaxMs <= c.delayMinMs) return c.delayMinMs;
-  return c.delayMinMs + Math.floor(Math.random() * (c.delayMaxMs - c.delayMinMs + 1));
+  return (
+    c.delayMinMs + Math.floor(Math.random() * (c.delayMaxMs - c.delayMinMs + 1))
+  );
 }
 
 async function politeDelay(c: IngestConfig): Promise<void> {
   await sleep(jitterDelayMs(c));
 }
 
-function nextRetryAt(attempts: number, c: IngestConfig, now = new Date()): Date {
+function nextRetryAt(
+  attempts: number,
+  c: IngestConfig,
+  now = new Date(),
+): Date {
   const baseDelay = Math.min(
     c.retryBaseDelayMs * 3 ** Math.max(0, attempts - 1),
     c.retryMaxDelayMs,
   );
-  const jitter = 1 + ((Math.random() * 2 - 1) * c.retryJitterRatio);
+  const jitter = 1 + (Math.random() * 2 - 1) * c.retryJitterRatio;
   const delay = Math.max(0, Math.round(baseDelay * jitter));
   return new Date(now.getTime() + delay);
 }
@@ -174,26 +187,35 @@ type DocumentMonthRange = {
   endDate: string;
 };
 
-function currentDocumentMonthRange(timeZone: string, now = new Date()): DocumentMonthRange {
-  const parts = new Intl.DateTimeFormat('en-GB', {
+function currentDocumentMonthRange(
+  timeZone: string,
+  now = new Date(),
+): DocumentMonthRange {
+  const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone,
-    year: 'numeric',
-    month: '2-digit',
+    year: "numeric",
+    month: "2-digit",
   }).formatToParts(now);
-  const year = parts.find((part) => part.type === 'year')?.value;
-  const month = parts.find((part) => part.type === 'month')?.value;
-  if (!year || !month) throw new Error('Unable to resolve current document month.');
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  if (!year || !month)
+    throw new Error("Unable to resolve current document month.");
 
-  const lastDay = new Date(Date.UTC(Number(year), Number(month), 0)).getUTCDate();
+  const lastDay = new Date(
+    Date.UTC(Number(year), Number(month), 0),
+  ).getUTCDate();
   return {
     year,
     month,
     startDate: `01/${month}/${year}`,
-    endDate: `${String(lastDay).padStart(2, '0')}/${month}/${year}`,
+    endDate: `${String(lastDay).padStart(2, "0")}/${month}/${year}`,
   };
 }
 
-function isWithinDocumentMonth(value: string, range: DocumentMonthRange): boolean {
+function isWithinDocumentMonth(
+  value: string,
+  range: DocumentMonthRange,
+): boolean {
   const match = value.trim().match(/^\d{2}\/(\d{2})\/(\d{4})$/);
   return match?.[1] === range.month && match?.[2] === range.year;
 }
@@ -201,11 +223,17 @@ function isWithinDocumentMonth(value: string, range: DocumentMonthRange): boolea
 export class IngestRateLimiter {
   private readonly timestamps: number[] = [];
 
-  constructor(private readonly max: number, private readonly durationMs: number) {}
+  constructor(
+    private readonly max: number,
+    private readonly durationMs: number,
+  ) {}
 
   async wait(): Promise<void> {
     const now = Date.now();
-    while (this.timestamps.length && now - this.timestamps[0] >= this.durationMs) {
+    while (
+      this.timestamps.length &&
+      now - this.timestamps[0] >= this.durationMs
+    ) {
       this.timestamps.shift();
     }
 
@@ -237,7 +265,9 @@ function errorMessage(error: unknown): string {
 }
 
 function isSessionError(error: unknown): boolean {
-  return /(401|403|unauthorized|forbidden|login|session|authentication|probe failed)/i.test(errorMessage(error));
+  return /(401|403|unauthorized|forbidden|login|session|authentication|probe failed)/i.test(
+    errorMessage(error),
+  );
 }
 
 async function healSession(c: IngestConfig): Promise<string> {
@@ -259,20 +289,26 @@ async function fetchWithSafety<T>(
 function formatDocumentIngestLog(info: DocumentIngestLogInfo): string {
   return [
     `[langson-ingest] doc ok`,
-    `soKyHieu=${info.soKyHieu || '-'}`,
-    `ngayDen=${info.ngayDen || '-'}`,
-    `vanThuPhucDap=${info.completed ? 'true' : 'false'}`,
-  ].join(' ');
+    `soKyHieu=${info.soKyHieu || "-"}`,
+    `ngayDen=${info.ngayDen || "-"}`,
+    `vanThuPhucDap=${info.completed ? "true" : "false"}`,
+  ].join(" ");
 }
 
-function emitDocumentIngestLog(info: DocumentIngestLogInfo, hooks: IngestHooks): void {
+function emitDocumentIngestLog(
+  info: DocumentIngestLogInfo,
+  hooks: IngestHooks,
+): void {
   console.info(formatDocumentIngestLog(info));
   try {
     hooks.onDocumentEnriched?.(info);
   } catch (error) {
     // The record is already persisted. A socket/log consumer must never turn a
     // successful ingest into a retryable failure.
-    console.warn('[langson-ingest] onDocumentEnriched hook failed:', errorMessage(error));
+    console.warn(
+      "[langson-ingest] onDocumentEnriched hook failed:",
+      errorMessage(error),
+    );
   }
 }
 
@@ -289,27 +325,38 @@ export async function processIngestJob(
 
   const run = async () => {
     const [trackLogs, relatedDocuments] = await Promise.all([
-      fetchWithSafety(c, limiter, () => getTrackLog(job.documentId, c.orgPrefix, csrf)),
-      fetchWithSafety(c, limiter, () => getRelatedDocuments(job.documentId, c.orgPrefix, csrf)),
+      fetchWithSafety(c, limiter, () =>
+        getTrackLog(job.documentId, c.orgPrefix, csrf),
+      ),
+      fetchWithSafety(c, limiter, () =>
+        getRelatedDocuments(job.documentId, c.orgPrefix, csrf),
+      ),
     ]);
     const completed = isCompletedDocumentTrackLog(trackLogs);
     const point = getLatestTrackLogPoint(trackLogs);
     const processing = await resolveDocumentWorkflow(trackLogs, completed);
 
-    const sourceDocument = await documentRepository.markEnriched(job.documentId, {
-      trackLogs,
-      completed,
-      completedRule: completed ? LANGSON_COMPLETED_RULE : '',
-      point: point?.point ?? 0,
-      processing,
-    });
-    if (!sourceDocument) throw new Error(`Incoming document ${job.documentId} no longer exists.`);
-    await outgoingDocumentRepository.syncForIncoming(sourceDocument, relatedDocuments);
+    const sourceDocument = await documentRepository.markEnriched(
+      job.documentId,
+      {
+        trackLogs,
+        completed,
+        completedRule: completed ? LANGSON_COMPLETED_RULE : "",
+        point: point?.point ?? 0,
+        processing,
+      },
+    );
+    if (!sourceDocument)
+      throw new Error(`Incoming document ${job.documentId} no longer exists.`);
+    await outgoingDocumentRepository.syncForIncoming(
+      sourceDocument,
+      relatedDocuments,
+    );
 
     const logInfo = {
       documentId: job.documentId,
-      soKyHieu: String((sourceDocument as any).soKyHieu ?? ''),
-      ngayDen: String((sourceDocument as any).ngayDen ?? ''),
+      soKyHieu: String((sourceDocument as any).soKyHieu ?? ""),
+      ngayDen: String((sourceDocument as any).ngayDen ?? ""),
       completed,
     };
     emitDocumentIngestLog(logInfo, hooks);
@@ -342,7 +389,9 @@ export async function processIngestJob(
   }
 }
 
-export async function runDiscovery(overrides: Partial<IngestConfig> = {}): Promise<DiscoverySummary> {
+export async function runDiscovery(
+  overrides: Partial<IngestConfig> = {},
+): Promise<DiscoverySummary> {
   const c = config(overrides);
   const limiter = new IngestRateLimiter(c.rateLimitMax, c.rateLimitDurationMs);
   const csrf = await fetchWithSafety(c, limiter, () => getCsrfToken());
@@ -351,7 +400,9 @@ export async function runDiscovery(overrides: Partial<IngestConfig> = {}): Promi
     txt_start_date_ngayden: monthRange.startDate,
     txt_end_date_ngayden: monthRange.endDate,
   });
-  const count = await fetchWithSafety(c, limiter, () => getDocCount(filter, csrf, c.pageSize));
+  const count = await fetchWithSafety(c, limiter, () =>
+    getDocCount(filter, csrf, c.pageSize),
+  );
   const summary: DiscoverySummary = {
     totalRecords: count.totalRecords,
     totalPages: count.totalPages,
@@ -371,12 +422,17 @@ export async function runDiscovery(overrides: Partial<IngestConfig> = {}): Promi
   for (let page = 1; page <= count.totalPages; page++) {
     let docs;
     try {
-      docs = await fetchWithSafety(c, limiter, () => getDocList(page, c.pageSize, filter, csrf));
+      docs = await fetchWithSafety(c, limiter, () =>
+        getDocList(page, c.pageSize, filter, csrf),
+      );
       consecutivePageFailures = 0;
     } catch (error) {
       summary.failedPages += 1;
       appendError(summary.errors, `list page ${page}`, error);
-      console.warn(`[langson-ingest] list page ${page} failed:`, errorMessage(error));
+      console.warn(
+        `[langson-ingest] list page ${page} failed:`,
+        errorMessage(error),
+      );
 
       // One transient page error is allowed. Stop after two consecutive errors
       // so an upstream outage does not keep a sprint alive indefinitely.
@@ -409,7 +465,10 @@ export async function runDiscovery(overrides: Partial<IngestConfig> = {}): Promi
       } catch (error) {
         summary.failedItems += 1;
         appendError(summary.errors, `store ${item.documentId}`, error);
-        console.warn(`[langson-ingest] could not store ${item.documentId}:`, errorMessage(error));
+        console.warn(
+          `[langson-ingest] could not store ${item.documentId}:`,
+          errorMessage(error),
+        );
       }
     }
 
@@ -424,7 +483,10 @@ export async function loadPendingIngestJobs(
 ): Promise<IngestJob[]> {
   const c = config(overrides);
   const monthRange = currentDocumentMonthRange(c.dateTimeZone);
-  const pending = await documentRepository.findPendingForEnrichment(monthRange.year, monthRange.month);
+  const pending = await documentRepository.findPendingForEnrichment(
+    monthRange.year,
+    monthRange.month,
+  );
   return pending.map((doc) => ({
     documentId: String((doc as any).documentId),
     attempts: Number((doc as any).ingest?.attempts ?? 0) + 1,
@@ -441,8 +503,11 @@ export async function runEnrichPending(
   try {
     jobs = await loadPendingIngestJobs(overrides);
   } catch (error) {
-    appendError(summary.errors, 'load pending jobs', error);
-    console.error('[langson-ingest] could not load pending jobs:', errorMessage(error));
+    appendError(summary.errors, "load pending jobs", error);
+    console.error(
+      "[langson-ingest] could not load pending jobs:",
+      errorMessage(error),
+    );
     return summary;
   }
 
@@ -453,8 +518,11 @@ export async function runEnrichPending(
   try {
     csrf = await getCsrfToken();
   } catch (error) {
-    appendError(summary.errors, 'get csrf token', error);
-    console.error('[langson-ingest] could not start enrichment:', errorMessage(error));
+    appendError(summary.errors, "get csrf token", error);
+    console.error(
+      "[langson-ingest] could not start enrichment:",
+      errorMessage(error),
+    );
     return summary;
   }
 
@@ -462,7 +530,13 @@ export async function runEnrichPending(
 
   for (const job of jobs) {
     try {
-      const result = await processIngestJob(job, csrf, limiter, overrides, hooks);
+      const result = await processIngestJob(
+        job,
+        csrf,
+        limiter,
+        overrides,
+        hooks,
+      );
       csrf = result.csrfToken;
       summary.enriched += 1;
       if (result.completed) summary.completed += 1;
@@ -470,7 +544,10 @@ export async function runEnrichPending(
     } catch (error) {
       const deadLetter = job.attempts >= c.maxAttempts;
       appendError(summary.errors, `enrich ${job.documentId}`, error);
-      console.warn(`[langson-ingest] enrich ${job.documentId} failed:`, errorMessage(error));
+      console.warn(
+        `[langson-ingest] enrich ${job.documentId} failed:`,
+        errorMessage(error),
+      );
       try {
         await documentRepository.markEnrichFailed(
           job.documentId,
@@ -480,8 +557,15 @@ export async function runEnrichPending(
           deadLetter,
         );
       } catch (persistError) {
-        appendError(summary.errors, `persist failure ${job.documentId}`, persistError);
-        console.error('[langson-ingest] could not persist job failure:', errorMessage(persistError));
+        appendError(
+          summary.errors,
+          `persist failure ${job.documentId}`,
+          persistError,
+        );
+        console.error(
+          "[langson-ingest] could not persist job failure:",
+          errorMessage(persistError),
+        );
         // Mongo is unavailable or unhealthy. Continuing would only pile up
         // connection work and make the process less responsive.
         break;
@@ -524,20 +608,31 @@ export async function runRelatedDocumentBackfill(
 
   for (const job of jobs) {
     try {
-      const result = await processIngestJob(job, csrf, limiter, overrides, hooks);
+      const result = await processIngestJob(
+        job,
+        csrf,
+        limiter,
+        overrides,
+        hooks,
+      );
       csrf = result.csrfToken;
       summary.enriched += 1;
       if (result.completed) summary.completed += 1;
       if (result.sessionHealed) summary.sessionHealed += 1;
 
-      const document = await documentRepository.findByDocumentId(job.documentId);
+      const document = await documentRepository.findByDocumentId(
+        job.documentId,
+      );
       if (Number((document as any)?.ingest?.outgoingDocumentCount ?? 0) > 0) {
         summary.withOutgoing += 1;
       }
     } catch (error) {
       const deadLetter = job.attempts >= c.maxAttempts;
       appendError(summary.errors, `related backfill ${job.documentId}`, error);
-      console.warn(`[langson-ingest] related backfill ${job.documentId} failed:`, errorMessage(error));
+      console.warn(
+        `[langson-ingest] related backfill ${job.documentId} failed:`,
+        errorMessage(error),
+      );
       try {
         await documentRepository.markEnrichFailed(
           job.documentId,
@@ -547,8 +642,15 @@ export async function runRelatedDocumentBackfill(
           deadLetter,
         );
       } catch (persistError) {
-        appendError(summary.errors, `persist failure ${job.documentId}`, persistError);
-        console.error('[langson-ingest] could not persist related-document failure:', errorMessage(persistError));
+        appendError(
+          summary.errors,
+          `persist failure ${job.documentId}`,
+          persistError,
+        );
+        console.error(
+          "[langson-ingest] could not persist related-document failure:",
+          errorMessage(persistError),
+        );
         break;
       }
       summary.failed += 1;
@@ -570,8 +672,8 @@ export async function runSprint(
     discovery = await runDiscovery(overrides);
   } catch (error) {
     discovery.failedPages = 1;
-    appendError(discovery.errors, 'discovery', error);
-    console.error('[langson-ingest] discovery failed:', errorMessage(error));
+    appendError(discovery.errors, "discovery", error);
+    console.error("[langson-ingest] discovery failed:", errorMessage(error));
   }
 
   // Discovery failure must not block re-checking documents already stored and
@@ -579,28 +681,34 @@ export async function runSprint(
   try {
     enrichment = await runEnrichPending(overrides, hooks);
   } catch (error) {
-    appendError(enrichment.errors, 'enrichment', error);
-    console.error('[langson-ingest] enrichment failed:', errorMessage(error));
+    appendError(enrichment.errors, "enrichment", error);
+    console.error("[langson-ingest] enrichment failed:", errorMessage(error));
   }
 
-  return { discovery, enrichment, errors: [...discovery.errors, ...enrichment.errors].slice(0, 20) };
+  return {
+    discovery,
+    enrichment,
+    errors: [...discovery.errors, ...enrichment.errors].slice(0, 20),
+  };
 }
 
 function configureCliMongoUri(): void {
   if (process.env.LANGSON_INGEST_MONGO_URI) {
     process.env.MONGO_URI = process.env.LANGSON_INGEST_MONGO_URI;
-    console.log('Using LANGSON_INGEST_MONGO_URI for ingest CLI.');
+    console.log("Using LANGSON_INGEST_MONGO_URI for ingest CLI.");
     return;
   }
 
   const uri = process.env.MONGO_URI;
   if (!uri) return;
 
-  const hostFallback = process.env.LANGSON_INGEST_MONGO_HOST ?? '127.0.0.1';
+  const hostFallback = process.env.LANGSON_INGEST_MONGO_HOST ?? "127.0.0.1";
   const rewritten = uri.replace(/([/@])mongodb(?=[:/,])/g, `$1${hostFallback}`);
   if (rewritten !== uri) {
     process.env.MONGO_URI = rewritten;
-    console.log(`Using ingest CLI Mongo host fallback: mongodb -> ${hostFallback}.`);
+    console.log(
+      `Using ingest CLI Mongo host fallback: mongodb -> ${hostFallback}.`,
+    );
   }
 }
 
@@ -611,12 +719,12 @@ if (require.main === module) {
     try {
       configureCliMongoUri();
       await connectDB();
-      const summary = process.argv.includes('--related-backfill')
+      const summary = process.argv.includes("--related-backfill")
         ? await runRelatedDocumentBackfill()
         : await runSprint();
       console.log(JSON.stringify(summary, null, 2));
     } catch (error) {
-      console.error('Langson ingest failed:', error);
+      console.error("Langson ingest failed:", error);
       process.exitCode = 1;
     } finally {
       await langson.dispose();

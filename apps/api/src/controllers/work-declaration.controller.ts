@@ -46,5 +46,5 @@ export const forwardWorkDeclaration = async (req: Request, res: Response, next: 
   try { res.status(200).json(await forwardWorkDeclarationService(currentUser(req), req.params.id, req.body)); } catch (error) { next(error); }
 };
 export const cancelWorkDeclaration = async (req: Request, res: Response, next: NextFunction) => {
-  try { res.status(200).json(await cancelWorkDeclarationService(currentUser(req), req.params.id)); } catch (error) { next(error); }
+  try { res.status(200).json(await cancelWorkDeclarationService(currentUser(req), req.params.id, req.body)); } catch (error) { next(error); }
 };

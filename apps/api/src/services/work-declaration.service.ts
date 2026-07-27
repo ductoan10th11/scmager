@@ -1,13 +1,17 @@
-import { isValidObjectId } from 'mongoose';
+import mongoose, { isValidObjectId } from 'mongoose';
 import { DepartmentModel, DocumentModel, WorkDeclarationModel } from '../models';
 import { workDeclarationRepository } from '../repositories/work-declaration.repository';
 import { userRepository } from '../repositories/user.repository';
 import { AuthUser } from '../types/auth';
 import { badRequest, conflict, forbidden, notFound } from '../utils/http-error';
-import { markAllWorkDeclarationNotificationsRead, markWorkDeclarationNotificationsRead, notifyUser } from './notification.service';
+import {
+  enqueueWorkDeclarationNotification,
+  markAllWorkDeclarationNotificationsRead,
+  markWorkDeclarationNotificationsRead,
+} from './notification.service';
 import { AuditLogModel } from '../models/audit-log.model';
-import { documentWorkflowFiltersFor } from './document-workflow.service';
 import { emitWorkDeclarationChanged } from '../realtime/ingest.socket';
+import { ensureDailyCapacity, getEffectiveWorkPolicy, type EffectiveWorkPolicy } from './work-policy.service';
 
 const idOf = (value: any) => String(value?._id ?? value ?? '');
 const isAdmin = (actor: AuthUser) => actor.role.code === 'ADMIN';
@@ -15,6 +19,30 @@ const isSpecialist = (actor: AuthUser) => actor.role.code === 'SPECIALIST';
 const isDepartmentLeader = (actor: AuthUser) => actor.role.code === 'DEPARTMENT_LEADER';
 const isSelfApprover = (actor: AuthUser) => ['OFFICE_CHIEF', 'COMMUNE_LEADER'].includes(actor.role.code);
 const scheduleLocks = new Map<string, Promise<void>>();
+type WorkMutationSession = mongoose.ClientSession | null;
+
+const isTransactionUnsupported = (error: unknown) => /transaction numbers are only allowed on a replica set member or mongos|transaction support is not available/i
+  .test(error instanceof Error ? error.message : String(error));
+
+/**
+ * Uses a transaction when MongoDB supports it. Local/legacy deployments may
+ * be a standalone mongod; in that case mutations still run safely in order
+ * with the existing process schedule lock and optimistic revision checks.
+ */
+export const runWorkDeclarationMutation = async <T>(operation: (session: WorkMutationSession) => Promise<T>): Promise<T> => {
+  const session = await mongoose.startSession();
+  try {
+    let result: T | undefined;
+    await session.withTransaction(async () => { result = await operation(session); });
+    if (result === undefined) throw conflict('Workflow transaction did not complete.');
+    return result;
+  } catch (error) {
+    if (!isTransactionUnsupported(error)) throw error;
+    return operation(null);
+  } finally {
+    await session.endSession();
+  }
+};
 
 const withScheduleLock = async <T>(userId: string, operation: () => Promise<T>) => {
   const previous = scheduleLocks.get(userId) ?? Promise.resolve();
@@ -29,19 +57,22 @@ const withScheduleLock = async <T>(userId: string, operation: () => Promise<T>) 
 };
 
 const ensureNoScheduleOverlap = async (
+  organizationId: string,
   userId: string,
   workStartAt: Date,
   workEndAt: Date,
   excludeId?: string,
+  session?: WorkMutationSession,
 ) => {
   const filter: Record<string, unknown> = {
+    organization: organizationId,
     createdBy: userId,
     status: { $ne: 'CANCELLED' },
     workStartAt: { $lt: workEndAt },
     workEndAt: { $gt: workStartAt },
   };
   if (excludeId) filter._id = { $ne: excludeId };
-  const overlapping = await WorkDeclarationModel.findOne(filter).select('_id title workStartAt workEndAt').lean();
+  const overlapping = await WorkDeclarationModel.findOne(filter).session(session ?? null).select('_id title workStartAt workEndAt').lean();
   if (overlapping) {
     throw conflict('Khoảng thời gian này đang trùng với một công việc khác.', {
       workDeclarationId: idOf(overlapping),
@@ -71,9 +102,17 @@ const normalizeText = (value: unknown, field: string, required = false) => {
     return undefined;
   }
   if (typeof value !== 'string') throw badRequest(`${field} must be a string.`);
-  const normalized = value.trim();
+  const normalized = value.trim().slice(0, field === 'description' ? 10_000 : 1_000);
   if (required && !normalized) throw badRequest(`${field} is required.`);
   return normalized;
+};
+
+const expectedRevision = (body: Record<string, unknown>): number => {
+  const revision = Number(body.revision);
+  if (!Number.isSafeInteger(revision) || revision < 1) {
+    throw badRequest('revision must be a positive integer.');
+  }
+  return revision;
 };
 
 const parseWorkDateTime = (value: unknown) => {
@@ -124,7 +163,7 @@ const resolveDeclarationOwner = async (actor: AuthUser, assigneeId: unknown) => 
       id: actor.id,
       organization: actor.organization,
       department: actor.department,
-      assignedByLeader: actor.role.level <= 3,
+      assignedByLeader: false,
     };
   }
 
@@ -160,8 +199,12 @@ const findEligibleUser = async (actor: AuthUser, userId: string) => {
   return user;
 };
 
-const resolveSubmissionApprover = async (actor: AuthUser, approverId: unknown) => {
-  if (isSelfApprover(actor)) return { approverId: actor.id, selfApproved: true };
+const resolveSubmissionApprover = async (
+  actor: AuthUser,
+  approverId: unknown,
+  policy: EffectiveWorkPolicy,
+) => {
+  if (isSelfApprover(actor) && policy.allowSelfApproval) return { approverId: actor.id, selfApproved: true };
 
   if (isSpecialist(actor)) {
     if (!actor.department) throw badRequest('Specialist must belong to a department before submitting.');
@@ -185,6 +228,19 @@ const resolveSubmissionApprover = async (actor: AuthUser, approverId: unknown) =
       throw badRequest('Department leaders must submit to an OFFICE_CHIEF or COMMUNE_LEADER.');
     }
     return { approverId: targetId, selfApproved: false };
+  }
+
+  if (actor.role.code === 'OFFICE_CHIEF') {
+    const targetId = assertObjectId(approverId, 'approverId');
+    const target = await findEligibleUser(actor, targetId);
+    if ((target as any).role?.code !== 'COMMUNE_LEADER') {
+      throw badRequest('Office chiefs must submit to a COMMUNE_LEADER when self approval is disabled.');
+    }
+    return { approverId: targetId, selfApproved: false };
+  }
+
+  if (actor.role.code === 'COMMUNE_LEADER') {
+    throw forbidden('Tenant policy does not permit self approval.');
   }
 
   throw forbidden('Your role cannot submit work declarations.');
@@ -215,8 +271,14 @@ const reload = async (id: string) => {
   return declaration;
 };
 
-const createAudit = (actor: AuthUser, action: string, declaration: any, metadata: Record<string, unknown> = {}) => (
-  AuditLogModel.create({
+const createAudit = (
+  actor: AuthUser,
+  action: string,
+  declaration: any,
+  metadata: Record<string, unknown> = {},
+  session?: WorkMutationSession,
+) => {
+  const entry = {
     actor: actor.id,
     action,
     entityModel: 'WorkDeclaration',
@@ -224,8 +286,33 @@ const createAudit = (actor: AuthUser, action: string, declaration: any, metadata
     organization: declaration.organization,
     department: declaration.department,
     metadata,
-  })
-);
+  };
+  return session
+    ? AuditLogModel.create([entry], { session }).then(([created]) => created)
+    : AuditLogModel.create(entry);
+};
+
+const loadCurrentForMutation = async (
+  actor: AuthUser,
+  declarationId: string,
+  revision: number,
+  session: WorkMutationSession,
+) => {
+  const declaration = await WorkDeclarationModel.findById(declarationId).session(session);
+  if (!declaration) throw notFound('Work declaration not found.');
+  ensureDeclarationAccess(actor, declaration);
+  if (Number((declaration as any).revision) !== revision) {
+    throw conflict('Khai báo đã thay đổi. Hãy tải lại dữ liệu mới nhất.', {
+      revision: Number((declaration as any).revision),
+    });
+  }
+  return declaration;
+};
+
+const saveRevisioned = async (declaration: any, session: WorkMutationSession) => {
+  declaration.revision = Number(declaration.revision ?? 1) + 1;
+  await declaration.save({ session: session ?? undefined });
+};
 
 const emitDeclarationChanged = (declaration: any) => {
   const organizationId = idOf(declaration.organization);
@@ -362,73 +449,52 @@ export const createWorkDeclarationService = async (actor: AuthUser, body: Record
   let sourceDocument: string | null = null;
   if (body.sourceDocument !== undefined && body.sourceDocument !== null && body.sourceDocument !== '') {
     sourceDocument = assertObjectId(body.sourceDocument, 'sourceDocument');
-    const source = await DocumentModel.findById(sourceDocument).select('_id');
+    const source = await DocumentModel.findOne({ _id: sourceDocument, organizationId: owner.organization }).select('_id');
     if (!source) throw notFound('Source document not found.');
-    if (!['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER'].includes(actor.role.code)) {
-      const scope = await documentWorkflowFiltersFor(actor);
-      const canUseSource = await DocumentModel.exists({ _id: sourceDocument, ...scope.participant });
-      if (!canUseSource) throw forbidden('You do not have access to the source document.');
-    }
   }
   const now = new Date();
-  const declaration = await withScheduleLock(owner.id, async () => {
-    await ensureNoScheduleOverlap(owner.id, payload.workStartAt, payload.workEndAt);
-    return workDeclarationRepository.create({
-      ...payload,
-      organization: owner.organization,
-      department: owner.department,
-      createdBy: owner.id,
-      sourceDocument,
-      status: owner.assignedByLeader ? 'APPROVED' : 'DRAFT',
-      approval: owner.assignedByLeader
-        ? {
-            currentApprover: null,
-            submittedAt: now,
-            approvedAt: now,
-            history: [{
-              action: 'APPROVED',
-              actor: actor.id,
-              fromApprover: actor.id,
-              toApprover: owner.id,
-              note: 'Công việc được giao trực tiếp.',
-              actedAt: now,
-            }],
-          }
-        : undefined,
-    });
-  });
-  await createAudit(
-    actor,
-    owner.assignedByLeader ? 'WORK_DECLARATION_ASSIGNED' : 'WORK_DECLARATION_CREATED',
-    declaration,
-    { declaredPoint: payload.declaredPoint, sourceDocument, assigneeId: owner.id },
-  );
+  const declaration = await withScheduleLock(owner.id, () => runWorkDeclarationMutation(async (session) => {
+    const policy = await getEffectiveWorkPolicy(owner.organization);
+    await ensureNoScheduleOverlap(owner.organization, owner.id, payload.workStartAt, payload.workEndAt, undefined, session);
+    await ensureDailyCapacity(owner.organization, owner.id, payload.workStartAt, payload.workEndAt, policy, undefined, session);
+    const [created] = await WorkDeclarationModel.create([{
+      ...payload, organization: owner.organization, department: owner.department, createdBy: owner.id,
+      sourceDocument, revision: 1, status: owner.assignedByLeader ? 'APPROVED' : 'DRAFT',
+      approval: owner.assignedByLeader ? {
+        currentApprover: null, submittedAt: now, approvedAt: now,
+        history: [{ action: 'APPROVED', actor: actor.id, fromApprover: actor.id, toApprover: owner.id, note: 'Công việc được giao trực tiếp.', actedAt: now }],
+      } : undefined,
+    }], { session: session ?? undefined });
+    await createAudit(actor, owner.assignedByLeader ? 'WORK_DECLARATION_ASSIGNED' : 'WORK_DECLARATION_CREATED', created, {
+      declaredPoint: payload.declaredPoint, sourceDocument, assigneeId: owner.id, revision: 1,
+    }, session);
+    if (owner.assignedByLeader) {
+      await enqueueWorkDeclarationNotification({ session, recipient: owner.id, actor: actor.id, type: 'WORK_DECLARATION_APPROVED', title: 'Công việc được giao', message: created.title, entityId: String(created._id), organizationId: owner.organization, revision: 1 });
+    }
+    return created;
+  }));
   emitDeclarationChanged(declaration);
   return { data: await reload(String((declaration as any)._id)) };
 };
 
 export const updateWorkDeclarationService = async (actor: AuthUser, id: unknown, body: Record<string, unknown>) => {
   const declarationId = assertObjectId(id, 'id');
-  const declaration = await workDeclarationRepository.findRawById(declarationId);
-  if (!declaration) throw notFound('Work declaration not found.');
-  ensureDeclarationAccess(actor, declaration);
-  if (idOf((declaration as any).createdBy) !== actor.id) throw forbidden('Only the creator can update this declaration.');
-  if (!['DRAFT', 'RETURNED'].includes((declaration as any).status)) {
-    throw badRequest('Only draft or returned declarations can be updated.');
-  }
-
+  const revision = expectedRevision(body);
   const payload = parseDeclarationPayload(body);
-  await withScheduleLock(idOf((declaration as any).createdBy), async () => {
-    await ensureNoScheduleOverlap(
-      idOf((declaration as any).createdBy),
-      payload.workStartAt,
-      payload.workEndAt,
-      declarationId,
-    );
-    Object.assign(declaration, payload);
-    await workDeclarationRepository.save(declaration);
+  const declaration = await runWorkDeclarationMutation(async (session) => {
+    const current = await loadCurrentForMutation(actor, declarationId, revision, session);
+    if (idOf((current as any).createdBy) !== actor.id) throw forbidden('Only the creator can update this declaration.');
+    if (!['DRAFT', 'RETURNED'].includes((current as any).status)) throw conflict('Only draft or returned declarations can be updated.');
+    const ownerId = idOf((current as any).createdBy);
+    const organization = idOf((current as any).organization);
+    const policy = await getEffectiveWorkPolicy(organization);
+    await ensureNoScheduleOverlap(organization, ownerId, payload.workStartAt, payload.workEndAt, declarationId, session);
+    await ensureDailyCapacity(organization, ownerId, payload.workStartAt, payload.workEndAt, policy, declarationId, session);
+    Object.assign(current, payload);
+    await saveRevisioned(current, session);
+    await createAudit(actor, 'WORK_DECLARATION_UPDATED', current, { declaredPoint: payload.declaredPoint, revision: current.revision }, session);
+    return current;
   });
-  await createAudit(actor, 'WORK_DECLARATION_UPDATED', declaration, { declaredPoint: payload.declaredPoint });
   emitDeclarationChanged(declaration);
   return { data: await reload(declarationId) };
 };
@@ -439,201 +505,153 @@ export const rescheduleWorkDeclarationService = async (
   body: Record<string, unknown>,
 ) => {
   const declarationId = assertObjectId(id, 'id');
-  const declaration = await workDeclarationRepository.findRawById(declarationId);
-  if (!declaration) throw notFound('Work declaration not found.');
-  ensureDeclarationAccess(actor, declaration);
-  if ((declaration as any).status === 'CANCELLED') throw badRequest('Cancelled declarations cannot be rescheduled.');
-
+  const revision = expectedRevision(body);
   const workStartAt = parseWorkDateTime(body.workStartAt);
   const workEndAt = parseWorkDateTime(body.workEndAt);
   if (Number.isNaN(workStartAt.getTime())) throw badRequest('workStartAt must be a valid date.');
   if (Number.isNaN(workEndAt.getTime())) throw badRequest('workEndAt must be a valid date.');
   if (workEndAt <= workStartAt) throw badRequest('workEndAt must be after workStartAt.');
 
-  const ownerId = idOf((declaration as any).createdBy);
-  await withScheduleLock(ownerId, async () => {
-    await ensureNoScheduleOverlap(ownerId, workStartAt, workEndAt, declarationId);
-    (declaration as any).workStartAt = workStartAt;
-    (declaration as any).workEndAt = workEndAt;
-    (declaration as any).durationMinutes = Math.max(1, Math.round((workEndAt.getTime() - workStartAt.getTime()) / 60_000));
-    await workDeclarationRepository.save(declaration);
+  const declaration = await runWorkDeclarationMutation(async (session) => {
+    const current = await loadCurrentForMutation(actor, declarationId, revision, session);
+    if ((current as any).status === 'CANCELLED') throw conflict('Cancelled declarations cannot be rescheduled.');
+    const ownerId = idOf((current as any).createdBy);
+    const organization = idOf((current as any).organization);
+    const policy = await getEffectiveWorkPolicy(organization);
+    await ensureNoScheduleOverlap(organization, ownerId, workStartAt, workEndAt, declarationId, session);
+    await ensureDailyCapacity(organization, ownerId, workStartAt, workEndAt, policy, declarationId, session);
+    Object.assign(current, { workStartAt, workEndAt, durationMinutes: Math.max(1, Math.round((workEndAt.getTime() - workStartAt.getTime()) / 60_000)) });
+    await saveRevisioned(current, session);
+    await createAudit(actor, 'WORK_DECLARATION_RESCHEDULED', current, { workStartAt, workEndAt, revision: current.revision }, session);
+    return current;
   });
-  await createAudit(actor, 'WORK_DECLARATION_RESCHEDULED', declaration, { workStartAt, workEndAt });
   emitDeclarationChanged(declaration);
   return { data: await reload(declarationId) };
 };
 
 export const submitWorkDeclarationService = async (actor: AuthUser, id: unknown, body: Record<string, unknown>) => {
   const declarationId = assertObjectId(id, 'id');
-  const declaration = await workDeclarationRepository.findRawById(declarationId);
-  if (!declaration) throw notFound('Work declaration not found.');
-  ensureDeclarationAccess(actor, declaration);
-  if (idOf((declaration as any).createdBy) !== actor.id) throw forbidden('Only the creator can submit this declaration.');
-  if (!['DRAFT', 'RETURNED'].includes((declaration as any).status)) {
-    throw badRequest('Only draft or returned declarations can be submitted.');
-  }
-
-  const { approverId, selfApproved } = await resolveSubmissionApprover(actor, body.approverId);
-  const now = new Date();
-  const note = normalizeText(body.note, 'note') ?? null;
-  const history = (declaration as any).approval?.history ?? [];
-  history.push({ action: 'SUBMITTED', actor: actor.id, fromApprover: null, toApprover: approverId, note, actedAt: now });
-
-  if (selfApproved) {
-    history.push({ action: 'SELF_APPROVED', actor: actor.id, fromApprover: actor.id, toApprover: actor.id, note, actedAt: now });
-    (declaration as any).status = 'APPROVED';
-    (declaration as any).approval = { currentApprover: null, submittedAt: now, approvedAt: now, returnedAt: null, history };
-    await workDeclarationRepository.save(declaration);
-    await createAudit(actor, 'WORK_DECLARATION_SELF_APPROVED', declaration, { note });
-    emitDeclarationChanged(declaration);
-  } else {
-    (declaration as any).status = 'PENDING_APPROVAL';
-    (declaration as any).approval = { currentApprover: approverId, submittedAt: now, approvedAt: null, returnedAt: null, history };
-    await workDeclarationRepository.save(declaration);
-    await createAudit(actor, 'WORK_DECLARATION_SUBMITTED', declaration, { approverId, note });
-    await notifyUser(approverId, {
-      actor: actor.id,
-      type: 'WORK_DECLARATION_SUBMITTED',
-      title: 'Có công việc chờ duyệt',
-      message: (declaration as any).title,
-      entityModel: 'WorkDeclaration',
-      entityId: declarationId,
-    });
-    emitDeclarationChanged(declaration);
-  }
-
+  const revision = expectedRevision(body);
+  const declaration = await runWorkDeclarationMutation(async (session) => {
+    const current = await loadCurrentForMutation(actor, declarationId, revision, session);
+    if (idOf((current as any).createdBy) !== actor.id) throw forbidden('Only the creator can submit this declaration.');
+    if (!['DRAFT', 'RETURNED'].includes((current as any).status)) throw conflict('Only draft or returned declarations can be submitted.');
+    const policy = await getEffectiveWorkPolicy(idOf((current as any).organization));
+    const { approverId, selfApproved } = await resolveSubmissionApprover(actor, body.approverId, policy);
+    const now = new Date();
+    const note = normalizeText(body.note, 'note') ?? null;
+    const history = [...((current as any).approval?.history ?? [])];
+    history.push({ action: 'SUBMITTED', actor: actor.id, fromApprover: null, toApprover: approverId, note, actedAt: now });
+    if (selfApproved) {
+      history.push({ action: 'SELF_APPROVED', actor: actor.id, fromApprover: actor.id, toApprover: actor.id, note, actedAt: now });
+      Object.assign(current, { status: 'APPROVED', approval: { currentApprover: null, submittedAt: now, approvedAt: now, returnedAt: null, history } });
+      await saveRevisioned(current, session);
+      await createAudit(actor, 'WORK_DECLARATION_SELF_APPROVED', current, { note, revision: current.revision }, session);
+    } else {
+      Object.assign(current, { status: 'PENDING_APPROVAL', approval: { currentApprover: approverId, submittedAt: now, approvedAt: null, returnedAt: null, history } });
+      await saveRevisioned(current, session);
+      await createAudit(actor, 'WORK_DECLARATION_SUBMITTED', current, { approverId, note, revision: current.revision }, session);
+      await enqueueWorkDeclarationNotification({ session, recipient: approverId, actor: actor.id, type: 'WORK_DECLARATION_SUBMITTED', title: 'Có công việc chờ duyệt', message: current.title, entityId: declarationId, organizationId: idOf(current.organization), revision: current.revision });
+    }
+    return current;
+  });
+  emitDeclarationChanged(declaration);
   return { data: await reload(declarationId) };
 };
 
 export const approveWorkDeclarationService = async (actor: AuthUser, id: unknown, body: Record<string, unknown>) => {
   const declarationId = assertObjectId(id, 'id');
-  const declaration = await workDeclarationRepository.findRawById(declarationId);
-  if (!declaration) throw notFound('Work declaration not found.');
-  ensureDeclarationAccess(actor, declaration);
-  if ((declaration as any).status !== 'PENDING_APPROVAL') throw badRequest('Work declaration is not pending approval.');
-  if (idOf((declaration as any).approval?.currentApprover) !== actor.id) throw forbidden('You are not the current approver.');
-
+  const revision = expectedRevision(body);
   const note = normalizeText(body.note, 'note') ?? null;
   const editableFields = ['title', 'description', 'workStartAt', 'workEndAt', 'declaredPoint'] as const;
   const hasEdits = editableFields.some((field) => Object.prototype.hasOwnProperty.call(body, field));
-  const editedPayload = hasEdits
-    ? parseDeclarationPayload({
-        title: body.title ?? (declaration as any).title,
-        description: body.description ?? (declaration as any).description,
-        workStartAt: body.workStartAt ?? (declaration as any).workStartAt,
-        workEndAt: body.workEndAt ?? (declaration as any).workEndAt,
-        declaredPoint: body.declaredPoint ?? (declaration as any).declaredPoint,
-      })
-    : null;
-  const ownerId = idOf((declaration as any).createdBy);
-  const now = new Date();
-
-  await withScheduleLock(ownerId, async () => {
+  const declaration = await runWorkDeclarationMutation(async (session) => {
+    const current = await loadCurrentForMutation(actor, declarationId, revision, session);
+    if ((current as any).status !== 'PENDING_APPROVAL') throw conflict('Work declaration is not pending approval.');
+    if (idOf((current as any).approval?.currentApprover) !== actor.id) throw forbidden('You are not the current approver.');
+    const editedPayload = hasEdits ? parseDeclarationPayload({
+      title: body.title ?? (current as any).title, description: body.description ?? (current as any).description,
+      workStartAt: body.workStartAt ?? (current as any).workStartAt, workEndAt: body.workEndAt ?? (current as any).workEndAt,
+      declaredPoint: body.declaredPoint ?? (current as any).declaredPoint,
+    }) : null;
+    const ownerId = idOf((current as any).createdBy);
+    const organization = idOf((current as any).organization);
+    const now = new Date();
     if (editedPayload) {
-      await ensureNoScheduleOverlap(
-        ownerId,
-        editedPayload.workStartAt,
-        editedPayload.workEndAt,
-        declarationId,
-      );
-      Object.assign(declaration, editedPayload);
+      const policy = await getEffectiveWorkPolicy(organization);
+      await ensureNoScheduleOverlap(organization, ownerId, editedPayload.workStartAt, editedPayload.workEndAt, declarationId, session);
+      await ensureDailyCapacity(organization, ownerId, editedPayload.workStartAt, editedPayload.workEndAt, policy, declarationId, session);
+      Object.assign(current, editedPayload);
     }
-    (declaration as any).status = 'APPROVED';
-    (declaration as any).approval.currentApprover = null;
-    (declaration as any).approval.approvedAt = now;
-    (declaration as any).approval.history.push({ action: 'APPROVED', actor: actor.id, fromApprover: actor.id, toApprover: null, note, actedAt: now });
-    await workDeclarationRepository.save(declaration);
-  });
-  await createAudit(actor, 'WORK_DECLARATION_APPROVED', declaration, {
-    note,
-    editedFields: hasEdits ? editableFields.filter((field) => Object.prototype.hasOwnProperty.call(body, field)) : [],
+    current.status = 'APPROVED'; current.approval.currentApprover = null; current.approval.approvedAt = now;
+    current.approval.history.push({ action: 'APPROVED', actor: actor.id, fromApprover: actor.id, toApprover: null, note, actedAt: now });
+    await saveRevisioned(current, session);
+    await createAudit(actor, 'WORK_DECLARATION_APPROVED', current, { note, editedFields: hasEdits ? editableFields.filter((field) => Object.prototype.hasOwnProperty.call(body, field)) : [], revision: current.revision }, session);
+    await enqueueWorkDeclarationNotification({ session, recipient: ownerId, actor: actor.id, type: 'WORK_DECLARATION_APPROVED', title: 'Công việc đã được duyệt', message: current.title, entityId: declarationId, organizationId: organization, revision: current.revision });
+    return current;
   });
   await markAllWorkDeclarationNotificationsRead(declarationId);
-  await notifyUser(idOf((declaration as any).createdBy), {
-    actor: actor.id,
-    type: 'WORK_DECLARATION_APPROVED',
-    title: 'Công việc đã được duyệt',
-    message: (declaration as any).title,
-    entityModel: 'WorkDeclaration',
-    entityId: declarationId,
-  });
   emitDeclarationChanged(declaration);
   return { data: await reload(declarationId) };
 };
 
 export const returnWorkDeclarationService = async (actor: AuthUser, id: unknown, body: Record<string, unknown>) => {
   const declarationId = assertObjectId(id, 'id');
-  const declaration = await workDeclarationRepository.findRawById(declarationId);
-  if (!declaration) throw notFound('Work declaration not found.');
-  ensureDeclarationAccess(actor, declaration);
-  if ((declaration as any).status !== 'PENDING_APPROVAL') throw badRequest('Work declaration is not pending approval.');
-  if (idOf((declaration as any).approval?.currentApprover) !== actor.id) throw forbidden('You are not the current approver.');
+  const revision = expectedRevision(body);
   const note = normalizeText(body.note, 'note', true) as string;
-  const now = new Date();
-  (declaration as any).status = 'RETURNED';
-  (declaration as any).approval.currentApprover = null;
-  (declaration as any).approval.returnedAt = now;
-  (declaration as any).approval.history.push({ action: 'RETURNED', actor: actor.id, fromApprover: actor.id, toApprover: idOf((declaration as any).createdBy), note, actedAt: now });
-  await workDeclarationRepository.save(declaration);
-  await createAudit(actor, 'WORK_DECLARATION_RETURNED', declaration, { note });
-  await markAllWorkDeclarationNotificationsRead(declarationId);
-  await notifyUser(idOf((declaration as any).createdBy), {
-    actor: actor.id,
-    type: 'WORK_DECLARATION_RETURNED',
-    title: 'Công việc cần bổ sung',
-    message: (declaration as any).title,
-    entityModel: 'WorkDeclaration',
-    entityId: declarationId,
-    metadata: { note },
+  const declaration = await runWorkDeclarationMutation(async (session) => {
+    const current = await loadCurrentForMutation(actor, declarationId, revision, session);
+    if (current.status !== 'PENDING_APPROVAL') throw conflict('Work declaration is not pending approval.');
+    if (idOf(current.approval?.currentApprover) !== actor.id) throw forbidden('You are not the current approver.');
+    const now = new Date(); const ownerId = idOf(current.createdBy); const organization = idOf(current.organization);
+    current.status = 'RETURNED'; current.approval.currentApprover = null; current.approval.returnedAt = now;
+    current.approval.history.push({ action: 'RETURNED', actor: actor.id, fromApprover: actor.id, toApprover: ownerId, note, actedAt: now });
+    await saveRevisioned(current, session);
+    await createAudit(actor, 'WORK_DECLARATION_RETURNED', current, { note, revision: current.revision }, session);
+    await enqueueWorkDeclarationNotification({ session, recipient: ownerId, actor: actor.id, type: 'WORK_DECLARATION_RETURNED', title: 'Công việc cần bổ sung', message: current.title, entityId: declarationId, organizationId: organization, revision: current.revision, metadata: { note } });
+    return current;
   });
+  await markAllWorkDeclarationNotificationsRead(declarationId);
   emitDeclarationChanged(declaration);
   return { data: await reload(declarationId) };
 };
 
 export const forwardWorkDeclarationService = async (actor: AuthUser, id: unknown, body: Record<string, unknown>) => {
   const declarationId = assertObjectId(id, 'id');
-  const declaration = await workDeclarationRepository.findRawById(declarationId);
-  if (!declaration) throw notFound('Work declaration not found.');
-  ensureDeclarationAccess(actor, declaration);
-  if ((declaration as any).status !== 'PENDING_APPROVAL') throw badRequest('Work declaration is not pending approval.');
-  if (idOf((declaration as any).approval?.currentApprover) !== actor.id) throw forbidden('You are not the current approver.');
-
+  const revision = expectedRevision(body);
   const targetId = assertObjectId(body.approverId, 'approverId');
-  await ensureForwardTarget(actor, targetId);
   const note = normalizeText(body.note, 'note', true) as string;
-  const now = new Date();
-  (declaration as any).approval.currentApprover = targetId;
-  (declaration as any).approval.history.push({ action: 'FORWARDED', actor: actor.id, fromApprover: actor.id, toApprover: targetId, note, actedAt: now });
-  await workDeclarationRepository.save(declaration);
-  await createAudit(actor, 'WORK_DECLARATION_FORWARDED', declaration, { targetId, note });
-  await markWorkDeclarationNotificationsRead(actor.id, declarationId);
-  await notifyUser(targetId, {
-    actor: actor.id,
-    type: 'WORK_DECLARATION_FORWARDED',
-    title: 'Công việc được chuyển duyệt',
-    message: (declaration as any).title,
-    entityModel: 'WorkDeclaration',
-    entityId: declarationId,
-    metadata: { note },
+  const declaration = await runWorkDeclarationMutation(async (session) => {
+    const current = await loadCurrentForMutation(actor, declarationId, revision, session);
+    if (current.status !== 'PENDING_APPROVAL') throw conflict('Work declaration is not pending approval.');
+    if (idOf(current.approval?.currentApprover) !== actor.id) throw forbidden('You are not the current approver.');
+    await ensureForwardTarget(actor, targetId);
+    const now = new Date();
+    current.approval.currentApprover = targetId;
+    current.approval.history.push({ action: 'FORWARDED', actor: actor.id, fromApprover: actor.id, toApprover: targetId, note, actedAt: now });
+    await saveRevisioned(current, session);
+    await createAudit(actor, 'WORK_DECLARATION_FORWARDED', current, { targetId, note, revision: current.revision }, session);
+    await enqueueWorkDeclarationNotification({ session, recipient: targetId, actor: actor.id, type: 'WORK_DECLARATION_FORWARDED', title: 'Công việc được chuyển duyệt', message: current.title, entityId: declarationId, organizationId: idOf(current.organization), revision: current.revision, metadata: { note } });
+    return current;
   });
+  await markWorkDeclarationNotificationsRead(actor.id, declarationId);
   emitDeclarationChanged(declaration);
   return { data: await reload(declarationId) };
 };
 
-export const cancelWorkDeclarationService = async (actor: AuthUser, id: unknown) => {
+export const cancelWorkDeclarationService = async (actor: AuthUser, id: unknown, body: Record<string, unknown>) => {
   const declarationId = assertObjectId(id, 'id');
-  const declaration = await workDeclarationRepository.findRawById(declarationId);
-  if (!declaration) throw notFound('Work declaration not found.');
-  ensureDeclarationAccess(actor, declaration);
-  if (idOf((declaration as any).createdBy) !== actor.id) throw forbidden('Only the creator can cancel this declaration.');
-  if (!['DRAFT', 'RETURNED', 'PENDING_APPROVAL'].includes((declaration as any).status)) {
-    throw badRequest('Approved declarations cannot be cancelled.');
-  }
+  const revision = expectedRevision(body);
+  const declaration = await runWorkDeclarationMutation(async (session) => {
+    const current = await loadCurrentForMutation(actor, declarationId, revision, session);
+    if (idOf(current.createdBy) !== actor.id) throw forbidden('Only the creator can cancel this declaration.');
+    if (!['DRAFT', 'RETURNED', 'PENDING_APPROVAL'].includes(current.status)) throw conflict('Approved declarations cannot be cancelled.');
+    current.status = 'CANCELLED'; current.approval.currentApprover = null;
+    await saveRevisioned(current, session);
+    await createAudit(actor, 'WORK_DECLARATION_CANCELLED', current, { revision: current.revision }, session);
+    return current;
+  });
   const pendingApproverId = idOf((declaration as any).approval?.currentApprover);
-  (declaration as any).status = 'CANCELLED';
-  (declaration as any).approval.currentApprover = null;
-  await workDeclarationRepository.save(declaration);
-  await createAudit(actor, 'WORK_DECLARATION_CANCELLED', declaration);
   if (pendingApproverId) await markAllWorkDeclarationNotificationsRead(declarationId);
   emitDeclarationChanged(declaration);
   return { data: await reload(declarationId) };

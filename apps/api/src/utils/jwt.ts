@@ -1,4 +1,5 @@
-import { sign, verify } from 'jsonwebtoken';
+import { sign, verify } from "jsonwebtoken";
+import { getRuntimeConfig } from "../configs/runtime-config";
 
 type JwtPayload = {
   id: string;
@@ -6,16 +7,19 @@ type JwtPayload = {
   exp: number;
 };
 
-const getSecret = () => process.env.JWT_SECRET || 'scmager-dev-secret-change-me';
+const getSecret = () => getRuntimeConfig().jwtSecret;
 
-export const signJwt = (payload: JwtPayload) => sign(payload, getSecret(), {
-  algorithm: 'HS256',
-  noTimestamp: true,
-});
+export const signJwt = (payload: JwtPayload) =>
+  sign(payload, getSecret(), {
+    algorithm: "HS256",
+    noTimestamp: true,
+  });
 
 export const verifyJwt = (token: string) => {
   try {
-    const payload = verify(token, getSecret(), { algorithms: ['HS256'] }) as JwtPayload;
+    const payload = verify(token, getSecret(), {
+      algorithms: ["HS256"],
+    }) as JwtPayload;
     if (!payload.id || !payload.email || !payload.exp) return null;
     return payload;
   } catch {

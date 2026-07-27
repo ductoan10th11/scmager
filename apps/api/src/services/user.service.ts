@@ -6,6 +6,7 @@ import { userRepository } from '../repositories/user.repository';
 import { AuthUser } from '../types/auth';
 import { badRequest, conflict, forbidden, notFound } from '../utils/http-error';
 import { hashPassword } from '../utils/password';
+import { AuditLogModel } from '../models/audit-log.model';
 
 type RoleCode = (typeof ROLE_CODES)[number];
 type UserStatus = (typeof USER_STATUSES)[number];
@@ -201,6 +202,30 @@ const ensureOwnUpdatePayload = (payload: UpdateUserPayload) => {
   }
 };
 
+const writeUserAudit = async (actor: AuthUser, action: string, user: any, metadata: Record<string, unknown> = {}) => {
+  await AuditLogModel.create({
+    actor: actor.id,
+    action,
+    entityModel: 'User',
+    entityId: user._id,
+    organization: user.organization ?? actor.organization,
+    department: user.department ?? null,
+    metadata,
+  });
+};
+
+const resolveManager = async (value: unknown, organizationId: string | null, targetId?: string) => {
+  const managerId = assertObjectId(value, 'manager');
+  if (!managerId) return null;
+  if (managerId === targetId) throw conflict('A user cannot be their own manager.');
+  const manager = await userRepository.findPublicById(managerId);
+  if (!manager || (manager as any).status !== 'ACTIVE') throw badRequest('manager must be an active user.');
+  if (objectIdOf((manager as any).organization) !== String(organizationId ?? '')) {
+    throw badRequest('manager must belong to the selected organization.');
+  }
+  return managerId;
+};
+
 const toSafeRole = (role: any) => {
   if (!role) return null;
   return {
@@ -348,11 +373,12 @@ export const userService = {
         role: (role as any)._id,
         organization,
         department,
-        manager: assertObjectId(payload.manager, 'manager') || null,
+        manager: await resolveManager(payload.manager, organization),
         status,
         notificationSettings: payload.notificationSettings,
       });
 
+      await writeUserAudit(actor, 'USER_CREATED', user, { role: (role as any).code, status });
       const created = await userRepository.findPublicById(String((user as any)._id));
       return { data: toSafeUser(created) };
     } catch (error) {
@@ -421,12 +447,19 @@ export const userService = {
       ? await resolveUserDepartment(payload.department, organization)
       : await resolveUserDepartment(currentDepartment, organization);
 
+    if (payload.organization !== undefined && payload.manager === undefined && (user as any).manager) {
+      const manager = await userRepository.findPublicById(objectIdOf((user as any).manager));
+      if (!manager || objectIdOf((manager as any).organization) !== String(organization ?? '')) {
+        throw conflict('Set a manager in the destination organization or clear manager before moving this user.');
+      }
+    }
+
     if (payload.organization !== undefined) (user as any).organization = organization;
     if (payload.department !== undefined) {
       (user as any).department = department;
     }
     if (payload.manager !== undefined) {
-      (user as any).manager = assertObjectId(payload.manager, 'manager') || null;
+      (user as any).manager = await resolveManager(payload.manager, organization, userId as string);
     }
     if (payload.password !== undefined) {
       const password = normalizeText(payload.password, 'password', true);
@@ -442,6 +475,9 @@ export const userService = {
       if (isDuplicateKeyError(error)) throw conflict('username or email already exists.');
       throw error;
     }
+    await writeUserAudit(actor, 'USER_UPDATED', user, {
+      fields: Object.keys(payload).filter((field) => !['password', 'notificationSettings'].includes(field)),
+    });
 
     const updated = await userRepository.findPublicById(String((user as any)._id));
     return { data: toSafeUser(updated) };
@@ -455,6 +491,7 @@ export const userService = {
     if (isSelf(actor, user)) throw conflict('You cannot delete your own account.');
     ensureCanManageUser(actor, user);
 
+    await writeUserAudit(actor, 'USER_DELETED', user, { status: (user as any).status });
     await userRepository.deleteById(userId as string);
   },
 

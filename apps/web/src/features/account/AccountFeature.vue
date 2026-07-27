@@ -1,12 +1,13 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Bell, LogOut, Shield, SlidersHorizontal, UserRound } from 'lucide-vue-next'
+import { Bell, Loader2, LogOut, Save, Shield, SlidersHorizontal, UserRound } from 'lucide-vue-next'
 import { useAuth } from '@/features/auth/composables/useAuth'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { http } from '@/shared/api/http'
 
 const route = useRoute()
 const router = useRouter()
@@ -30,11 +31,48 @@ const initials = computed(() => {
 })
 
 const roleBadge = computed(() => user.value?.role?.code || 'USER')
+const isAdmin = computed(() => user.value?.role?.code === 'ADMIN')
+const extensionVersion = ref('1.0.0')
+const extensionVersionLoading = ref(false)
+const extensionVersionSaving = ref(false)
+const extensionVersionError = ref('')
+const extensionVersionSuccess = ref('')
 
 const handleLogout = async () => {
   await logout()
   router.push('/login')
 }
+
+const loadExtensionVersion = async () => {
+  if (!isAdmin.value) return
+  extensionVersionLoading.value = true
+  extensionVersionError.value = ''
+  try {
+    const response = await http('/api/configs/extension-version')
+    extensionVersion.value = response.data?.version || '1.0.0'
+  } catch (error) {
+    extensionVersionError.value = error.message || 'Không thể tải cấu hình phiên bản extension.'
+  } finally {
+    extensionVersionLoading.value = false
+  }
+}
+
+const saveExtensionVersion = async () => {
+  extensionVersionSaving.value = true
+  extensionVersionError.value = ''
+  extensionVersionSuccess.value = ''
+  try {
+    const response = await http('/api/configs/extension-version', { method: 'PUT', body: { version: extensionVersion.value.trim() } })
+    extensionVersion.value = response.data?.value || extensionVersion.value.trim()
+    extensionVersionSuccess.value = 'Đã lưu phiên bản extension được phép.'
+  } catch (error) {
+    extensionVersionError.value = error.message || 'Không thể lưu phiên bản extension.'
+  } finally {
+    extensionVersionSaving.value = false
+  }
+}
+
+onMounted(loadExtensionVersion)
 
 </script>
 
@@ -120,6 +158,28 @@ const handleLogout = async () => {
 
         <TabsContent value="settings" class="mt-0">
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <article v-if="isAdmin" class="bg-white border border-zinc-200/70 !rounded-[32px] p-6 shadow-sm">
+              <div class="flex items-center gap-3">
+                <div class="h-10 w-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+                  <SlidersHorizontal class="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 class="font-bold text-zinc-900">Phiên bản extension</h2>
+                  <p class="text-sm text-zinc-500 font-medium mt-1">Phiên bản extension được phép kết nối eWork.</p>
+                </div>
+              </div>
+              <form class="mt-5 space-y-3" @submit.prevent="saveExtensionVersion">
+                <label class="text-xs font-bold text-zinc-500 uppercase tracking-wider" for="extension-version">Phiên bản hiện tại</label>
+                <Input id="extension-version" v-model="extensionVersion" :disabled="extensionVersionLoading || extensionVersionSaving" class="h-11 rounded-full px-4" placeholder="1.0.0" />
+                <p v-if="extensionVersionError" class="text-sm font-medium text-rose-600">{{ extensionVersionError }}</p>
+                <p v-else-if="extensionVersionSuccess" class="text-sm font-medium text-emerald-600">{{ extensionVersionSuccess }}</p>
+                <Button type="submit" class="rounded-full bg-zinc-900 text-white hover:bg-zinc-700" :disabled="extensionVersionLoading || extensionVersionSaving">
+                  <Loader2 v-if="extensionVersionLoading || extensionVersionSaving" class="mr-2 h-4 w-4 animate-spin" />
+                  <Save v-else class="mr-2 h-4 w-4" /> Lưu phiên bản
+                </Button>
+              </form>
+            </article>
+
             <article class="bg-white border border-zinc-200/70 !rounded-[32px] p-6 shadow-sm">
               <div class="flex items-center gap-3">
                 <div class="h-10 w-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">

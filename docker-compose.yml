@@ -1,99 +1,87 @@
 services:
-  # 1. MongoDB Database
   mongodb:
-    image: mongo:6.0
-    container_name: sc-mongodb
-    restart: always
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
-    ports:
-      - "9006:8000"
-    command: --port 8000
-    volumes:
-      - mongodb_data:/data/db
-
-  # 2. MinIO Object Storage
-  minio:
-    image: minio/minio:latest
-    container_name: sc-minio
-    restart: always
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      MINIO_BROWSER_REDIRECT_URL: ${MINIO_BROWSER_REDIRECT_URL}
-    ports:
-      - "9007:8001"     # API port
-      - "9008:8002"     # Console port
-    command: server /data --address ":8001" --console-address ":8002"
-    volumes:
-      - minio_data:/data
-
-  # 3. Valkey (Redis Alternative for Cache & BullMQ)
-  valkey:
-    image: valkey/valkey:7.2
-    container_name: sc-valkey
-    restart: always
-    ports:
-      - "9009:8003"
-    command: valkey-server --port 8003
-    volumes:
-      - valkey_data:/data
-
-  # 4. Backend API Service
-  api:
-    image: node:20-slim
-    container_name: sc-api
+    image: mongo:8.0.12
     restart: unless-stopped
-    working_dir: /app/apps/api
-    ports:
-      - "9010:8004"
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     environment:
-      - NODE_ENV=production
-      - MONGO_URI=${MONGO_URI}
-      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
-      - DOCUMENT_ASSIGN_USER_SLA_HOURS=${DOCUMENT_ASSIGN_USER_SLA_HOURS:-4}
-      - SLA_MONITOR_INTERVAL_MS=${SLA_MONITOR_INTERVAL_MS:-300000}
-      - WORK_TIMEZONE_OFFSET_MINUTES=${WORK_TIMEZONE_OFFSET_MINUTES:-420}
-      - ASSIGNMENT_AI_URL=${ASSIGNMENT_AI_URL:-http://100.94.148.68:8000/v1/chat/completions}
-      - ASSIGNMENT_AI_MODEL=${ASSIGNMENT_AI_MODEL:-qwen3.6-27b}
-      - UPLOAD_DIR=/app/apps/api/uploads
-    volumes:
-      - .:/app
-    command: sh -c "npm run build && npm run start"
-    init: true
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:?required}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:?required}
+    ports: ["9006:27017"]
+    volumes: ["mongodb_data:/data/db"]
+
+  mongo-init:
+    image: mongo:8.0.12
+    restart: "no"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:?required}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:?required}
+    depends_on: [mongodb]
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        until mongosh --host mongodb:27017 -u "$$MONGO_INITDB_ROOT_USERNAME" -p "$$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --quiet --eval 'db.adminCommand({ping:1}).ok' | grep -q 1; do sleep 2; done
+        mongosh --host mongodb:27017 -u "$$MONGO_INITDB_ROOT_USERNAME" -p "$$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --quiet --eval 'try { rs.status().ok } catch (e) { rs.initiate({_id:"rs0",members:[{_id:0,host:"mongodb:27017"}]}) }'
+
+  valkey:
+    image: valkey/valkey:7.2.9
+    restart: unless-stopped
+    ports: ["9009:6379"]
+    volumes: ["valkey_data:/data"]
+
+  api:
+    build: { context: ., dockerfile: Dockerfile }
+    image: ework-api:${IMAGE_TAG:?set an immutable image tag or digest}
+    restart: unless-stopped
+    ports: ["9010:8004"]
+    env_file: .env
+    environment: &runtime-environment
+      NODE_ENV: production
+      APP_ROLE: api
+      MONGO_URI: ${MONGO_URI:?required}
+      JWT_SECRET: ${JWT_SECRET:?required}
+      SECRET_PROVIDER: env
+      GOVERNANCE_GATE_APPROVED: "false"
+    command: ["node", "apps/api/dist/server.js"]
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8004/api/ping').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8004/api/readyz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 20s
     depends_on:
-      - mongodb
-      - valkey
+      mongo-init:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_started
 
-  # 5. Frontend Web Service
-  web:
-    image: node:20-slim
-    container_name: sc-web
+  worker:
+    image: ework-api:${IMAGE_TAG:?set an immutable image tag or digest}
     restart: unless-stopped
-    working_dir: /app/apps/web
-    ports:
-      - "9011:8005"
+    env_file: .env
     environment:
-      - NODE_ENV=production
-    volumes:
-      - .:/app
-    command: sh -c "npm run build && npm run start"
-    init: true
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8005').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
+      <<: *runtime-environment
+      APP_ROLE: worker
+    command: ["node", "apps/api/dist/worker.js"]
+    depends_on:
+      mongo-init:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_started
+
+  web:
+    build: { context: ., dockerfile: Dockerfile }
+    image: ework-web:${IMAGE_TAG:?set an immutable image tag or digest}
+    restart: unless-stopped
+    ports: ["9011:8005"]
+    command: ["pnpm", "--filter", "web", "start"]
 
 volumes:
   mongodb_data:
-  minio_data:
   valkey_data:

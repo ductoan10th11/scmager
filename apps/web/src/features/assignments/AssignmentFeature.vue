@@ -43,21 +43,25 @@ const calendarDateVal = computed({
       timelineDate.value = new Date(val.year, val.month - 1, val.day)
       refreshResources()
     }
-  }
+  },
 })
 
 const idOf = (value) => value?._id ?? value ?? null
-const vietnamParts = (value) => Object.fromEntries(
-  new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Ho_Chi_Minh',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(new Date(value)).filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]),
-)
+const vietnamParts = (value) =>
+  Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    })
+      .formatToParts(new Date(value))
+      .filter((part) => part.type !== 'literal')
+      .map((part) => [part.type, part.value]),
+  )
 const vietnamDateKey = (value) => {
   const parts = vietnamParts(value)
   return `${parts.year}-${parts.month}-${parts.day}`
@@ -67,11 +71,7 @@ const vietnamTime = (value) => {
   return `${parts.hour}:${parts.minute}`
 }
 const vietnamDateTime = (date, time) => new Date(`${date}T${time}:00+07:00`)
-const departmentId = computed(() => (
-  ['DEPARTMENT_LEADER', 'SPECIALIST'].includes(currentUser.value?.role?.code)
-    ? idOf(currentUser.value?.department)
-    : null
-))
+const departmentId = computed(() => (['DEPARTMENT_LEADER', 'SPECIALIST'].includes(currentUser.value?.role?.code) ? idOf(currentUser.value?.department) : null))
 const timelineDateLabel = computed(() => {
   const today = new Date()
   if (timelineDate.value.toDateString() === today.toDateString()) return 'Hôm nay'
@@ -83,16 +83,18 @@ const timelineDateLabel = computed(() => {
 })
 
 const refreshResources = async () => {
-  const [nextResources, pendingResult] = await Promise.all([
-    AssignmentService.listAssignees(departmentId.value, timelineDate.value),
-    canApprove.value
-      ? AssignmentService.listPendingApprovals().catch(() => ({ data: [] }))
-      : Promise.resolve({ data: [] }),
-  ])
+  const [nextResources, pendingResult] = await Promise.all([AssignmentService.listAssignees(departmentId.value, timelineDate.value), canApprove.value ? AssignmentService.listPendingApprovals().catch(() => ({ data: [] })) : Promise.resolve({ data: [] })])
   resources.value = nextResources
   pendingApprovals.value = pendingResult?.data ?? []
   pendingApprovalCount.value = Number(pendingResult?.summary?.pendingApproval ?? pendingApprovals.value.length)
   scrollToTimeStick()
+}
+
+const staleMessage = async (error) => {
+  if (Number(error?.status) !== 409) return error?.message
+  await refreshResources()
+  if (isApprovalOpen.value) await loadApprovalItems(approvalTab.value).catch(() => undefined)
+  return 'Dữ liệu công việc đã thay đổi. Danh sách đã được tải lại; hãy kiểm tra rồi thao tác lại.'
 }
 
 const scrollToTimeStick = () => {
@@ -107,9 +109,7 @@ const scrollToTimeStick = () => {
 
     const today = new Date()
     const date = new Date(timelineDate.value)
-    const isToday = date.getDate() === today.getDate() &&
-                    date.getMonth() === today.getMonth() &&
-                    date.getFullYear() === today.getFullYear()
+    const isToday = date.getDate() === today.getDate() && date.getMonth() === today.getMonth() && date.getFullYear() === today.getFullYear()
 
     if (!isToday) {
       container.scrollTo({ left: 0, behavior: 'smooth' })
@@ -129,7 +129,7 @@ const scrollToTimeStick = () => {
       const target = scrollWidth * percent - clientWidth / 2
       container.scrollTo({
         left: Math.max(0, Math.min(target, maxScroll)),
-        behavior: 'smooth'
+        behavior: 'smooth',
       })
     }
   })
@@ -192,9 +192,9 @@ onMounted(async () => {
 const stats = computed(() => {
   const list = resources.value
   const total = list.length
-  const free = list.filter(r => r.status === 'free').length
-  const busy = list.filter(r => r.status === 'busy').length
-  const overload = list.filter(r => r.status === 'overload').length
+  const free = list.filter((r) => r.status === 'free').length
+  const busy = list.filter((r) => r.status === 'busy').length
+  const overload = list.filter((r) => r.status === 'overload').length
   const hoursUsed = Number(list.reduce((sum, r) => sum + r.totalHours, 0).toFixed(1))
   const hoursTotal = total * 8
   const hoursPct = hoursTotal ? Math.round((hoursUsed / hoursTotal) * 100) : 0
@@ -226,10 +226,10 @@ const animateValue = (refVar, targetVal, duration = 800, isFloat = false) => {
   const step = (now) => {
     const elapsed = now - startTime
     const progress = Math.min(elapsed / duration, 1)
-    
+
     // easeOutQuad
     const ease = progress * (2 - progress)
-    
+
     const current = startVal + (targetVal - startVal) * ease
     refVar.value = isFloat ? Number(current.toFixed(1)) : Math.round(current)
 
@@ -242,23 +242,47 @@ const animateValue = (refVar, targetVal, duration = 800, isFloat = false) => {
   requestAnimationFrame(step)
 }
 
-watch(stats, (newStats) => {
-  if (!newStats) return
-  animateValue(displayTotal, newStats.total)
-  animateValue(displayFree, newStats.free)
-  animateValue(displayBusy, newStats.busy)
-  animateValue(displayOverload, newStats.overload)
-  animateValue(displayHoursUsed, newStats.hoursUsed, 800, true)
-  animateValue(displayHoursTotal, newStats.hoursTotal)
-  animateValue(displayHoursPct, newStats.hoursPct)
-}, { deep: true, immediate: true })
+watch(
+  stats,
+  (newStats) => {
+    if (!newStats) return
+    animateValue(displayTotal, newStats.total)
+    animateValue(displayFree, newStats.free)
+    animateValue(displayBusy, newStats.busy)
+    animateValue(displayOverload, newStats.overload)
+    animateValue(displayHoursUsed, newStats.hoursUsed, 800, true)
+    animateValue(displayHoursTotal, newStats.hoursTotal)
+    animateValue(displayHoursPct, newStats.hoursPct)
+  },
+  { deep: true, immediate: true },
+)
 
 // --- UI CONFIG (gom cấu hình lặp lại về một chỗ) ---
 const statCards = [
-  { key: 'total', label: 'Tổng nhân viên', icon: Users, iconClass: 'bg-indigo-50 text-indigo-500' },
-  { key: 'free', label: 'Đang rảnh', icon: UserCheck, iconClass: 'bg-emerald-50 text-emerald-500' },
-  { key: 'busy', label: 'Đang bận', icon: UserMinus, iconClass: 'bg-amber-50 text-amber-500' },
-  { key: 'overload', label: 'Quá tải', icon: UserX, iconClass: 'bg-rose-50 text-rose-500' },
+  {
+    key: 'total',
+    label: 'Tổng nhân viên',
+    icon: Users,
+    iconClass: 'bg-indigo-50 text-indigo-500',
+  },
+  {
+    key: 'free',
+    label: 'Đang rảnh',
+    icon: UserCheck,
+    iconClass: 'bg-emerald-50 text-emerald-500',
+  },
+  {
+    key: 'busy',
+    label: 'Đang bận',
+    icon: UserMinus,
+    iconClass: 'bg-amber-50 text-amber-500',
+  },
+  {
+    key: 'overload',
+    label: 'Quá tải',
+    icon: UserX,
+    iconClass: 'bg-rose-50 text-rose-500',
+  },
 ]
 
 const filterTabs = [
@@ -269,9 +293,24 @@ const filterTabs = [
 ]
 
 const statusMeta = {
-  free: { label: 'Rảnh', dot: 'bg-emerald-500', text: 'text-emerald-700', badge: 'bg-emerald-50 text-emerald-700 border-emerald-100' },
-  busy: { label: 'Đang bận', dot: 'bg-amber-500', text: 'text-amber-700', badge: 'bg-amber-50 text-amber-700 border-amber-100' },
-  overload: { label: 'Quá tải', dot: 'bg-rose-500', text: 'text-rose-700', badge: 'bg-rose-50 text-rose-700 border-rose-100' },
+  free: {
+    label: 'Rảnh',
+    dot: 'bg-emerald-500',
+    text: 'text-emerald-700',
+    badge: 'bg-emerald-50 text-emerald-700 border-emerald-100',
+  },
+  busy: {
+    label: 'Đang bận',
+    dot: 'bg-amber-500',
+    text: 'text-amber-700',
+    badge: 'bg-amber-50 text-amber-700 border-amber-100',
+  },
+  overload: {
+    label: 'Quá tải',
+    dot: 'bg-rose-500',
+    text: 'text-rose-700',
+    badge: 'bg-rose-50 text-rose-700 border-rose-100',
+  },
 }
 
 const legendItems = [
@@ -290,7 +329,11 @@ const tabIndicatorStyle = ref({ opacity: 0 })
 const updateTabIndicator = () => {
   const el = tabRefs[filterStatus.value]
   if (!el) return
-  tabIndicatorStyle.value = { left: `${el.offsetLeft}px`, width: `${el.offsetWidth}px`, opacity: 1 }
+  tabIndicatorStyle.value = {
+    left: `${el.offsetLeft}px`,
+    width: `${el.offsetWidth}px`,
+    opacity: 1,
+  }
 }
 watch(filterStatus, () => nextTick(updateTabIndicator))
 onMounted(() => {
@@ -306,24 +349,24 @@ onBeforeUnmount(() => {
 
 const filteredResources = computed(() => {
   if (filterStatus.value === 'all') return resources.value
-  return resources.value.filter(r => r.status === filterStatus.value)
+  return resources.value.filter((r) => r.status === filterStatus.value)
 })
 
 // --- TIMELINE LOGIC ---
 const startHour = computed(() => {
-  const hasTaskAtOrBefore8 = resources.value.some(user => 
-    user.tasks?.some(task => {
+  const hasTaskAtOrBefore8 = resources.value.some((user) =>
+    user.tasks?.some((task) => {
       const [h, m] = task.start.split(':').map(Number)
       return h < 8 || (h === 8 && m === 0)
-    })
+    }),
   )
   return hasTaskAtOrBefore8 ? 7 : 8
 })
 
 const endHour = computed(() => {
   let maxMins = 18 * 60 // Minimum is 18:00
-  resources.value.forEach(user => {
-    user.tasks?.forEach(task => {
+  resources.value.forEach((user) => {
+    user.tasks?.forEach((task) => {
       const [h, m] = task.end.split(':').map(Number)
       const endMins = h * 60 + m
       if (endMins + 60 > maxMins) {
@@ -360,16 +403,15 @@ const getTaskPosition = (start, end) => {
   const startMins = clamp(timeToTimelineMinutes(start), 0, TOTAL_MINS.value)
   const endMins = clamp(timeToTimelineMinutes(end), 0, TOTAL_MINS.value)
   const duration = Math.max(endMins - startMins, MIN_TASK_MINS)
-  
+
   return {
     left: `${(startMins / TOTAL_MINS.value) * 100}%`,
-    width: `${(duration / TOTAL_MINS.value) * 100}%`
+    width: `${(duration / TOTAL_MINS.value) * 100}%`,
   }
 }
 
-const isCompactTask = (task) => (
-  timeToTimelineMinutes(task.end) - timeToTimelineMinutes(task.start) <= 30
-)
+const isCompactTask = (task) => timeToTimelineMinutes(task.end) - timeToTimelineMinutes(task.start) <= 30
+const isCondensedTask = (task) => timeToTimelineMinutes(task.end) - timeToTimelineMinutes(task.start) <= 60
 
 // --- TIME TICK/STICK LOGIC (hiển thị mốc giờ hiện tại cho ngày hôm nay) ---
 const currentTimePos = ref(null)
@@ -378,9 +420,7 @@ let timeTickInterval = null
 const updateTimeStick = () => {
   const today = new Date()
   const date = new Date(timelineDate.value)
-  const isToday = date.getDate() === today.getDate() &&
-                  date.getMonth() === today.getMonth() &&
-                  date.getFullYear() === today.getFullYear()
+  const isToday = date.getDate() === today.getDate() && date.getMonth() === today.getMonth() && date.getFullYear() === today.getFullYear()
 
   if (!isToday) {
     currentTimePos.value = null
@@ -397,7 +437,9 @@ const updateTimeStick = () => {
   }
 }
 
-watch([timelineDate, startHour, TOTAL_MINS], updateTimeStick, { immediate: true })
+watch([timelineDate, startHour, TOTAL_MINS], updateTimeStick, {
+  immediate: true,
+})
 
 onMounted(() => {
   updateTimeStick()
@@ -444,13 +486,13 @@ const startTaskPointer = (event, task, assignee, mode) => {
     initialEnd: timeToTimelineMinutes(task.end),
     initialEstimatedMinutes: task.estimatedMinutes,
     initialSegmentMinutes: timeToTimelineMinutes(task.end) - timeToTimelineMinutes(task.start),
-    initialScheduleSegments: task.scheduleSegments.map((segment) => (
-      segment ? { ...segment } : segment
-    )),
+    initialScheduleSegments: task.scheduleSegments.map((segment) => (segment ? { ...segment } : segment)),
     moved: false,
   }
   taskBlock.setPointerCapture?.(event.pointerId)
-  window.addEventListener('pointermove', handleTaskPointerMove, { passive: false })
+  window.addEventListener('pointermove', handleTaskPointerMove, {
+    passive: false,
+  })
   window.addEventListener('pointerup', finishTaskPointer, { once: true })
   window.addEventListener('pointercancel', cancelTaskPointer, { once: true })
 }
@@ -480,11 +522,7 @@ function handleTaskPointerMove(event) {
   drag.task.start = timelineMinutesToTime(nextStart)
   drag.task.end = timelineMinutesToTime(nextEnd)
   if (drag.mode !== 'move') {
-    drag.task.estimatedMinutes = (
-      drag.initialEstimatedMinutes
-      - drag.initialSegmentMinutes
-      + (nextEnd - nextStart)
-    )
+    drag.task.estimatedMinutes = drag.initialEstimatedMinutes - drag.initialSegmentMinutes + (nextEnd - nextStart)
   }
 }
 
@@ -513,17 +551,14 @@ async function finishTaskPointer() {
   const baseDate = drag.task.scheduledStartAt || timelineDate.value
   const startAt = scheduledDateAt(baseDate, nextStart)
   const endAt = scheduledDateAt(baseDate, nextEnd)
-  const scheduleSegments = drag.initialScheduleSegments.map((segment, index) => (
-    index === drag.task.segmentIndex
-      ? { startAt: startAt.toISOString(), endAt: endAt.toISOString() }
-      : segment
-  )).filter(Boolean)
+  const scheduleSegments = drag.initialScheduleSegments.map((segment, index) => (index === drag.task.segmentIndex ? { startAt: startAt.toISOString(), endAt: endAt.toISOString() } : segment)).filter(Boolean)
 
   timelineSavingTaskId.value = drag.task.id
   try {
     await AssignmentService.updateTaskTime(drag.task.id, {
       scheduleSegments,
       estimatedMinutes: drag.task.estimatedMinutes,
+      revision: drag.task.revision,
     })
     await refreshResources()
   } catch (e) {
@@ -531,7 +566,7 @@ async function finishTaskPointer() {
     drag.task.end = timelineMinutesToTime(drag.initialEnd)
     drag.task.estimatedMinutes = drag.initialEstimatedMinutes
     drag.task.scheduleSegments = drag.initialScheduleSegments
-    timelineError.value = e.message || 'Không thể cập nhật lịch thực hiện.'
+    timelineError.value = (await staleMessage(e)) || 'Không thể cập nhật lịch thực hiện.'
   } finally {
     timelineSavingTaskId.value = null
   }
@@ -586,7 +621,9 @@ const startCreatePointer = (event, assignee) => {
     moved: false,
   }
   track.setPointerCapture?.(event.pointerId)
-  window.addEventListener('pointermove', handleCreatePointerMove, { passive: false })
+  window.addEventListener('pointermove', handleCreatePointerMove, {
+    passive: false,
+  })
   window.addEventListener('pointerup', finishCreatePointer, { once: true })
   window.addEventListener('pointercancel', cancelCreatePointer, { once: true })
 }
@@ -694,24 +731,24 @@ const formEndTime = ref(vietnamTime(new Date(Date.now() + 2 * 60 * 60_000)))
 
 const formSelectedUser = computed(() => {
   const selectedId = formAssignee.value || idOf(currentUser.value)
-  const selected = resources.value.find(r => String(r.id) === String(selectedId))
+  const selected = resources.value.find((r) => String(r.id) === String(selectedId))
   if (selected) return selected
   if (String(selectedId) !== String(idOf(currentUser.value))) return null
   return {
-      id: idOf(currentUser.value),
-      name: currentUser.value?.fullName,
-      role: currentUser.value?.position || currentUser.value?.role?.name,
-      avatar: currentUser.value?.avatarUrl,
-      totalHours: 0,
-      status: 'free',
-    }
+    id: idOf(currentUser.value),
+    name: currentUser.value?.fullName,
+    role: currentUser.value?.position || currentUser.value?.role?.name,
+    avatar: currentUser.value?.avatarUrl,
+    totalHours: 0,
+    status: 'free',
+  }
 })
 
 const calculatedDurationHours = computed(() => {
   if (!formStartTime.value || !formEndTime.value) return 0
   const [sH, sM] = formStartTime.value.split(':').map(Number)
   const [eH, eM] = formEndTime.value.split(':').map(Number)
-  const diff = (eH * 60 + eM) - (sH * 60 + sM)
+  const diff = eH * 60 + eM - (sH * 60 + sM)
   return diff > 0 ? (diff / 60).toFixed(1) : 0
 })
 
@@ -727,13 +764,7 @@ const predictedStatus = computed(() => {
   return 'danger'
 })
 
-const isFormValid = computed(() =>
-  Boolean(formSelectedUser.value)
-  && formTitle.value.trim().length > 0
-  && Number(calculatedDurationHours.value) > 0
-  && Number.isFinite(Number(formPoint.value))
-  && Number(formPoint.value) >= 0
-)
+const isFormValid = computed(() => Boolean(formSelectedUser.value) && formTitle.value.trim().length > 0 && Number(calculatedDurationHours.value) > 0 && Number.isFinite(Number(formPoint.value)) && Number(formPoint.value) >= 0)
 
 const resetForm = () => {
   const now = new Date()
@@ -778,11 +809,12 @@ const submitTaskTime = async () => {
     await AssignmentService.updateTaskTime(task.id, {
       scheduledStartAt: startAt.toISOString(),
       scheduledEndAt: endAt.toISOString(),
+      revision: task.revision,
     })
     isTaskTimeOpen.value = false
     await refreshResources()
   } catch (e) {
-    timelineError.value = e.message || 'Không thể cập nhật thời gian.'
+    timelineError.value = (await staleMessage(e)) || 'Không thể cập nhật thời gian.'
   } finally {
     updatingTaskTime.value = false
   }
@@ -832,9 +864,7 @@ const approvalForm = ref({
   note: '',
 })
 
-const selectedApproval = computed(() => (
-  approvalItems.value.find((item) => String(item._id) === String(selectedApprovalId.value)) ?? null
-))
+const selectedApproval = computed(() => approvalItems.value.find((item) => String(item._id) === String(selectedApprovalId.value)) ?? null)
 
 const approvalTabs = [
   { value: 'pending', label: 'Chờ duyệt' },
@@ -848,33 +878,30 @@ const declarationStatusMeta = {
   PENDING_REVIEW: { label: 'Chờ duyệt', class: 'bg-amber-50 text-amber-700' },
   APPROVED: { label: 'Đã duyệt', class: 'bg-emerald-50 text-emerald-700' },
   RETURNED: { label: 'Đã trả lại', class: 'bg-rose-50 text-rose-700' },
-  REVISION_REQUESTED: { label: 'Đã trả lại', class: 'bg-rose-50 text-rose-700' },
+  REVISION_REQUESTED: {
+    label: 'Đã trả lại',
+    class: 'bg-rose-50 text-rose-700',
+  },
   CANCELLED: { label: 'Đã hủy', class: 'bg-zinc-100 text-zinc-600' },
 }
 
-const approvalActionLabel = (action) => ({
-  SUBMITTED: 'Gửi duyệt',
-  FORWARDED: 'Chuyển duyệt',
-  APPROVED: 'Đã duyệt',
-  RETURNED: 'Trả lại',
-  SELF_APPROVED: 'Tự duyệt',
-}[action] ?? action)
+const approvalActionLabel = (action) =>
+  ({
+    SUBMITTED: 'Gửi duyệt',
+    FORWARDED: 'Chuyển duyệt',
+    APPROVED: 'Đã duyệt',
+    RETURNED: 'Trả lại',
+    SELF_APPROVED: 'Tự duyệt',
+  })[action] ?? action
 
 const approvalDurationHours = computed(() => {
   const [startHourValue, startMinute] = approvalForm.value.startTime.split(':').map(Number)
   const [endHourValue, endMinute] = approvalForm.value.endTime.split(':').map(Number)
-  const minutes = (endHourValue * 60 + endMinute) - (startHourValue * 60 + startMinute)
+  const minutes = endHourValue * 60 + endMinute - (startHourValue * 60 + startMinute)
   return Number.isFinite(minutes) && minutes > 0 ? minutes / 60 : 0
 })
 
-const isApprovalValid = computed(() => (
-  Boolean(selectedApproval.value)
-  && approvalForm.value.title.trim().length > 0
-  && approvalForm.value.date
-  && approvalDurationHours.value > 0
-  && Number.isFinite(Number(approvalForm.value.declaredPoint))
-  && Number(approvalForm.value.declaredPoint) >= 0
-))
+const isApprovalValid = computed(() => Boolean(selectedApproval.value) && approvalForm.value.title.trim().length > 0 && approvalForm.value.date && approvalDurationHours.value > 0 && Number.isFinite(Number(approvalForm.value.declaredPoint)) && Number(approvalForm.value.declaredPoint) >= 0)
 
 const selectApproval = (declaration) => {
   if (!declaration) {
@@ -962,23 +989,25 @@ const submitApproval = async () => {
       workEndAt: endAt.toISOString(),
       declaredPoint: Number(approvalForm.value.declaredPoint),
       note: approvalForm.value.note.trim() || undefined,
+      revision: selectedApproval.value?.revision,
     })
     await refreshResources()
     await loadApprovalItems(approvalTab.value)
   } catch (error) {
-    approvalError.value = error.message || 'Không thể duyệt công việc.'
+    approvalError.value = (await staleMessage(error)) || 'Không thể duyệt công việc.'
   } finally {
     approvalSaving.value = false
   }
 }
 
-const formatApprovalDateTime = (value) => new Intl.DateTimeFormat('vi-VN', {
-  timeZone: 'Asia/Ho_Chi_Minh',
-  day: '2-digit',
-  month: '2-digit',
-  hour: '2-digit',
-  minute: '2-digit',
-}).format(new Date(value))
+const formatApprovalDateTime = (value) =>
+  new Intl.DateTimeFormat('vi-VN', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(value))
 
 watch(approvalItems, (items) => {
   if (!isApprovalOpen.value) return
@@ -1009,7 +1038,7 @@ const initialAiMessage = () => ({
 const aiMessages = ref([
   {
     ...initialAiMessage(),
-  }
+  },
 ])
 
 const aiMessageFromHistory = (item) => {
@@ -1029,15 +1058,8 @@ const aiMessageFromHistory = (item) => {
 }
 
 const restoreAiChatState = (messages) => {
-  const latestTaskMessage = [...messages].reverse().find((message) => (
-    message.role === 'ai'
-      && message.metadata?.intent === 'TASK'
-      && message.metadata?.draft
-      && (message.proposal?.status === 'PENDING' || message.metadata.draft.complete === false)
-  ))
-  const pendingProposal = [...messages].reverse().find((message) => (
-    message.role === 'ai' && message.proposal?.status === 'PENDING' && message.proposal?.confirmationToken
-  ))
+  const latestTaskMessage = [...messages].reverse().find((message) => message.role === 'ai' && message.metadata?.intent === 'TASK' && message.metadata?.draft && (message.proposal?.status === 'PENDING' || message.metadata.draft.complete === false))
+  const pendingProposal = [...messages].reverse().find((message) => message.role === 'ai' && message.proposal?.status === 'PENDING' && message.proposal?.confirmationToken)
   aiCurrentDraft.value = latestTaskMessage?.metadata?.draft ?? null
   activeAiConfirmationToken.value = pendingProposal?.proposal?.confirmationToken ?? ''
   aiConfirmingToken.value = ''
@@ -1095,22 +1117,19 @@ const toggleVoice = () => {
   isRecordingVoice.value = !isRecordingVoice.value
 }
 
-const normalizeAiCommand = (value) => String(value ?? '')
-  .normalize('NFD')
-  .replace(/[\u0300-\u036f]/g, '')
-  .replace(/đ/g, 'd')
-  .toLowerCase()
-  .replace(/[^a-z0-9\s]/g, ' ')
-  .replace(/\s+/g, ' ')
-  .trim()
+const normalizeAiCommand = (value) =>
+  String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 
-const isAiConfirmationText = (value) => new Set([
-  'xac nhan', 'ok', 'okay', 'dong y', 'trien', 'trien khai', 'tao viec', 'gui di', 'chot',
-]).has(normalizeAiCommand(value))
+const isAiConfirmationText = (value) => new Set(['xac nhan', 'ok', 'okay', 'dong y', 'trien', 'trien khai', 'tao viec', 'gui di', 'chot']).has(normalizeAiCommand(value))
 
-const isAiCancellationText = (value) => new Set([
-  'huy', 'cancel', 'thoi', 'bo qua', 'khong tao', 'khong tao nua', 'dung lai', 'huy task', 'huy viec',
-]).has(normalizeAiCommand(value))
+const isAiCancellationText = (value) => new Set(['huy', 'cancel', 'thoi', 'bo qua', 'khong tao', 'khong tao nua', 'dung lai', 'huy task', 'huy viec']).has(normalizeAiCommand(value))
 
 const aiDisplayDate = (value) => {
   const raw = String(value ?? '')
@@ -1129,39 +1148,16 @@ const formatAiConfirmedMessage = (data, draft) => {
   const startTime = startAt ? vietnamTime(startAt) : draft?.startTime
   const endTime = endAt ? vietnamTime(endAt) : draft?.endTime
   const point = declaration.declaredPoint ?? draft?.point
-  const status = data?.submissionError
-    ? 'Đã tạo, chưa gửi duyệt'
-    : declaration.status === 'PENDING_APPROVAL'
-      ? 'Chờ duyệt'
-      : declaration.status === 'APPROVED'
-        ? 'Đã duyệt'
-        : data?.alreadyConfirmed
-          ? 'Đã xác nhận trước đó'
-          : 'Đã tạo'
-  const lines = [
-    data?.alreadyConfirmed ? 'Công việc đã được xác nhận:' : 'Đã xác nhận công việc:',
-    `- Tên việc: ${title || 'Chưa có'}`,
-  ]
+  const status = data?.submissionError ? 'Đã tạo, chưa gửi duyệt' : declaration.status === 'PENDING_APPROVAL' ? 'Chờ duyệt' : declaration.status === 'APPROVED' ? 'Đã duyệt' : data?.alreadyConfirmed ? 'Đã xác nhận trước đó' : 'Đã tạo'
+  const lines = [data?.alreadyConfirmed ? 'Công việc đã được xác nhận:' : 'Đã xác nhận công việc:', `- Tên việc: ${title || 'Chưa có'}`]
   if (description) lines.push(`- Mô tả: ${description}`)
-  lines.push(
-    `- Ngày: ${date || 'Chưa có'}`,
-    `- Giờ bắt đầu: ${startTime || 'Chưa có'}`,
-    `- Giờ kết thúc: ${endTime || 'Chưa có'}`,
-    `- Điểm: ${point ?? 0}`,
-    `- Trạng thái: ${status}`,
-  )
+  lines.push(`- Ngày: ${date || 'Chưa có'}`, `- Giờ bắt đầu: ${startTime || 'Chưa có'}`, `- Giờ kết thúc: ${endTime || 'Chưa có'}`, `- Điểm: ${point ?? 0}`, `- Trạng thái: ${status}`)
   return lines.join('\n')
 }
 
 const isAiProposalDisabled = (message) => {
   const token = message?.proposal?.confirmationToken
-  return message?.proposal?.status && message.proposal.status !== 'PENDING'
-    || isAiTyping.value
-    || !token
-    || token !== activeAiConfirmationToken.value
-    || token === aiConfirmingToken.value
-    || confirmedAiTokens.value.includes(token)
-    || cancelledAiTokens.value.includes(token)
+  return (message?.proposal?.status && message.proposal.status !== 'PENDING') || isAiTyping.value || !token || token !== activeAiConfirmationToken.value || token === aiConfirmingToken.value || confirmedAiTokens.value.includes(token) || cancelledAiTokens.value.includes(token)
 }
 
 const aiProposalActionLabel = (message) => {
@@ -1195,54 +1191,56 @@ const sendAiMessage = async (text, confirmationToken = '') => {
   let streamError = null
 
   try {
-    await AssignmentService.streamAiChat({
-      message: content,
-      proposalToken: confirmationToken || undefined,
-    }, (event, data) => {
-      if (event === 'delta') {
-        assistantMessage.content += data.text ?? ''
-        scrollAiChatToBottom()
-      } else if (event === 'draft') {
-        if (data.intent === 'TASK') {
-          aiCurrentDraft.value = data
-          if (data.complete && data.confirmationToken) {
-            activeAiConfirmationToken.value = data.confirmationToken
-            assistantMessage.type = 'proposal'
-            assistantMessage.proposal = { ...data, status: 'PENDING' }
-          } else {
-            activeAiConfirmationToken.value = ''
+    await AssignmentService.streamAiChat(
+      {
+        message: content,
+        proposalToken: confirmationToken || undefined,
+      },
+      (event, data) => {
+        if (event === 'delta') {
+          assistantMessage.content += data.text ?? ''
+          scrollAiChatToBottom()
+        } else if (event === 'draft') {
+          if (data.intent === 'TASK') {
+            aiCurrentDraft.value = data
+            if (data.complete && data.confirmationToken) {
+              activeAiConfirmationToken.value = data.confirmationToken
+              assistantMessage.type = 'proposal'
+              assistantMessage.proposal = { ...data, status: 'PENDING' }
+            } else {
+              activeAiConfirmationToken.value = ''
+            }
           }
+          scrollAiChatToBottom()
+        } else if (event === 'confirmed') {
+          const token = confirmationToken || activeAiConfirmationToken.value
+          const confirmedDraft = aiCurrentDraft.value
+          if (token && !confirmedAiTokens.value.includes(token)) confirmedAiTokens.value.push(token)
+          activeAiConfirmationToken.value = ''
+          aiCurrentDraft.value = null
+          const proposalMessage = aiMessages.value.find((message) => message.proposal?.confirmationToken === token)
+          if (proposalMessage?.proposal) proposalMessage.proposal.status = 'CONFIRMED'
+          assistantMessage.content = data.message || formatAiConfirmedMessage(data, confirmedDraft)
+          refreshResources()
+          scrollAiChatToBottom()
+        } else if (event === 'cancelled') {
+          const token = data.proposalToken || confirmationToken || activeAiConfirmationToken.value
+          if (token && !cancelledAiTokens.value.includes(token)) cancelledAiTokens.value.push(token)
+          activeAiConfirmationToken.value = ''
+          aiCurrentDraft.value = null
+          aiMessages.value.forEach((message) => {
+            if (message.proposal?.status === 'PENDING' && (!token || message.proposal.confirmationToken === token)) {
+              message.proposal.status = 'CANCELLED'
+            }
+          })
+          assistantMessage.content = data.message || (data.cancelled ? 'Đã hủy yêu cầu tạo công việc.' : 'Hiện không có công việc nào chờ xác nhận.')
+          scrollAiChatToBottom()
+        } else if (event === 'error') {
+          streamError = new Error(data.message || 'Trợ lý AI gặp lỗi.')
         }
-        scrollAiChatToBottom()
-      } else if (event === 'confirmed') {
-        const token = confirmationToken || activeAiConfirmationToken.value
-        const confirmedDraft = aiCurrentDraft.value
-        if (token && !confirmedAiTokens.value.includes(token)) confirmedAiTokens.value.push(token)
-        activeAiConfirmationToken.value = ''
-        aiCurrentDraft.value = null
-        const proposalMessage = aiMessages.value.find((message) => message.proposal?.confirmationToken === token)
-        if (proposalMessage?.proposal) proposalMessage.proposal.status = 'CONFIRMED'
-        assistantMessage.content = data.message || formatAiConfirmedMessage(data, confirmedDraft)
-        refreshResources()
-        scrollAiChatToBottom()
-      } else if (event === 'cancelled') {
-        const token = data.proposalToken || confirmationToken || activeAiConfirmationToken.value
-        if (token && !cancelledAiTokens.value.includes(token)) cancelledAiTokens.value.push(token)
-        activeAiConfirmationToken.value = ''
-        aiCurrentDraft.value = null
-        aiMessages.value.forEach((message) => {
-          if (message.proposal?.status === 'PENDING' && (!token || message.proposal.confirmationToken === token)) {
-            message.proposal.status = 'CANCELLED'
-          }
-        })
-        assistantMessage.content = data.message || (data.cancelled
-          ? 'Đã hủy yêu cầu tạo công việc.'
-          : 'Hiện không có công việc nào chờ xác nhận.')
-        scrollAiChatToBottom()
-      } else if (event === 'error') {
-        streamError = new Error(data.message || 'Trợ lý AI gặp lỗi.')
-      }
-    }, aiAbortController.signal)
+      },
+      aiAbortController.signal,
+    )
     if (streamError) throw streamError
   } catch (error) {
     if (error?.name !== 'AbortError') {
@@ -1284,10 +1282,8 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="h-full w-full flex bg-zinc-50/30 font-sans text-zinc-900 overflow-hidden relative">
-    
     <!-- LEFT/MAIN: Dashboard & Timeline -->
     <div class="flex-1 flex flex-col overflow-y-auto hide-scrollbar 2xl:border-r border-zinc-200/50 min-w-0">
-      
       <!-- Top Overview Header -->
       <header class="px-4 sm:px-6 2xl:px-8 pt-5 sm:pt-6 2xl:pt-8 pb-5 flex items-center justify-between gap-3 flex-wrap">
         <div class="min-w-0">
@@ -1296,22 +1292,26 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="ml-auto flex shrink-0 items-center justify-end gap-3">
-          <Button v-if="canApprove" variant="outline" @click="openApprovalPanel"
-                  class="relative h-9 rounded-full gap-2 border-zinc-200 bg-white px-4 text-xs font-bold text-zinc-700 hover:bg-zinc-50 shrink-0">
+          <Button v-if="canApprove" variant="outline" @click="openApprovalPanel" class="relative h-9 rounded-full gap-2 border-zinc-200 bg-white px-4 text-xs font-bold text-zinc-700 hover:bg-zinc-50 shrink-0">
             <ClipboardCheck class="h-4 w-4 text-emerald-600" />
             Duyệt
-            <span class="inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[10px] font-extrabold text-white"
-                  :class="pendingApprovalCount ? 'bg-rose-500' : 'bg-zinc-400'">
+            <span class="inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[10px] font-extrabold text-white" :class="pendingApprovalCount ? 'bg-rose-500' : 'bg-zinc-400'">
               {{ pendingApprovalCount }}
             </span>
           </Button>
 
           <!-- Mobile Buttons (<2xl) -->
           <div class="flex items-center gap-3 shrink-0 2xl:hidden">
-            <Button @click="closeForm(); openAiModal()" class="h-9 rounded-full gap-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 text-xs font-bold px-4 whitespace-nowrap border border-indigo-200/50">
+            <Button
+              @click="closeForm(); openAiModal()"
+              class="h-9 rounded-full gap-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 text-xs font-bold px-4 whitespace-nowrap border border-indigo-200/50"
+            >
               <Sparkles class="w-4 h-4" /> Giao việc bằng AI
             </Button>
-            <Button @click="closeAiModal(); openForm()" class="h-9 rounded-full gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-4 whitespace-nowrap">
+            <Button
+              @click="closeAiModal(); openForm()"
+              class="h-9 rounded-full gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-4 whitespace-nowrap"
+            >
               <Plus class="w-4 h-4" /> Khai báo việc
             </Button>
           </div>
@@ -1319,72 +1319,79 @@ onBeforeUnmount(() => {
           <!-- Desktop Sliding Tabs (>=2xl) -->
           <div class="hidden 2xl:grid relative grid-cols-2 bg-zinc-100 p-1 rounded-full isolate select-none w-[240px] shrink-0 border border-zinc-200/50">
             <div class="absolute inset-y-1 left-1 right-1 z-0 pointer-events-none">
-              <div class="w-1/2 h-full bg-white rounded-full shadow-sm transition-transform duration-300 ease-out will-change-transform"
-                   :style="{ transform: `translateX(${isFormOpen ? '100%' : '0%'})` }"></div>
+              <div
+                class="w-1/2 h-full bg-white rounded-full shadow-sm transition-transform duration-300 ease-out will-change-transform"
+                :style="{
+                  transform: `translateX(${isFormOpen ? '100%' : '0%'})`,
+                }"
+              ></div>
             </div>
 
-            <button @click="openAiModal(); closeForm()"
-                    class="relative rounded-full text-xs font-bold z-10 transition-colors h-8 flex items-center justify-center gap-1.5 bg-transparent border-0 outline-none cursor-pointer"
-                    :class="isAiModalOpen ? 'text-indigo-600' : 'text-zinc-500 hover:text-zinc-700'">
+            <button
+              @click="openAiModal(); closeForm()"
+              class="relative rounded-full text-xs font-bold z-10 transition-colors h-8 flex items-center justify-center gap-1.5 bg-transparent border-0 outline-none cursor-pointer"
+              :class="isAiModalOpen ? 'text-indigo-600' : 'text-zinc-500 hover:text-zinc-700'"
+            >
               <Sparkles class="w-3.5 h-3.5" /> AI Chat
             </button>
-            <button @click="openForm(); closeAiModal()"
-                    class="relative rounded-full text-xs font-bold z-10 transition-colors h-8 flex items-center justify-center gap-1.5 bg-transparent border-0 outline-none cursor-pointer"
-                    :class="isFormOpen ? 'text-zinc-900' : 'text-zinc-500 hover:text-zinc-700'">
+            <button
+              @click="openForm(); closeAiModal()"
+              class="relative rounded-full text-xs font-bold z-10 transition-colors h-8 flex items-center justify-center gap-1.5 bg-transparent border-0 outline-none cursor-pointer"
+              :class="isFormOpen ? 'text-zinc-900' : 'text-zinc-500 hover:text-zinc-700'"
+            >
               <Plus class="w-3.5 h-3.5" /> Thủ công
             </button>
           </div>
         </div>
       </header>
 
-      <!-- Stats Cards Row: luôn hiển thị 5 card trên 1 dòng, không ẩn/xuống dòng text.
-           min-w-fit giữ card không nhỏ hơn nội dung; màn hình quá hẹp sẽ trượt ngang. -->
-      <div class="px-4 sm:px-6 2xl:px-8 pb-5 sm:pb-6 2xl:pb-8 flex gap-3 sm:gap-4 overflow-x-auto hide-scrollbar">
-        <div v-for="card in statCards" :key="card.key"
-             class="flex-1 min-w-fit bg-white rounded-2xl p-4 2xl:p-5 border border-zinc-100 shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] flex items-center gap-3 2xl:gap-4">
-          <div class="w-10 h-10 2xl:w-12 2xl:h-12 rounded-full flex items-center justify-center shrink-0" :class="card.iconClass">
-            <component :is="card.icon" class="w-5 h-5 2xl:w-6 2xl:h-6" />
+      <!-- Stats Cards: mỗi card có chiều cao cố định tối thiểu để icon và nhãn không bị ép/cắt. -->
+      <div class="grid grid-flow-col auto-cols-[minmax(190px,1fr)] gap-3 overflow-x-auto px-4 pb-5 hide-scrollbar sm:gap-4 sm:px-6 sm:pb-6 2xl:grid-flow-row 2xl:grid-cols-5 2xl:overflow-visible 2xl:px-8 2xl:pb-8">
+        <div v-for="card in statCards" :key="card.key" class="flex min-h-[72px] min-w-0 items-center gap-3 rounded-2xl border border-zinc-100 bg-white px-4 py-3 shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] 2xl:min-h-[82px] 2xl:gap-4 2xl:px-5 2xl:py-4">
+          <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full 2xl:h-10 2xl:w-10" :class="card.iconClass">
+            <component :is="card.icon" class="h-5 w-5" />
           </div>
-          <div>
-            <h2 class="text-xl 2xl:text-2xl font-bold leading-none">{{ getDisplayVal(card.key) }}</h2>
-            <p class="text-[10px] 2xl:text-[11px] font-semibold text-zinc-400 uppercase tracking-wider mt-1 whitespace-nowrap">{{ card.label }}</p>
+          <div class="min-w-0">
+            <h2 class="text-xl 2xl:text-2xl font-bold leading-none">
+              {{ getDisplayVal(card.key) }}
+            </h2>
+            <p class="mt-1 truncate text-[10px] font-semibold uppercase tracking-wider text-zinc-400 2xl:text-[11px]">
+              {{ card.label }}
+            </p>
           </div>
         </div>
         <!-- Chart Card -->
-        <div class="flex-1 min-w-fit bg-white rounded-2xl p-4 2xl:p-5 border border-zinc-100 shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] flex items-center gap-3 2xl:gap-5">
-          <div class="relative w-11 h-11 2xl:w-14 2xl:h-14 shrink-0 flex items-center justify-center">
+        <div class="flex min-h-[72px] min-w-0 items-center gap-3 rounded-2xl border border-zinc-100 bg-white px-4 py-3 shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] 2xl:min-h-[82px] 2xl:gap-4 2xl:px-5 2xl:py-4">
+          <div class="relative flex h-10 w-10 shrink-0 items-center justify-center 2xl:h-12 2xl:w-12">
             <!-- Simple SVG Donut Chart -->
             <svg class="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
               <path class="text-zinc-100" stroke-width="4" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
               <path class="text-indigo-600 transition-all duration-500 ease-out" stroke-width="4" :stroke-dasharray="`${displayHoursPct}, 100`" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
             </svg>
-            <span class="absolute text-[10px] 2xl:text-[11px] font-bold">{{ displayHoursPct }}%</span>
+            <span class="absolute text-[10px] font-bold">{{ displayHoursPct }}%</span>
           </div>
-          <div>
-            <p class="text-[10px] 2xl:text-[11px] font-semibold text-zinc-400 uppercase tracking-wider whitespace-nowrap">Tổng thời gian</p>
-            <p class="text-base 2xl:text-lg font-bold leading-tight mt-0.5 whitespace-nowrap">{{ displayHoursUsed }} / {{ displayHoursTotal }} h</p>
+          <div class="min-w-0">
+            <p class="truncate text-[10px] font-semibold uppercase tracking-wider text-zinc-400 2xl:text-[11px]">Tổng thời gian</p>
+            <p class="mt-0.5 truncate text-base font-bold leading-tight 2xl:text-lg">{{ displayHoursUsed }} / {{ displayHoursTotal }} h</p>
           </div>
         </div>
       </div>
 
       <!-- Timeline Section -->
       <div class="bg-white mx-4 sm:mx-6 2xl:mx-8 mb-5 sm:mb-6 2xl:mb-8 rounded-3xl border border-zinc-100 shadow-sm overflow-hidden flex flex-col">
-        
         <!-- Timeline Header Controls -->
         <div class="px-4 sm:px-6 py-4 border-b border-zinc-100 flex items-center justify-between gap-3 flex-wrap">
           <div class="flex items-center gap-4 sm:gap-6 flex-wrap min-w-0">
             <h3 class="font-bold text-zinc-800 whitespace-nowrap">Trạng thái nhân viên</h3>
             <div class="relative flex bg-zinc-100/80 rounded-full p-1 overflow-x-auto hide-scrollbar max-w-full">
               <!-- Indicator trượt theo tab đang được chọn -->
-              <span class="absolute top-1 bottom-1 bg-white shadow-sm rounded-full transition-all duration-300 ease-out pointer-events-none"
-                    :style="tabIndicatorStyle"></span>
-              <button v-for="tab in filterTabs" :key="tab.value" :ref="el => (tabRefs[tab.value] = el)" @click="filterStatus = tab.value"
-                      :class="['relative z-10 px-3 sm:px-4 py-1.5 rounded-full text-xs font-semibold transition-colors whitespace-nowrap', filterStatus === tab.value ? 'text-zinc-900' : 'text-zinc-500 hover:text-zinc-700']">
+              <span class="absolute top-1 bottom-1 bg-white shadow-sm rounded-full transition-all duration-300 ease-out pointer-events-none" :style="tabIndicatorStyle"></span>
+              <button v-for="tab in filterTabs" :key="tab.value" :ref="(el) => (tabRefs[tab.value] = el)" @click="filterStatus = tab.value" :class="['relative z-10 px-3 sm:px-4 py-1.5 rounded-full text-xs font-semibold transition-colors whitespace-nowrap', filterStatus === tab.value ? 'text-zinc-900' : 'text-zinc-500 hover:text-zinc-700']">
                 {{ tab.label }}
               </button>
             </div>
           </div>
-          
+
           <div class="flex items-center gap-2 sm:gap-3 shrink-0">
             <Popover>
               <PopoverTrigger as-child>
@@ -1398,12 +1405,14 @@ onBeforeUnmount(() => {
               </PopoverContent>
             </Popover>
             <div class="flex items-center bg-zinc-50 border border-zinc-200/60 rounded-full overflow-hidden">
-              <button class="pl-2.5 pr-2 py-1.5 hover:bg-zinc-100 border-r border-zinc-200/60 transition-colors" @click="changeTimelineDay(-1)"><ChevronLeft class="w-4 h-4 text-zinc-600" /></button>
-              <button class="pl-2 pr-2.5 py-1.5 hover:bg-zinc-100 transition-colors" @click="changeTimelineDay(1)"><ChevronRight class="w-4 h-4 text-zinc-600" /></button>
+              <button class="pl-2.5 pr-2 py-1.5 hover:bg-zinc-100 border-r border-zinc-200/60 transition-colors" @click="changeTimelineDay(-1)">
+                <ChevronLeft class="w-4 h-4 text-zinc-600" />
+              </button>
+              <button class="pl-2 pr-2.5 py-1.5 hover:bg-zinc-100 transition-colors" @click="changeTimelineDay(1)">
+                <ChevronRight class="w-4 h-4 text-zinc-600" />
+              </button>
             </div>
-            <Button variant="outline" size="sm" class="h-[34px] rounded-full text-xs font-bold gap-2 hidden sm:flex">
-              <Filter class="w-3.5 h-3.5" /> Bộ lọc
-            </Button>
+            <Button variant="outline" size="sm" class="h-[34px] rounded-full text-xs font-bold gap-2 hidden sm:flex"> <Filter class="w-3.5 h-3.5" /> Bộ lọc </Button>
           </div>
         </div>
 
@@ -1417,7 +1426,6 @@ onBeforeUnmount(() => {
         <!-- Gantt Grid Container (Cuộn dọc chung) -->
         <div class="flex-1 overflow-y-auto hide-scrollbar min-h-0 flex flex-col">
           <div class="flex min-h-fit">
-            
             <!-- CỘT TRÁI: Danh sách Nhân viên (Cố định, không cuộn ngang) -->
             <div class="w-[180px] sm:w-[220px] xl:w-[260px] shrink-0 border-r border-zinc-100 bg-white flex flex-col">
               <!-- Header -->
@@ -1426,9 +1434,7 @@ onBeforeUnmount(() => {
                 <span class="hidden sm:inline text-[11px] font-bold text-zinc-400 uppercase whitespace-nowrap">Trạng thái</span>
               </div>
               <!-- Dòng dữ liệu -->
-              <div v-for="user in filteredResources" :key="user.id" 
-                   class="px-3 sm:px-6 py-3 flex items-center justify-between gap-2 border-b border-zinc-50 hover:bg-zinc-50/50 transition-[height,background-color] bg-white shrink-0"
-                   :class="isSpecialist ? 'h-[180px]' : 'h-[88px]'">
+              <div v-for="user in filteredResources" :key="user.id" class="px-3 sm:px-6 py-3 flex items-center justify-between gap-2 border-b border-zinc-50 hover:bg-zinc-50/50 transition-[height,background-color] bg-white shrink-0" :class="isSpecialist ? 'h-[180px]' : 'h-[88px]'">
                 <div class="flex items-center gap-2.5 min-w-0">
                   <div class="relative shrink-0">
                     <Avatar class="w-8 h-8 border border-zinc-100">
@@ -1438,30 +1444,36 @@ onBeforeUnmount(() => {
                     <span class="sm:hidden absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white" :class="statusMeta[user.status].dot"></span>
                   </div>
                   <div class="min-w-0">
-                    <p class="text-sm font-bold text-zinc-900 leading-none truncate">{{ user.name }}</p>
-                    <p class="text-[11px] font-medium text-zinc-500 mt-1 truncate">{{ user.role }}</p>
+                    <p class="text-sm font-bold text-zinc-900 leading-none truncate">
+                      {{ user.name }}
+                    </p>
+                    <p class="text-[11px] font-medium text-zinc-500 mt-1 truncate">
+                      {{ user.role }}
+                    </p>
                   </div>
                 </div>
-                
+
                 <div class="hidden sm:block text-right shrink-0">
                   <div class="flex items-center justify-end gap-1.5 whitespace-nowrap">
                     <span class="w-1.5 h-1.5 rounded-full" :class="statusMeta[user.status].dot"></span>
                     <span class="text-[11px] font-semibold" :class="statusMeta[user.status].text">{{ statusMeta[user.status].label }}</span>
                   </div>
-                  <p class="text-[11px] font-semibold mt-0.5 whitespace-nowrap" 
-                     :class="{'text-zinc-500': user.status !== 'overload', 'text-rose-600': user.status === 'overload'}">
-                    {{ user.totalHours }}h <span class="text-zinc-300">/ 8h</span>
+                  <p
+                    class="text-[11px] font-semibold mt-0.5 whitespace-nowrap"
+                    :class="{
+                      'text-zinc-500': user.status !== 'overload',
+                      'text-rose-600': user.status === 'overload',
+                    }"
+                  >
+                    {{ user.totalHours }}h
+                    <span class="text-zinc-300">/ 8h</span>
                   </p>
                 </div>
               </div>
             </div>
 
             <!-- CỘT PHẢI: Timeline Canvas (Cuộn ngang) -->
-            <div class="flex-1 overflow-x-auto min-w-0 select-none" 
-                 ref="timelineScrollContainer"
-                 @mousedown="handleMouseDown"
-                 @contextmenu.prevent
-            >
+            <div class="flex-1 overflow-x-auto min-w-0 select-none" ref="timelineScrollContainer" @mousedown="handleMouseDown" @contextmenu.prevent>
               <div class="min-w-[1200px] flex flex-col relative">
                 <!-- Header mốc giờ (sticky top) -->
                 <div class="sticky top-0 z-30 h-[45px] py-3 bg-zinc-50 border-b border-zinc-100 relative shrink-0">
@@ -1472,52 +1484,52 @@ onBeforeUnmount(() => {
                   </div>
                 </div>
                 <!-- Các dòng Timeline -->
-                <div v-for="user in filteredResources" :key="user.id" 
-                     class="relative border-b border-zinc-50 hover:bg-zinc-50/50 transition-[height,background-color] group shrink-0 touch-none"
-                     :class="[isSpecialist ? 'h-[180px]' : 'h-[88px]', canCreateForAssignee(user) ? 'cursor-crosshair' : 'cursor-default']"
-                     @pointerdown="startCreatePointer($event, user)">
+                <div v-for="user in filteredResources" :key="user.id" class="relative border-b border-zinc-50 hover:bg-zinc-50/50 transition-[height,background-color] group shrink-0 touch-none" :class="[isSpecialist ? 'h-[180px]' : 'h-[88px]', canCreateForAssignee(user) ? 'cursor-crosshair' : 'cursor-default']" @pointerdown="startCreatePointer($event, user)">
                   <!-- Grid lines -->
                   <div class="absolute inset-0 flex pointer-events-none">
                     <div v-for="i in hourMarks.length" :key="i" class="flex-1 border-r border-zinc-100/50 border-dashed"></div>
                   </div>
-                  
+
                   <!-- Task Blocks -->
                   <div class="absolute inset-0" :class="isSpecialist ? 'top-6 bottom-6' : 'top-2 bottom-2'">
-                    <div v-if="timelineCreate && String(timelineCreate.assignee.id) === String(user.id)"
-                         class="absolute top-0 bottom-0 rounded-lg border border-dashed border-indigo-400 bg-indigo-100/70 pointer-events-none z-20"
-                         :style="getTaskPosition(timelineMinutesToTime(timelineCreate.start), timelineMinutesToTime(timelineCreate.end))">
+                    <div v-if="timelineCreate && String(timelineCreate.assignee.id) === String(user.id)" class="absolute top-0 bottom-0 rounded-lg border border-dashed border-indigo-400 bg-indigo-100/70 pointer-events-none z-20" :style="getTaskPosition(timelineMinutesToTime(timelineCreate.start), timelineMinutesToTime(timelineCreate.end))">
                       <span class="absolute inset-0 flex items-center px-3 text-[11px] font-bold text-indigo-700 whitespace-nowrap overflow-hidden">
-                        {{ timelineMinutesToTime(timelineCreate.start) }} - {{ timelineMinutesToTime(timelineCreate.end) }}
+                        {{ timelineMinutesToTime(timelineCreate.start) }} -
+                        {{ timelineMinutesToTime(timelineCreate.end) }}
                       </span>
                     </div>
-                    <div v-for="task in user.tasks" :key="task.blockId"
-                         data-task-block
-                         class="group/task absolute top-0 bottom-0 rounded-lg flex items-center transition-colors select-none touch-none shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
-                         :title="`${task.name} · ${task.start} - ${task.end}`"
-                         @pointerdown="startTaskPointer($event, task, user, 'move')"
-                         @click="handleTaskClick(task, user)"
-                         :class="{
-                           'bg-emerald-100/60 text-emerald-800 border border-emerald-200/60': task.type === 'safe',
-                           'bg-indigo-50 text-indigo-700 border border-indigo-100': task.type === 'safe-light',
-                           'bg-amber-100/60 text-amber-900 border border-amber-200/60': task.type === 'busy',
-                           'bg-rose-100/70 text-rose-900 border border-rose-200/80': task.type === 'overload',
-                           'bg-rose-50 text-rose-800 border border-dashed border-rose-300': task.type === 'overload-dashed',
-                           'opacity-60': timelineSavingTaskId === task.id,
-                           'overflow-visible px-0 z-20 hover:z-50': isCompactTask(task),
-                           'overflow-hidden px-3': !isCompactTask(task),
-                           'cursor-grab active:cursor-grabbing': task.editable,
-                           'cursor-default': !task.editable
-                         }"
-                         :style="getTaskPosition(task.start, task.end)"
+                    <div
+                      v-for="task in user.tasks"
+                      :key="task.blockId"
+                      data-task-block
+                      class="group/task absolute top-0 bottom-0 rounded-lg flex items-center transition-colors select-none touch-none shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+                      :title="`${task.name} · ${task.start} - ${task.end}`"
+                      @pointerdown="startTaskPointer($event, task, user, 'move')"
+                      @click="handleTaskClick(task, user)"
+                      :class="{
+                        'bg-emerald-100/60 text-emerald-800 border border-emerald-200/60': task.type === 'safe',
+                        'bg-indigo-50 text-indigo-700 border border-indigo-100': task.type === 'safe-light',
+                        'bg-amber-100/60 text-amber-900 border border-amber-200/60': task.type === 'busy',
+                        'bg-rose-100/70 text-rose-900 border border-rose-200/80': task.type === 'overload',
+                        'bg-rose-50 text-rose-800 border border-dashed border-rose-300': task.type === 'overload-dashed',
+                        'opacity-60': timelineSavingTaskId === task.id,
+                        'overflow-visible px-0 z-20 hover:z-50': isCompactTask(task),
+                        'overflow-hidden px-3.5 py-2': !isCompactTask(task),
+                        'cursor-grab active:cursor-grabbing': task.editable,
+                        'cursor-default': !task.editable,
+                      }"
+                      :style="getTaskPosition(task.start, task.end)"
                     >
                       <span v-if="task.editable" role="separator" aria-label="Kéo để đổi giờ bắt đầu" title="Đổi giờ bắt đầu" class="absolute inset-y-0 left-0 z-10 w-2.5 cursor-ew-resize" @pointerdown.stop="startTaskPointer($event, task, user, 'resize-start')" @click.stop></span>
-                      <div v-if="!isCompactTask(task)" class="flex min-w-0 flex-1 flex-col gap-1 overflow-hidden pointer-events-none">
+                      <div v-if="!isCompactTask(task)" class="flex min-w-0 flex-1 flex-col justify-center gap-1 overflow-hidden pointer-events-none">
                         <span class="truncate text-[12px] font-bold leading-tight">{{ task.name }}</span>
                         <span class="truncate text-[10px] font-semibold opacity-75">{{ task.start }} - {{ task.end }} · {{ task.declaredPoint ?? 0 }} điểm · {{ declarationStatusMeta[task.rawStatus || task.status]?.label }}</span>
-                        <span class="truncate text-[10px] font-medium opacity-65">{{ task.description || 'Không có mô tả' }}</span>
+                        <span v-if="!isCondensedTask(task)" class="truncate text-[10px] font-medium opacity-65">{{ task.description || 'Không có mô tả' }}</span>
                       </div>
                       <div v-else class="pointer-events-none absolute left-full top-1/2 z-50 ml-2 w-max max-w-[220px] -translate-y-1/2 rounded-md border border-zinc-200 bg-zinc-900 px-2.5 py-1.5 text-white opacity-0 shadow-lg transition-opacity group-hover/task:opacity-100">
-                        <p class="truncate text-[11px] font-bold">{{ task.name }}</p>
+                        <p class="truncate text-[11px] font-bold">
+                          {{ task.name }}
+                        </p>
                         <p class="mt-0.5 whitespace-nowrap text-[10px] font-medium text-zinc-300">{{ task.start }} - {{ task.end }} · {{ task.declaredPoint ?? 0 }} điểm</p>
                       </div>
                       <span v-if="task.editable" role="separator" aria-label="Kéo để đổi giờ kết thúc" title="Đổi giờ kết thúc" class="absolute inset-y-0 right-0 z-10 w-2.5 cursor-ew-resize" @pointerdown.stop="startTaskPointer($event, task, user, 'resize-end')" @click.stop></span>
@@ -1526,15 +1538,11 @@ onBeforeUnmount(() => {
                 </div>
 
                 <!-- Time Stick (Vertical red line) -->
-                <div v-if="currentTimePos" 
-                     class="absolute top-0 bottom-0 w-[1.5px] bg-rose-500 z-40 pointer-events-none opacity-60"
-                     :style="{ left: currentTimePos }"
-                >
+                <div v-if="currentTimePos" class="absolute top-0 bottom-0 w-[1.5px] bg-rose-500 z-40 pointer-events-none opacity-60" :style="{ left: currentTimePos }">
                   <div class="absolute top-[3px] -left-[4.25px] w-2.5 h-2.5 rounded-full bg-rose-500 shadow-[0_1px_3px_rgba(0,0,0,0.15)] border border-white"></div>
                 </div>
               </div>
             </div>
-
           </div>
         </div>
 
@@ -1557,17 +1565,19 @@ onBeforeUnmount(() => {
 
     <!-- Backdrop: fade in/out, chỉ hiện khi panel là overlay -->
     <Transition name="backdrop-fade-in" type="transition">
-      <div v-if="isFormOpen || isAiModalOpen || isApprovalOpen" class="fixed inset-0 bg-zinc-900/40 z-[60]" :class="{ '2xl:hidden': !isApprovalOpen }" @click="closeForm(); closeAiModal(); closeApprovalPanel()"></div>
+      <div
+        v-if="isFormOpen || isAiModalOpen || isApprovalOpen"
+        class="fixed inset-0 bg-zinc-900/40 z-[60]"
+        :class="{ '2xl:hidden': !isApprovalOpen }"
+        @click="closeForm(); closeAiModal(); closeApprovalPanel()"
+      ></div>
     </Transition>
 
     <!-- Unified Panel Shell: trượt từ dưới lên (mobile) / từ phải sang (>= sm) -->
     <Transition name="slide-in-only" :duration="350">
       <aside v-if="isFormOpen || isAiModalOpen" class="fixed z-[70] inset-x-0 bottom-0 max-h-[88dvh] w-full rounded-t-3xl shadow-2xl sm:inset-x-auto sm:right-0 sm:top-0 sm:bottom-0 sm:max-h-none sm:w-[400px] sm:rounded-none sm:shadow-[-10px_0_30px_-15px_rgba(0,0,0,0.15)] 2xl:absolute 2xl:inset-auto 2xl:right-0 2xl:top-0 2xl:bottom-0 2xl:w-[380px] 2xl:max-h-none 2xl:rounded-none 2xl:shadow-none shrink-0 bg-white flex flex-col overflow-hidden border-l border-zinc-100">
-        
         <!-- Sliding Container (Carousel) -->
-        <div class="flex w-[200%] h-full transition-transform duration-300 ease-out will-change-transform"
-             :style="{ transform: `translateX(${isFormOpen ? '-50%' : '0%'})` }">
-             
+        <div class="flex w-[200%] h-full transition-transform duration-300 ease-out will-change-transform" :style="{ transform: `translateX(${isFormOpen ? '-50%' : '0%'})` }">
           <!-- ============================================== -->
           <!-- TAB 1: AI CHAT (LEFT SIDE) -->
           <!-- ============================================== -->
@@ -1594,7 +1604,9 @@ onBeforeUnmount(() => {
                     {{ msg.content }}
                   </div>
                   <div v-else-if="msg.type === 'file'" class="bg-white border border-zinc-200 text-zinc-800 px-5 py-3 rounded-2xl rounded-tr-sm flex items-center gap-3 shadow-sm">
-                    <div class="w-8 h-8 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-600"><Paperclip class="w-4 h-4"/></div>
+                    <div class="w-8 h-8 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-600">
+                      <Paperclip class="w-4 h-4" />
+                    </div>
                     <div>
                       <p class="text-[13px] font-bold">{{ msg.content }}</p>
                       <p class="text-[10px] font-medium text-zinc-500">Đã tải lên</p>
@@ -1621,16 +1633,27 @@ onBeforeUnmount(() => {
                     <div v-if="msg.type === 'proposal'" class="flex w-full flex-col gap-4 rounded-lg border border-indigo-100 bg-white p-4 shadow-md shadow-indigo-900/5">
                       <p class="text-[10px] font-extrabold uppercase tracking-wide text-indigo-500">Thông tin task</p>
                       <div class="divide-y divide-zinc-100 text-xs">
-                        <div class="flex gap-3 py-2 first:pt-0"><span class="w-24 shrink-0 font-semibold text-zinc-400">Tên việc</span><strong class="text-zinc-800">{{ msg.proposal.title }}</strong></div>
-                        <div v-if="msg.proposal.description" class="flex gap-3 py-2"><span class="w-24 shrink-0 font-semibold text-zinc-400">Mô tả</span><span class="text-zinc-700">{{ msg.proposal.description }}</span></div>
-                        <div class="flex gap-3 py-2"><span class="w-24 shrink-0 font-semibold text-zinc-400">Ngày</span><strong class="text-zinc-800">{{ aiDisplayDate(msg.proposal.date) }}</strong></div>
-                        <div class="flex gap-3 py-2"><span class="w-24 shrink-0 font-semibold text-zinc-400">Giờ bắt đầu</span><strong class="text-zinc-800">{{ msg.proposal.startTime }}</strong></div>
-                        <div class="flex gap-3 py-2"><span class="w-24 shrink-0 font-semibold text-zinc-400">Giờ kết thúc</span><strong class="text-zinc-800">{{ msg.proposal.endTime }}</strong></div>
-                        <div class="flex gap-3 py-2 last:pb-0"><span class="w-24 shrink-0 font-semibold text-zinc-400">Điểm</span><strong class="text-zinc-800">{{ msg.proposal.point }}</strong></div>
+                        <div class="flex gap-3 py-2 first:pt-0">
+                          <span class="w-24 shrink-0 font-semibold text-zinc-400">Tên việc</span><strong class="text-zinc-800">{{ msg.proposal.title }}</strong>
+                        </div>
+                        <div v-if="msg.proposal.description" class="flex gap-3 py-2">
+                          <span class="w-24 shrink-0 font-semibold text-zinc-400">Mô tả</span><span class="text-zinc-700">{{ msg.proposal.description }}</span>
+                        </div>
+                        <div class="flex gap-3 py-2">
+                          <span class="w-24 shrink-0 font-semibold text-zinc-400">Ngày</span><strong class="text-zinc-800">{{ aiDisplayDate(msg.proposal.date) }}</strong>
+                        </div>
+                        <div class="flex gap-3 py-2">
+                          <span class="w-24 shrink-0 font-semibold text-zinc-400">Giờ bắt đầu</span><strong class="text-zinc-800">{{ msg.proposal.startTime }}</strong>
+                        </div>
+                        <div class="flex gap-3 py-2">
+                          <span class="w-24 shrink-0 font-semibold text-zinc-400">Giờ kết thúc</span><strong class="text-zinc-800">{{ msg.proposal.endTime }}</strong>
+                        </div>
+                        <div class="flex gap-3 py-2 last:pb-0">
+                          <span class="w-24 shrink-0 font-semibold text-zinc-400">Điểm</span><strong class="text-zinc-800">{{ msg.proposal.point }}</strong>
+                        </div>
                       </div>
                       <div class="flex items-center justify-end border-t border-zinc-100 pt-3">
-                        <Button @click="confirmAiProposal(msg)" :disabled="isAiProposalDisabled(msg)"
-                                class="h-9 rounded-full bg-indigo-600 px-4 text-[11px] font-bold text-white shadow-sm hover:bg-indigo-700 disabled:bg-zinc-300 disabled:text-zinc-500 disabled:shadow-none">
+                        <Button @click="confirmAiProposal(msg)" :disabled="isAiProposalDisabled(msg)" class="h-9 rounded-full bg-indigo-600 px-4 text-[11px] font-bold text-white shadow-sm hover:bg-indigo-700 disabled:bg-zinc-300 disabled:text-zinc-500 disabled:shadow-none">
                           <CheckCircle class="mr-1.5 h-3.5 w-3.5" />
                           {{ aiProposalActionLabel(msg) }}
                         </Button>
@@ -1645,20 +1668,20 @@ onBeforeUnmount(() => {
             <div class="p-4 bg-white border-t border-zinc-100 shrink-0">
               <div :class="['rounded-full transition-all duration-300', isRecordingVoice ? 'voice-active-border shadow-lg shadow-indigo-500/20' : 'p-[1px] bg-zinc-200/60']">
                 <div class="flex items-center gap-2 bg-white rounded-full p-1.5 pl-4 focus-within:ring-2 focus-within:ring-indigo-500/20 transition-all h-[46px]">
-                  <input 
-                    v-model="aiInputText" 
-                    @keyup.enter="handleAiSubmit"
-                    type="text" 
-                    :placeholder="isRecordingVoice ? 'Đang lắng nghe sếp nói...' : 'Nhập yêu cầu bằng văn bản...'"
-                    :disabled="isRecordingVoice || isAiTyping"
-                    class="flex-1 bg-transparent outline-none text-[13px] font-medium text-zinc-800 placeholder:text-zinc-400 min-w-0 disabled:opacity-80"
-                  />
+                  <input v-model="aiInputText" @keyup.enter="handleAiSubmit" type="text" :placeholder="isRecordingVoice ? 'Đang lắng nghe sếp nói...' : 'Nhập yêu cầu bằng văn bản...'" :disabled="isRecordingVoice || isAiTyping" class="flex-1 bg-transparent outline-none text-[13px] font-medium text-zinc-800 placeholder:text-zinc-400 min-w-0 disabled:opacity-80" />
                   <div class="flex items-center gap-1 shrink-0">
                     <button @click="toggleVoice" :title="isRecordingVoice ? 'Tắt thu âm' : 'Ra lệnh bằng giọng nói'" class="w-9 h-9 rounded-full flex items-center justify-center transition-colors shrink-0" :class="isRecordingVoice ? 'bg-rose-100 text-rose-600 hover:bg-rose-200' : 'text-zinc-400 hover:text-indigo-600 hover:bg-indigo-50'">
                       <X v-if="isRecordingVoice" class="w-4 h-4" />
                       <Mic v-else class="w-4 h-4" />
                     </button>
-                    <button @click="handleAiSubmit" :disabled="isAiTyping" class="w-9 h-9 rounded-full bg-indigo-600 hover:bg-indigo-700 flex items-center justify-center text-white transition-colors shadow-sm ml-1 shrink-0" :class="{'opacity-50 pointer-events-none': (!aiInputText.trim() && !isRecordingVoice) || isAiTyping}">
+                    <button
+                      @click="handleAiSubmit"
+                      :disabled="isAiTyping"
+                      class="w-9 h-9 rounded-full bg-indigo-600 hover:bg-indigo-700 flex items-center justify-center text-white transition-colors shadow-sm ml-1 shrink-0"
+                      :class="{
+                        'opacity-50 pointer-events-none': (!aiInputText.trim() && !isRecordingVoice) || isAiTyping,
+                      }"
+                    >
                       <Send class="w-4 h-4 -ml-0.5" />
                     </button>
                   </div>
@@ -1681,13 +1704,21 @@ onBeforeUnmount(() => {
 
             <!-- Body -->
             <div class="p-6 2xl:p-8 pb-28 2xl:pb-28 flex flex-col gap-6 flex-1 min-h-0 overflow-y-auto hide-scrollbar">
-              
               <!-- Người thực hiện -->
               <div v-if="!isSpecialist" class="space-y-2.5">
                 <label class="text-[11px] font-bold text-zinc-500 uppercase tracking-wider">Người thực hiện</label>
                 <div v-if="formSelectedUser" class="flex h-14 items-center gap-3 rounded-xl border border-zinc-200/80 bg-zinc-50 px-4">
-                  <Avatar class="h-8 w-8 border border-zinc-100"><AvatarImage :src="formSelectedUser.avatar" /><AvatarFallback>{{ formSelectedUser.name?.[0] }}</AvatarFallback></Avatar>
-                  <div class="min-w-0"><p class="truncate text-sm font-bold text-zinc-900">{{ formSelectedUser.name }}</p><p class="truncate text-[10px] font-semibold text-zinc-500">{{ formSelectedUser.role }}</p></div>
+                  <Avatar class="h-8 w-8 border border-zinc-100"
+                    ><AvatarImage :src="formSelectedUser.avatar" /><AvatarFallback>{{ formSelectedUser.name?.[0] }}</AvatarFallback></Avatar
+                  >
+                  <div class="min-w-0">
+                    <p class="truncate text-sm font-bold text-zinc-900">
+                      {{ formSelectedUser.name }}
+                    </p>
+                    <p class="truncate text-[10px] font-semibold text-zinc-500">
+                      {{ formSelectedUser.role }}
+                    </p>
+                  </div>
                   <span class="ml-auto shrink-0 rounded-full bg-zinc-200 px-2 py-1 text-[9px] font-bold uppercase text-zinc-500">Đã khóa</span>
                 </div>
               </div>
@@ -1697,7 +1728,7 @@ onBeforeUnmount(() => {
                 <label class="text-[11px] font-bold text-zinc-500 uppercase tracking-wider">Tên công việc</label>
                 <Input v-model="formTitle" placeholder="Nhập tên công việc" class="h-11 rounded-xl bg-white border-zinc-200/80 font-semibold" />
               </div>
-              
+
               <div class="space-y-2.5">
                 <label class="text-[11px] font-bold text-zinc-500 uppercase tracking-wider">Mô tả chi tiết</label>
                 <Textarea v-model="formDesc" placeholder="Nhập mô tả..." class="resize-none h-24 rounded-xl bg-white border-zinc-200/80 font-medium text-sm" />
@@ -1714,20 +1745,17 @@ onBeforeUnmount(() => {
                 <div class="border border-zinc-200/80 rounded-2xl p-4 space-y-4 bg-white">
                   <div class="flex flex-col gap-1.5">
                     <label for="work-date" class="text-[10px] font-bold text-zinc-400 uppercase">Ngày làm việc</label>
-                    <input id="work-date" type="date" v-model="formDate"
-                           class="w-full h-11 px-4 rounded-full border border-zinc-200/80 bg-white text-sm font-semibold text-zinc-700 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-300 transition-all" />
+                    <input id="work-date" type="date" v-model="formDate" class="w-full h-11 px-4 rounded-full border border-zinc-200/80 bg-white text-sm font-semibold text-zinc-700 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-300 transition-all" />
                   </div>
                   <div class="flex items-end gap-3">
                     <div class="flex-1 flex flex-col gap-1.5">
                       <label for="work-start" class="text-[10px] font-bold text-zinc-400 uppercase">Từ</label>
-                      <input id="work-start" type="time" v-model="formStartTime"
-                             class="w-full h-11 px-4 rounded-full border border-zinc-200/80 bg-white text-sm font-semibold text-zinc-700 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-300 transition-all" />
+                      <input id="work-start" type="time" v-model="formStartTime" class="w-full h-11 px-4 rounded-full border border-zinc-200/80 bg-white text-sm font-semibold text-zinc-700 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-300 transition-all" />
                     </div>
                     <span class="h-11 flex items-center text-zinc-300 font-bold select-none" aria-hidden="true">&rarr;</span>
                     <div class="flex-1 flex flex-col gap-1.5">
                       <label for="work-end" class="text-[10px] font-bold text-zinc-400 uppercase">Đến</label>
-                      <input id="work-end" type="time" v-model="formEndTime"
-                             class="w-full h-11 px-4 rounded-full border border-zinc-200/80 bg-white text-sm font-semibold text-zinc-700 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-300 transition-all" />
+                      <input id="work-end" type="time" v-model="formEndTime" class="w-full h-11 px-4 rounded-full border border-zinc-200/80 bg-white text-sm font-semibold text-zinc-700 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-300 transition-all" />
                     </div>
                   </div>
                   <p class="text-[11px] font-semibold" :class="Number(calculatedDurationHours) > 0 ? 'text-zinc-500' : 'text-rose-500'">
@@ -1745,17 +1773,39 @@ onBeforeUnmount(() => {
                   </div>
                   <div class="text-right">
                     <p class="text-[11px] font-bold text-zinc-400 uppercase">Sau khi giao việc</p>
-                    <p class="text-sm font-bold mt-1" :class="{'text-emerald-600': predictedStatus==='safe', 'text-amber-600': predictedStatus==='warning', 'text-rose-600': predictedStatus==='danger'}">
-                      {{ predictedTotal }}h <span class="text-zinc-400">/ 8h</span>
+                    <p
+                      class="text-sm font-bold mt-1"
+                      :class="{
+                        'text-emerald-600': predictedStatus === 'safe',
+                        'text-amber-600': predictedStatus === 'warning',
+                        'text-rose-600': predictedStatus === 'danger',
+                      }"
+                    >
+                      {{ predictedTotal }}h
+                      <span class="text-zinc-400">/ 8h</span>
                     </p>
                   </div>
                 </div>
                 <!-- Bar -->
                 <div class="h-1.5 w-full bg-zinc-200/60 rounded-full flex overflow-hidden mt-1">
-                  <div class="h-full bg-zinc-400 transition-all duration-300" :style="{ width: `${Math.min((formSelectedUser?.totalHours||0)/8*100, 100)}%` }"></div>
-                  <div v-if="calculatedDurationHours > 0" class="h-full transition-all duration-300" 
-                       :class="{'bg-emerald-500': predictedStatus==='safe', 'bg-amber-500': predictedStatus==='warning', 'bg-rose-500': predictedStatus==='danger'}"
-                       :style="{ width: `${Math.min((calculatedDurationHours)/8*100, 100)}%` }"></div>
+                  <div
+                    class="h-full bg-zinc-400 transition-all duration-300"
+                    :style="{
+                      width: `${Math.min(((formSelectedUser?.totalHours || 0) / 8) * 100, 100)}%`,
+                    }"
+                  ></div>
+                  <div
+                    v-if="calculatedDurationHours > 0"
+                    class="h-full transition-all duration-300"
+                    :class="{
+                      'bg-emerald-500': predictedStatus === 'safe',
+                      'bg-amber-500': predictedStatus === 'warning',
+                      'bg-rose-500': predictedStatus === 'danger',
+                    }"
+                    :style="{
+                      width: `${Math.min((calculatedDurationHours / 8) * 100, 100)}%`,
+                    }"
+                  ></div>
                 </div>
               </div>
 
@@ -1766,16 +1816,16 @@ onBeforeUnmount(() => {
                 </div>
                 <div class="min-w-0">
                   <p class="text-[11px] font-bold text-indigo-600 uppercase tracking-wide">Gợi ý từ AI</p>
-                  <p class="text-[12px] font-medium text-indigo-900/80 mt-1 leading-relaxed">
-                    {{ formSelectedUser.name }} hiện còn trống {{ Math.max(8 - formSelectedUser.totalHours, 0).toFixed(1) }}h trong hôm nay{{ predictedStatus === 'danger' ? ', giao thêm công việc này sẽ gây quá tải.' : ', phù hợp để nhận công việc này.' }}
-                  </p>
+                  <p class="text-[12px] font-medium text-indigo-900/80 mt-1 leading-relaxed">{{ formSelectedUser.name }} hiện còn trống {{ Math.max(8 - formSelectedUser.totalHours, 0).toFixed(1) }}h trong hôm nay{{ predictedStatus === 'danger' ? ', giao thêm công việc này sẽ gây quá tải.' : ', phù hợp để nhận công việc này.' }}</p>
                 </div>
               </div>
             </div>
 
             <!-- Footer Actions -->
             <div class="absolute bottom-0 inset-x-0 px-6 2xl:px-8 pt-10 pb-4 bg-gradient-to-t from-white via-white/80 to-transparent flex flex-col gap-3 pointer-events-none">
-              <p v-if="formError" class="pointer-events-auto rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">{{ formError }}</p>
+              <p v-if="formError" class="pointer-events-auto rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+                {{ formError }}
+              </p>
               <Button class="pointer-events-auto h-12 rounded-full font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg shadow-indigo-600/20 disabled:opacity-50 disabled:shadow-none" :disabled="formSaving || !isFormValid" @click="submitAssignment">
                 {{ isSpecialist ? 'Gửi yêu cầu duyệt' : 'Tạo task' }}
               </Button>
@@ -1786,8 +1836,7 @@ onBeforeUnmount(() => {
     </Transition>
 
     <Transition name="slide-in-only" :duration="350">
-      <aside v-if="isApprovalOpen"
-             class="fixed inset-y-0 right-0 z-[70] flex w-full flex-col overflow-hidden border-l border-zinc-200 bg-white shadow-[-14px_0_40px_-18px_rgba(0,0,0,0.25)] sm:w-[720px] xl:w-[860px]">
+      <aside v-if="isApprovalOpen" class="fixed inset-y-0 right-0 z-[70] flex w-full flex-col overflow-hidden border-l border-zinc-200 bg-white shadow-[-14px_0_40px_-18px_rgba(0,0,0,0.25)] sm:w-[720px] xl:w-[860px]">
         <div class="flex h-20 shrink-0 items-center justify-between border-b border-zinc-100 px-5 sm:px-7">
           <div class="min-w-0">
             <div class="flex items-center gap-2.5">
@@ -1797,16 +1846,13 @@ onBeforeUnmount(() => {
             </div>
             <p class="mt-1 text-xs font-medium text-zinc-500">Có thể điều chỉnh nội dung trước khi duyệt.</p>
           </div>
-          <button type="button" aria-label="Đóng danh sách duyệt" @click="closeApprovalPanel"
-                  class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-zinc-500 transition-colors hover:bg-zinc-200">
+          <button type="button" aria-label="Đóng danh sách duyệt" @click="closeApprovalPanel" class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-zinc-500 transition-colors hover:bg-zinc-200">
             <X class="h-4 w-4" />
           </button>
         </div>
 
         <div class="flex shrink-0 items-center gap-1 border-b border-zinc-100 bg-white px-5 py-3 sm:px-7">
-          <button v-for="tab in approvalTabs" :key="tab.value" type="button" @click="changeApprovalTab(tab.value)"
-                  class="rounded-full px-4 py-2 text-xs font-bold transition-colors"
-                  :class="approvalTab === tab.value ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800'">
+          <button v-for="tab in approvalTabs" :key="tab.value" type="button" @click="changeApprovalTab(tab.value)" class="rounded-full px-4 py-2 text-xs font-bold transition-colors" :class="approvalTab === tab.value ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800'">
             {{ tab.label }}
             <span v-if="tab.value === 'pending'" class="ml-1 opacity-70">{{ pendingApprovalCount }}</span>
           </button>
@@ -1814,18 +1860,22 @@ onBeforeUnmount(() => {
 
         <div v-if="approvalItems.length" class="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[280px_minmax(0,1fr)]">
           <div class="max-h-52 overflow-y-auto border-b border-zinc-100 bg-zinc-50/70 p-3 md:max-h-none md:border-b-0 md:border-r">
-            <button v-for="item in approvalItems" :key="item._id" type="button" @click="selectApproval(item)"
-                    class="mb-2 w-full rounded-lg border p-3 text-left transition-colors last:mb-0"
-                    :class="String(selectedApprovalId) === String(item._id) ? 'border-indigo-200 bg-white shadow-sm' : 'border-transparent hover:border-zinc-200 hover:bg-white'">
+            <button v-for="item in approvalItems" :key="item._id" type="button" @click="selectApproval(item)" class="mb-2 w-full rounded-lg border p-3 text-left transition-colors last:mb-0" :class="String(selectedApprovalId) === String(item._id) ? 'border-indigo-200 bg-white shadow-sm' : 'border-transparent hover:border-zinc-200 hover:bg-white'">
               <div class="flex items-start justify-between gap-2">
-                <p class="line-clamp-2 text-sm font-bold text-zinc-900">{{ item.title }}</p>
-                <span class="shrink-0 rounded-full px-2 py-1 text-[9px] font-extrabold uppercase"
-                      :class="declarationStatusMeta[item.status]?.class">
+                <p class="line-clamp-2 text-sm font-bold text-zinc-900">
+                  {{ item.title }}
+                </p>
+                <span class="shrink-0 rounded-full px-2 py-1 text-[9px] font-extrabold uppercase" :class="declarationStatusMeta[item.status]?.class">
                   {{ declarationStatusMeta[item.status]?.label || item.status }}
                 </span>
               </div>
-              <p class="mt-2 truncate text-xs font-semibold text-zinc-600">{{ item.createdBy?.fullName || item.createdBy?.username }}</p>
-              <p class="mt-1 text-[10px] font-medium text-zinc-400">{{ formatApprovalDateTime(item.workStartAt) }} - {{ vietnamTime(item.workEndAt) }}</p>
+              <p class="mt-2 truncate text-xs font-semibold text-zinc-600">
+                {{ item.createdBy?.fullName || item.createdBy?.username }}
+              </p>
+              <p class="mt-1 text-[10px] font-medium text-zinc-400">
+                {{ formatApprovalDateTime(item.workStartAt) }} -
+                {{ vietnamTime(item.workEndAt) }}
+              </p>
             </button>
           </div>
 
@@ -1834,12 +1884,18 @@ onBeforeUnmount(() => {
               <div class="mb-6 flex items-center justify-between gap-4 rounded-lg border border-zinc-100 bg-zinc-50 px-4 py-3">
                 <div class="min-w-0">
                   <p class="text-[10px] font-bold uppercase text-zinc-400">Người khai báo</p>
-                  <p class="mt-1 truncate text-sm font-bold text-zinc-900">{{ selectedApproval.createdBy?.fullName || selectedApproval.createdBy?.username }}</p>
-                  <p class="mt-0.5 truncate text-xs font-medium text-zinc-500">{{ selectedApproval.createdBy?.position || selectedApproval.department?.name }}</p>
+                  <p class="mt-1 truncate text-sm font-bold text-zinc-900">
+                    {{ selectedApproval.createdBy?.fullName || selectedApproval.createdBy?.username }}
+                  </p>
+                  <p class="mt-0.5 truncate text-xs font-medium text-zinc-500">
+                    {{ selectedApproval.createdBy?.position || selectedApproval.department?.name }}
+                  </p>
                 </div>
                 <div class="shrink-0 text-right">
                   <p class="text-[10px] font-bold uppercase text-zinc-400">Gửi lúc</p>
-                  <p class="mt-1 text-xs font-semibold text-zinc-700">{{ formatApprovalDateTime(selectedApproval.approval?.submittedAt || selectedApproval.createdAt) }}</p>
+                  <p class="mt-1 text-xs font-semibold text-zinc-700">
+                    {{ formatApprovalDateTime(selectedApproval.approval?.submittedAt || selectedApproval.createdAt) }}
+                  </p>
                 </div>
               </div>
 
@@ -1882,12 +1938,18 @@ onBeforeUnmount(() => {
                     <span class="relative mt-1.5 h-3 w-3 shrink-0 rounded-full bg-indigo-500 ring-4 ring-indigo-50"></span>
                     <div class="min-w-0 flex-1">
                       <div class="flex items-start justify-between gap-3">
-                        <p class="text-xs font-bold text-zinc-800">{{ approvalActionLabel(history.action) }}</p>
+                        <p class="text-xs font-bold text-zinc-800">
+                          {{ approvalActionLabel(history.action) }}
+                        </p>
                         <time class="shrink-0 text-[10px] font-medium text-zinc-400">{{ formatApprovalDateTime(history.actedAt) }}</time>
                       </div>
-                      <p class="mt-1 text-xs font-medium text-zinc-500">{{ history.actor?.fullName || history.actor?.username || 'Hệ thống' }}</p>
+                      <p class="mt-1 text-xs font-medium text-zinc-500">
+                        {{ history.actor?.fullName || history.actor?.username || 'Hệ thống' }}
+                      </p>
                       <p v-if="history.toApprover?.fullName" class="mt-1 text-[11px] text-zinc-500">Chuyển đến: {{ history.toApprover.fullName }}</p>
-                      <p v-if="history.note" class="mt-2 rounded-lg bg-zinc-50 px-3 py-2 text-xs text-zinc-600">{{ history.note }}</p>
+                      <p v-if="history.note" class="mt-2 rounded-lg bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
+                        {{ history.note }}
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -1896,11 +1958,12 @@ onBeforeUnmount(() => {
             </div>
 
             <div v-if="approvalTab === 'pending'" class="shrink-0 border-t border-zinc-100 bg-white px-5 py-4 sm:px-7">
-              <p v-if="approvalError" class="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">{{ approvalError }}</p>
+              <p v-if="approvalError" class="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+                {{ approvalError }}
+              </p>
               <div class="flex items-center justify-between gap-3">
                 <p class="text-xs font-semibold text-zinc-500">Thời lượng: {{ approvalDurationHours.toFixed(1) }} giờ</p>
-                <Button class="h-11 rounded-full bg-emerald-600 px-6 font-bold text-white hover:bg-emerald-700"
-                        :disabled="approvalSaving || !isApprovalValid" @click="submitApproval">
+                <Button class="h-11 rounded-full bg-emerald-600 px-6 font-bold text-white hover:bg-emerald-700" :disabled="approvalSaving || !isApprovalValid" @click="submitApproval">
                   <ClipboardCheck class="mr-2 h-4 w-4" />
                   {{ approvalSaving ? 'Đang duyệt...' : 'Duyệt task' }}
                 </Button>
@@ -1910,10 +1973,17 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-else class="flex flex-1 flex-col items-center justify-center px-6 text-center">
-          <div class="flex h-14 w-14 items-center justify-center rounded-full bg-emerald-50 text-emerald-600"><ClipboardCheck class="h-7 w-7" /></div>
-          <p class="mt-4 text-base font-bold text-zinc-900">Không có dữ liệu {{ approvalTabs.find(tab => tab.value === approvalTab)?.label.toLowerCase() }}</p>
+          <div class="flex h-14 w-14 items-center justify-center rounded-full bg-emerald-50 text-emerald-600">
+            <ClipboardCheck class="h-7 w-7" />
+          </div>
+          <p class="mt-4 text-base font-bold text-zinc-900">
+            Không có dữ liệu
+            {{ approvalTabs.find((tab) => tab.value === approvalTab)?.label.toLowerCase() }}
+          </p>
           <p class="mt-1 text-sm font-medium text-zinc-500">Danh sách sẽ tự cập nhật khi trạng thái công việc thay đổi.</p>
-          <p v-if="approvalError" class="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">{{ approvalError }}</p>
+          <p v-if="approvalError" class="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+            {{ approvalError }}
+          </p>
         </div>
       </aside>
     </Transition>
@@ -1926,8 +1996,7 @@ onBeforeUnmount(() => {
               <DialogTitle class="text-xl font-bold leading-tight text-zinc-900">{{ taskTimeTarget?.task?.name }}</DialogTitle>
               <p class="mt-1 text-sm font-medium text-zinc-500">Chi tiết công việc</p>
             </div>
-            <span v-if="taskTimeTarget?.task" class="shrink-0 rounded-full px-3 py-1.5 text-[10px] font-extrabold uppercase"
-                  :class="declarationStatusMeta[taskTimeTarget.task.rawStatus || taskTimeTarget.task.status]?.class">
+            <span v-if="taskTimeTarget?.task" class="shrink-0 rounded-full px-3 py-1.5 text-[10px] font-extrabold uppercase" :class="declarationStatusMeta[taskTimeTarget.task.rawStatus || taskTimeTarget.task.status]?.class">
               {{ declarationStatusMeta[taskTimeTarget.task.rawStatus || taskTimeTarget.task.status]?.label || taskTimeTarget.task.status }}
             </span>
           </div>
@@ -1937,30 +2006,45 @@ onBeforeUnmount(() => {
           <div class="grid gap-3 sm:grid-cols-3">
             <div class="rounded-lg border border-zinc-100 bg-zinc-50 px-4 py-3">
               <p class="text-[10px] font-bold uppercase text-zinc-400">Người thực hiện</p>
-              <p class="mt-1 truncate text-sm font-bold text-zinc-900">{{ taskTimeTarget?.assignee?.name }}</p>
-              <p class="mt-0.5 truncate text-xs text-zinc-500">{{ taskTimeTarget?.assignee?.role }}</p>
+              <p class="mt-1 truncate text-sm font-bold text-zinc-900">
+                {{ taskTimeTarget?.assignee?.name }}
+              </p>
+              <p class="mt-0.5 truncate text-xs text-zinc-500">
+                {{ taskTimeTarget?.assignee?.role }}
+              </p>
             </div>
             <div class="rounded-lg border border-zinc-100 bg-zinc-50 px-4 py-3">
               <p class="text-[10px] font-bold uppercase text-zinc-400">Thời gian</p>
-              <p class="mt-1 text-sm font-bold text-zinc-900">{{ taskTimeTarget?.task?.start }} - {{ taskTimeTarget?.task?.end }}</p>
+              <p class="mt-1 text-sm font-bold text-zinc-900">
+                {{ taskTimeTarget?.task?.start }} -
+                {{ taskTimeTarget?.task?.end }}
+              </p>
               <p class="mt-0.5 text-xs text-zinc-500">{{ taskTimeTarget?.task?.estimatedMinutes }} phút</p>
             </div>
             <div class="rounded-lg border border-zinc-100 bg-zinc-50 px-4 py-3">
               <p class="text-[10px] font-bold uppercase text-zinc-400">Điểm</p>
               <p class="mt-1 text-sm font-bold text-zinc-900">{{ taskTimeTarget?.task?.declaredPoint ?? 0 }} điểm</p>
-              <p class="mt-0.5 truncate text-xs text-zinc-500">{{ taskTimeTarget?.task?.department?.name || 'Chưa có phòng ban' }}</p>
+              <p class="mt-0.5 truncate text-xs text-zinc-500">
+                {{ taskTimeTarget?.task?.department?.name || 'Chưa có phòng ban' }}
+              </p>
             </div>
           </div>
 
           <div class="mt-5">
             <p class="text-[11px] font-bold uppercase text-zinc-500">Mô tả công việc</p>
-            <p class="mt-2 whitespace-pre-wrap rounded-lg border border-zinc-100 px-4 py-3 text-sm leading-relaxed text-zinc-700">{{ taskTimeTarget?.task?.description || 'Không có mô tả.' }}</p>
+            <p class="mt-2 whitespace-pre-wrap rounded-lg border border-zinc-100 px-4 py-3 text-sm leading-relaxed text-zinc-700">
+              {{ taskTimeTarget?.task?.description || 'Không có mô tả.' }}
+            </p>
           </div>
 
           <div v-if="taskTimeTarget?.task?.sourceDocument" class="mt-4 rounded-lg border border-blue-100 bg-blue-50/60 px-4 py-3">
             <p class="text-[10px] font-bold uppercase text-blue-500">Văn bản liên quan</p>
-            <p class="mt-1 text-sm font-bold text-blue-900">{{ taskTimeTarget.task.sourceDocument.soKyHieu || 'Văn bản đến' }}</p>
-            <p class="mt-1 line-clamp-2 text-xs text-blue-800/70">{{ taskTimeTarget.task.sourceDocument.trichYeu }}</p>
+            <p class="mt-1 text-sm font-bold text-blue-900">
+              {{ taskTimeTarget.task.sourceDocument.soKyHieu || 'Văn bản đến' }}
+            </p>
+            <p class="mt-1 line-clamp-2 text-xs text-blue-800/70">
+              {{ taskTimeTarget.task.sourceDocument.trichYeu }}
+            </p>
           </div>
 
           <div v-if="taskTimeTarget?.task?.editable" class="mt-5 rounded-lg border border-zinc-200 p-4">
@@ -1984,11 +2068,17 @@ onBeforeUnmount(() => {
                 <span class="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full bg-indigo-500"></span>
                 <div class="min-w-0 flex-1">
                   <div class="flex items-start justify-between gap-3">
-                    <p class="text-xs font-bold text-zinc-800">{{ approvalActionLabel(history.action) }}</p>
+                    <p class="text-xs font-bold text-zinc-800">
+                      {{ approvalActionLabel(history.action) }}
+                    </p>
                     <time class="shrink-0 text-[10px] text-zinc-400">{{ formatApprovalDateTime(history.actedAt) }}</time>
                   </div>
-                  <p class="mt-0.5 text-xs text-zinc-500">{{ history.actor?.fullName || history.actor?.username || 'Hệ thống' }}</p>
-                  <p v-if="history.note" class="mt-1.5 rounded-lg bg-zinc-50 px-3 py-2 text-xs text-zinc-600">{{ history.note }}</p>
+                  <p class="mt-0.5 text-xs text-zinc-500">
+                    {{ history.actor?.fullName || history.actor?.username || 'Hệ thống' }}
+                  </p>
+                  <p v-if="history.note" class="mt-1.5 rounded-lg bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
+                    {{ history.note }}
+                  </p>
                 </div>
               </div>
             </div>
@@ -1998,21 +2088,24 @@ onBeforeUnmount(() => {
 
         <div class="flex justify-end gap-2 border-t border-zinc-100 bg-white px-6 py-4">
           <Button variant="outline" class="rounded-full" @click="isTaskTimeOpen = false">Đóng</Button>
-          <Button v-if="taskTimeTarget?.task?.editable" class="rounded-full bg-indigo-600 hover:bg-indigo-700 text-white" :disabled="updatingTaskTime" @click="submitTaskTime">
-            Lưu thời gian
-          </Button>
+          <Button v-if="taskTimeTarget?.task?.editable" class="rounded-full bg-indigo-600 hover:bg-indigo-700 text-white" :disabled="updatingTaskTime" @click="submitTaskTime"> Lưu thời gian </Button>
         </div>
       </DialogContent>
     </Dialog>
-
   </div>
 </template>
 
 <style scoped>
 @keyframes gradient-border {
-  0% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
 }
 .voice-active-border {
   background: linear-gradient(90deg, #6366f1, #a855f7, #ec4899, #6366f1);

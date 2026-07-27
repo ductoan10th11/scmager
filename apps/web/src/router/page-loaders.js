@@ -15,14 +15,15 @@ export const OrganizationDepartmentsPage = lazyPage(() => import('../pages/Organ
 export const DepartmentDetailPage = lazyPage(() => import('../pages/DepartmentDetailPage.vue'))
 export const AssignmentPage = lazyPage(() => import('../pages/AssignmentPage.vue'))
 export const PerformancePage = lazyPage(() => import('../pages/PerformancePage.vue'))
-export const DocumentsPage = lazyPage(() => import('../pages/DocumentsPage.vue'))
-export const OutgoingDocumentsPage = lazyPage(() => import('../pages/OutgoingDocumentsPage.vue'))
+export const OfficeDocumentsPage = lazyPage(() => import('../pages/OfficeDocumentsPage.vue'))
 export const IngestDocumentsPage = lazyPage(() => import('../pages/IngestDocumentsPage.vue'))
 export const IngestMonitorPage = lazyPage(() => import('../pages/IngestMonitorPage.vue'))
+export const ConnectorsPage = lazyPage(() => import('../pages/ConnectorsPage.vue'))
 export const SettingsPage = lazyPage(() => import('../pages/SettingsPage.vue'))
 
 export const MyDepartmentPage = lazyPage(() => import('../pages/MyDepartmentPage.vue'))
 export const PrivacyPolicyPage = lazyPage(() => import('../pages/PrivacyPolicyPage.vue'))
+export const ExtensionWebViewPage = lazyPage(() => import('../pages/ExtensionWebViewPage.vue'))
 
 const preloadableRouteComponents = {
   '/users': UsersPage,
@@ -32,10 +33,10 @@ const preloadableRouteComponents = {
   '/my-department': MyDepartmentPage,
   '/assignments': AssignmentPage,
   '/performance': PerformancePage,
-  '/documents': DocumentsPage,
-  '/outgoing-documents': OutgoingDocumentsPage,
+  '/office-documents': OfficeDocumentsPage,
   '/ingest-documents': IngestDocumentsPage,
   '/ingest-monitor': IngestMonitorPage,
+  '/connectors': ConnectorsPage,
   '/settings': SettingsPage,
 }
 

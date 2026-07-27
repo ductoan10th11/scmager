@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import {
   CalendarClock,
   CheckCircle2,
@@ -23,16 +23,9 @@ import { http } from '@/shared/api/http'
 import { useAuth } from '@/features/auth/composables/useAuth'
 
 const { user } = useAuth()
-const route = useRoute()
 const router = useRouter()
-const props = defineProps({
-  context: { type: String, default: 'documents' },
-})
-
-const pageTitle = computed(() => props.context === 'ingest' ? 'Giám sát Ingest' : 'Văn bản')
-const pageDescription = computed(() => props.context === 'ingest'
-  ? 'Kiểm tra dữ liệu văn bản được đồng bộ từ Langson eOffice.'
-  : 'Theo dõi văn bản có hạn xử lý trong phạm vi của bạn.')
+const pageTitle = 'Giám sát Ingest'
+const pageDescription = 'Kiểm tra dữ liệu văn bản được đồng bộ từ Langson eOffice.'
 const currentMonth = () => new Date().toISOString().slice(0, 7)
 
 const loading = ref(false)
@@ -114,9 +107,6 @@ const fetchDocuments = async (page = 1, keepSelection = false) => {
 
 const openDocument = async (doc) => {
   selected.value = doc
-  if (props.context === 'documents' && route.params.documentId !== doc._id) {
-    router.push(`/documents/${doc._id}`)
-  }
   detailLoading.value = true
   try {
     const res = await http(`/api/ingest-documents/${doc._id}`)
@@ -130,21 +120,6 @@ const openDocument = async (doc) => {
 
 const closeDocument = () => {
   selected.value = null
-  if (route.params.documentId) router.replace('/documents')
-}
-
-const openDocumentById = async (id) => {
-  if (!id) return
-  detailLoading.value = true
-  try {
-    const res = await http(`/api/ingest-documents/${id}`)
-    selected.value = res.data
-  } catch (requestError) {
-    error.value = requestError.message || 'Không thể tải chi tiết văn bản.'
-    router.replace('/documents')
-  } finally {
-    detailLoading.value = false
-  }
 }
 
 const resetFilters = () => {
@@ -213,13 +188,18 @@ const markProcessed = async () => {
   try {
     const result = await http(`/api/ingest-documents/${selected.value._id}/processing`, {
       method: 'PATCH',
-      body: { action: 'complete' },
+      body: { action: 'complete', revision: Number(selected.value.revision ?? 0) },
     })
     selected.value = result.data
     const index = items.value.findIndex((item) => item._id === selected.value._id)
     if (index >= 0) items.value[index] = selected.value
   } catch (requestError) {
-    error.value = requestError.message || 'Không thể cập nhật trạng thái xử lý.'
+    if (requestError.status === 409) {
+      await openDetail(selected.value._id)
+      error.value = 'Văn bản đã thay đổi. Dữ liệu mới nhất đã được tải lại.'
+    } else {
+      error.value = requestError.message || 'Không thể cập nhật trạng thái xử lý.'
+    }
   } finally {
     processingSaving.value = false
   }
@@ -239,11 +219,9 @@ watch(() => [filters.value.completed, filters.value.doKhan, filters.value.scope,
   fetchDocuments(1)
 })
 
-watch(() => route.params.documentId, (id) => openDocumentById(id), { immediate: true })
-
 onMounted(() => {
   if (user.value?.role?.code === 'SPECIALIST') filters.value.scope = 'mine'
-  fetchDocuments(1, Boolean(route.params.documentId))
+  fetchDocuments(1)
 })
 </script>
 
@@ -253,8 +231,7 @@ onMounted(() => {
       <div class="mx-auto flex max-w-[1560px] flex-wrap items-center justify-between gap-3">
         <div>
           <h1 class="flex items-center gap-2 text-xl font-bold text-zinc-900">
-            <Database v-if="props.context === 'ingest'" class="h-5 w-5 text-sky-600" />
-            <FileText v-else class="h-5 w-5 text-sky-600" />
+            <Database class="h-5 w-5 text-sky-600" />
             {{ pageTitle }}
           </h1>
           <p class="mt-1 text-sm text-zinc-500">{{ pageDescription }}</p>

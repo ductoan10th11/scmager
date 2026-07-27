@@ -6,10 +6,10 @@ import ExtensionWebViewPage from '../pages/ExtensionWebViewPage.vue'
 import DashboardPage from '../pages/DashboardPage.vue'
 import MainLayout from '../layouts/MainLayout.vue'
 import {
-  DocumentsPage,
-  OutgoingDocumentsPage,
+  OfficeDocumentsPage,
   IngestDocumentsPage,
   IngestMonitorPage,
+  ConnectorsPage,
   OrganizationDepartmentsPage,
   DepartmentDetailPage,
   MyDepartmentPage,
@@ -131,27 +131,19 @@ const routes = [
         redirect: '/assignments',
       },
       {
-        path: 'documents',
-        name: 'Documents',
-        component: DocumentsPage,
-        meta: { requiresAuth: true, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
-      },
-      {
-        path: 'outgoing-documents',
-        name: 'OutgoingDocuments',
-        component: OutgoingDocumentsPage,
-        meta: { requiresAuth: true, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
-      },
-      {
-        path: 'documents/:documentId',
-        name: 'DocumentDetail',
-        component: DocumentsPage,
+        path: 'office-documents',
+        name: 'OfficeDocuments',
+        component: OfficeDocumentsPage,
         meta: { requiresAuth: true, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
       },
       {
         path: 'ingest-documents',
         name: 'IngestDocuments',
         component: IngestDocumentsPage,
+        meta: { requiresAuth: true, roles: ['ADMIN'] },
+      },
+      {
+        path: 'connectors', name: 'Connectors', component: ConnectorsPage,
         meta: { requiresAuth: true, roles: ['ADMIN'] },
       },
       {

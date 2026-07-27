@@ -1,9 +1,26 @@
-import { isValidObjectId } from 'mongoose';
+import { isValidObjectId, type ClientSession } from 'mongoose';
 import { notificationRepository } from '../repositories/notification.repository';
 import { DepartmentModel, RoleModel, UserModel, WorkDeclarationModel } from '../models';
 import { AuthUser } from '../types/auth';
 import { badRequest, forbidden, notFound } from '../utils/http-error';
 import { emitUserNotification, emitUserNotificationChanged } from '../realtime/ingest.socket';
+
+const OUTBOX_MAX_ATTEMPTS = 5;
+const OUTBOX_LOCK_MS = 60_000;
+const OUTBOX_BASE_RETRY_MS = 1_000;
+
+type WorkDeclarationOutboxInput = {
+  session: ClientSession | null;
+  recipient: string;
+  actor?: string | null;
+  type: string;
+  title: string;
+  message?: string;
+  entityId: string;
+  organizationId: string;
+  revision: number;
+  metadata?: Record<string, unknown>;
+};
 
 const parsePagination = (query: Record<string, unknown>) => {
   const page = Math.max(Number(query.page) || 1, 1);
@@ -93,14 +110,87 @@ export const createNotification = async ({
     relatedModel: model,
     relatedId: id,
     metadata,
-    deliveredAt: new Date(),
   });
-  emitUserNotification(String(recipient), {
-    id: String((notification as any)._id),
-    type,
-    title,
-  });
+  // Delivery is intentionally left to the durable publisher.  Emitting here
+  // would race a transaction and duplicate a later outbox delivery.
   return notification;
+};
+
+/**
+ * Transactional producer contract for the revisioned work lifecycle.  It only
+ * persists an in-app outbox record; the publisher emits after commit.
+ */
+export const enqueueWorkDeclarationNotification = async ({
+  session,
+  recipient,
+  actor = null,
+  type,
+  title,
+  message,
+  entityId,
+  organizationId,
+  revision,
+  metadata = {},
+}: WorkDeclarationOutboxInput): Promise<void> => {
+  if (
+    !isValidObjectId(recipient) || !isValidObjectId(entityId)
+    || !isValidObjectId(organizationId) || !Number.isInteger(revision) || revision < 1
+  ) {
+    throw badRequest('Notification outbox scope or revision is invalid.');
+  }
+  await notificationRepository.upsertWorkDeclarationOutbox({
+    recipient,
+    actor: actor && isValidObjectId(actor) ? actor : null,
+    organizationId,
+    type,
+    title: String(title).slice(0, 240),
+    body: message ? String(message).slice(0, 1000) : undefined,
+    relatedModel: 'WorkDeclaration',
+    relatedId: entityId,
+    revision,
+    metadata: { ...metadata, dedupeKey: `work:${entityId}:${type}:${revision}` },
+  }, session);
+};
+
+const safeOutboxError = (error: unknown) => error instanceof Error
+  ? error.message.replace(/[\r\n]+/g, ' ').slice(0, 500)
+  : 'Notification publisher failed.';
+
+export const notificationPublisherService = {
+  async tick(maxItems = 50): Promise<number> {
+    const limit = Math.min(Math.max(maxItems, 1), 100);
+    let published = 0;
+    for (let index = 0; index < limit; index += 1) {
+      const now = new Date();
+      const notification: any = await notificationRepository.claimOutbox(
+        now,
+        new Date(now.getTime() - OUTBOX_LOCK_MS),
+      );
+      if (!notification) break;
+      try {
+        emitUserNotification(String(notification.recipient), {
+          id: String(notification._id),
+          type: notification.type,
+          title: notification.title,
+          revision: notification.revision,
+        });
+        await notificationRepository.markOutboxPublished(String(notification._id));
+        published += 1;
+      } catch (error) {
+        const attempts = Number(notification.outboxAttempts ?? 0) + 1;
+        const deadLetter = attempts >= OUTBOX_MAX_ATTEMPTS;
+        const delay = OUTBOX_BASE_RETRY_MS * (2 ** Math.min(attempts - 1, 8));
+        await notificationRepository.rescheduleOutbox(
+          String(notification._id),
+          attempts,
+          new Date(Date.now() + delay),
+          safeOutboxError(error),
+          deadLetter,
+        );
+      }
+    }
+    return published;
+  },
 };
 
 export const notifyUser = async (

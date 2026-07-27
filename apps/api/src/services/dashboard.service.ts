@@ -30,6 +30,17 @@ const pendingIngestFilter = () => ({
   'ingest.deadLetter': { $ne: true },
 });
 
+const scopedDocumentFilter = async (actor: AuthUser, scope: Record<string, unknown>) => {
+  const result = { ...scope };
+  // Documents are tenant-scoped independently from their workflow assignees.
+  // A participant snapshot must never expand an office/department user's tenant.
+  if (!isAdmin(actor)) {
+    if (!actor.organization) throw forbidden('User has no organization assigned.');
+    result.organizationId = actor.organization;
+  }
+  return result;
+};
+
 const toDashboardWork = (work: any) => ({
   ...work.toObject?.() ?? work,
   dueAt: work.workEndAt,
@@ -47,7 +58,12 @@ export const dashboardSummaryService = async (actor: AuthUser) => {
   const workScope = scopedWorkFilter(actor);
   const activeWorkScope = { ...workScope, status: { $ne: 'CANCELLED' } };
   const pendingDocuments = pendingIngestFilter();
-  const documentScope = await documentWorkflowFiltersFor(actor);
+  const workflowScope = await documentWorkflowFiltersFor(actor);
+  const documentScope = {
+    participant: await scopedDocumentFilter(actor, workflowScope.participant),
+    current: await scopedDocumentFilter(actor, workflowScope.current),
+    processed: await scopedDocumentFilter(actor, workflowScope.processed),
+  };
 
   const [total, draft, pendingApproval, returned, approved, overdue, dueSoon, today, documentTotal, documentPending, documentCompleted, documentOverdue, documentCurrent, documentProcessed] = await Promise.all([
     WorkDeclarationModel.countDocuments(activeWorkScope),
@@ -96,7 +112,12 @@ export const dashboardDeadlinesService = async (actor: AuthUser) => {
   const todayEnd = new Date(todayStart);
   todayEnd.setDate(todayEnd.getDate() + 1);
   const workScope = scopedWorkFilter(actor);
-  const documentScope = await documentWorkflowFiltersFor(actor);
+  const workflowScope = await documentWorkflowFiltersFor(actor);
+  const documentScope = {
+    participant: await scopedDocumentFilter(actor, workflowScope.participant),
+    current: await scopedDocumentFilter(actor, workflowScope.current),
+    processed: await scopedDocumentFilter(actor, workflowScope.processed),
+  };
   const populateWork = (query: any) => query
     .populate('createdBy', '_id username fullName email')
     .populate('department', '_id name code')
@@ -155,10 +176,11 @@ export const dashboardWorkloadService = async (actor: AuthUser) => {
   ]);
   const countsByUser = new Map(grouped.map((item: any) => [idOf(item._id), item]));
   const userIds = users.map((user: any) => user._id);
-  const documentMatch = {
+  const documentMatch: Record<string, unknown> = {
     deadline: { $ne: null },
     'processing.assignees.userId': { $in: userIds },
   };
+  if (!isAdmin(actor) && actor.organization) documentMatch.organizationId = new Types.ObjectId(actor.organization);
   const [documentGrouped, currentDocuments] = await Promise.all([
     DocumentModel.aggregate([
       { $match: documentMatch },
@@ -185,6 +207,7 @@ export const dashboardWorkloadService = async (actor: AuthUser) => {
     DocumentModel.find({
       deadline: { $ne: null },
       'processing.currentAssignee.userId': { $in: userIds },
+      ...(!isAdmin(actor) && actor.organization ? { organizationId: actor.organization } : {}),
     })
       .select('soKyHieu trichYeu deadline processing.currentAssignee')
       .sort({ deadline: 1, updatedAt: -1 })

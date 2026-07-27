@@ -4,6 +4,9 @@ import { organizationRepository } from '../repositories/organization.repository'
 import { userRepository } from '../repositories/user.repository';
 import { AuthUser } from '../types/auth';
 import { badRequest, conflict, forbidden, notFound } from '../utils/http-error';
+import { AuditLogModel } from '../models/audit-log.model';
+import DepartmentModel from '../models/department.model';
+import UserModel from '../models/user.model';
 
 export type ListDepartmentsQuery = {
   page?: unknown;
@@ -107,6 +110,18 @@ const objectIdOf = (value: unknown) => {
 const ensureCanManageDepartments = (actor: AuthUser) => {
   if (actor.role.level <= 1) return;
   throw forbidden('You cannot manage departments.');
+};
+
+const writeDepartmentAudit = async (actor: AuthUser, action: string, department: any, metadata: Record<string, unknown> = {}) => {
+  await AuditLogModel.create({
+    actor: actor.id,
+    action,
+    entityModel: 'Department',
+    entityId: department._id,
+    organization: department.organization,
+    department: department._id,
+    metadata,
+  });
 };
 
 const toSafeDepartment = (department: any, memberCount = 0) => {
@@ -303,6 +318,7 @@ export const departmentService = {
         isOffice: assertBoolean(payload.isOffice, 'isOffice') ?? false,
         isActive: assertBoolean(payload.isActive, 'isActive') ?? true,
       });
+      await writeDepartmentAudit(actor, 'DEPARTMENT_CREATED', department);
       const created = await departmentRepository.findById(String((department as any)._id));
       return { data: toSafeDepartment(created) };
     } catch (error) {
@@ -321,6 +337,11 @@ export const departmentService = {
 
     let organizationId = String((department as any).organization);
     if (payload.organization !== undefined) {
+      const [hasMembers, hasChildren] = await Promise.all([
+        UserModel.exists({ department: departmentId }),
+        DepartmentModel.exists({ parent: departmentId }),
+      ]);
+      if (hasMembers || hasChildren) throw conflict('A department with members or child departments cannot change organization.');
       organizationId = await resolveOrganizationId(payload.organization) as string;
       ensureOrganizationAccess(actor, organizationId);
       (department as any).organization = organizationId;
@@ -349,12 +370,18 @@ export const departmentService = {
     const isActive = assertBoolean(payload.isActive, 'isActive');
     if (isActive !== undefined) (department as any).isActive = isActive;
 
+    if (isActive === false) {
+      const hasMembers = await UserModel.exists({ department: departmentId, status: 'ACTIVE' });
+      if (hasMembers) throw conflict('Move or deactivate active department members before deactivating this department.');
+    }
+
     try {
       await departmentRepository.save(department);
     } catch (error) {
       if (isDuplicateKeyError(error)) throw conflict('Department code already exists in this organization.');
       throw error;
     }
+    await writeDepartmentAudit(actor, 'DEPARTMENT_UPDATED', department, { fields: Object.keys(payload) });
 
     const updated = await departmentRepository.findById(String((department as any)._id));
     return { data: toSafeDepartment(updated) };
@@ -368,7 +395,15 @@ export const departmentService = {
     if (!department) throw notFound('Department not found.');
     ensureOrganizationAccess(actor, String((department as any).organization));
 
+    const [hasMembers, hasChildren] = await Promise.all([
+      UserModel.exists({ department: departmentId, status: 'ACTIVE' }),
+      DepartmentModel.exists({ parent: departmentId, isActive: true }),
+    ]);
+    if (hasMembers || hasChildren) {
+      throw conflict('Move or deactivate active members and child departments before deactivating this department.');
+    }
     (department as any).isActive = false;
     await departmentRepository.save(department);
+    await writeDepartmentAudit(actor, 'DEPARTMENT_DEACTIVATED', department);
   },
 };

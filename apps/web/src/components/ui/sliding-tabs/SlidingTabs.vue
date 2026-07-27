@@ -33,6 +33,7 @@ onMounted(async () => { await nextTick(); updateIndicator() })
     <button
       v-for="tab in tabs"
       :key="tab.id"
+      type="button"
       :data-active="String(modelValue === tab.id)"
       class="relative z-10 flex items-center gap-2 h-9 px-4 rounded-full text-sm font-bold whitespace-nowrap select-none transition-colors duration-200 focus-visible:outline-none"
       :class="modelValue === tab.id ? 'text-zinc-900' : 'text-zinc-500 hover:text-zinc-700'"

@@ -28,6 +28,7 @@ const declarationToTask = (declaration) => ({
   department: declaration.department,
   createdBy: declaration.createdBy,
   sourceDocument: declaration.sourceDocument,
+  revision: declaration.revision,
   rawStatus: declaration.status,
   editable: declaration.status !== 'CANCELLED',
 })
@@ -120,6 +121,7 @@ const toAssignee = (user, tasks = [], timelineDate = new Date()) => {
           createdBy: task.createdBy,
           createdAt: task.createdAt,
           sourceDocument: task.sourceDocument,
+          revision: task.revision,
           estimatedMinutes: task.estimatedMinutes ?? 60,
           segmentIndex,
           scheduleSegments: sourceSegments,
@@ -233,7 +235,7 @@ export const AssignmentService = {
     if (submit) {
       await http(`/api/work-declarations/${result.data._id}/submit`, {
         method: 'POST',
-        body: { approverId },
+        body: { approverId, revision: result.data.revision },
       })
     }
     return result
@@ -268,7 +270,7 @@ export const AssignmentService = {
       ?? new Date(new Date(workStartAt).getTime() + Number(payload.estimatedMinutes) * 60_000).toISOString()
     return http(`/api/work-declarations/${taskId}/schedule`, {
       method: 'PATCH',
-      body: { workStartAt, workEndAt },
+      body: { workStartAt, workEndAt, revision: payload.revision },
     })
   },
 

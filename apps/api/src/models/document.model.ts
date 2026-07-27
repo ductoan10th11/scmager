@@ -1,9 +1,9 @@
-import { Schema, model, models } from 'mongoose';
+import { Schema, model, models } from "mongoose";
 
 const personSchema = new Schema(
   {
-    username: { type: String, trim: true, default: '' },
-    fullName: { type: String, trim: true, default: '' },
+    username: { type: String, trim: true, default: "" },
+    fullName: { type: String, trim: true, default: "" },
   },
   { _id: false },
 );
@@ -11,7 +11,7 @@ const personSchema = new Schema(
 const trackLogSchema = new Schema(
   {
     sender: { type: personSchema, default: () => ({}) },
-    content: { type: String, trim: true, default: '' },
+    content: { type: String, trim: true, default: "" },
     receivedAt: { type: String, default: null },
     processingAt: { type: String, default: null },
     completedAt: { type: String, default: null },
@@ -22,13 +22,22 @@ const trackLogSchema = new Schema(
 
 const processingAssigneeSchema = new Schema(
   {
-    userId: { type: Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+    userId: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
     username: { type: String, trim: true, default: null },
     externalUsername: { type: String, trim: true, default: null },
-    fullName: { type: String, trim: true, default: '' },
-    externalFullName: { type: String, trim: true, default: '' },
+    fullName: { type: String, trim: true, default: "" },
+    externalFullName: { type: String, trim: true, default: "" },
     position: { type: String, trim: true, default: null },
-    status: { type: String, enum: ['PENDING', 'PROCESSED'], default: 'PENDING' },
+    status: {
+      type: String,
+      enum: ["PENDING", "PROCESSED"],
+      default: "PENDING",
+    },
     assignedAt: { type: String, default: null },
     assignedTrackLogId: { type: String, default: null },
     processedAt: { type: String, default: null },
@@ -39,11 +48,16 @@ const processingAssigneeSchema = new Schema(
 
 const processingSchema = new Schema(
   {
-    status: { type: String, enum: ['UNASSIGNED', 'IN_PROGRESS', 'MANUALLY_PROCESSED', 'COMPLETED'], default: 'UNASSIGNED', index: true },
+    status: {
+      type: String,
+      enum: ["UNASSIGNED", "IN_PROGRESS", "MANUALLY_PROCESSED", "COMPLETED"],
+      default: "UNASSIGNED",
+      index: true,
+    },
     currentAssignee: { type: processingAssigneeSchema, default: null },
     assignees: { type: [processingAssigneeSchema], default: [] },
     manual: {
-      processedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+      processedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
       username: { type: String, trim: true, default: null },
       fullName: { type: String, trim: true, default: null },
       position: { type: String, trim: true, default: null },
@@ -56,32 +70,52 @@ const processingSchema = new Schema(
 
 const ingestSchema = new Schema(
   {
-    source: { type: String, default: 'LANGSON_DWR', index: true },
+    source: { type: String, default: "LANGSON_DWR", index: true },
     listFetchedAt: { type: Date, default: null },
     trackLogFetchedAt: { type: Date, default: null },
     outgoingDocumentsFetchedAt: { type: Date, default: null },
     outgoingDocumentCount: { type: Number, min: 0, default: 0 },
     completed: { type: Boolean, default: false, index: true },
-    completedRule: { type: String, trim: true, default: '' },
+    completedRule: { type: String, trim: true, default: "" },
     attempts: { type: Number, min: 0, default: 0 },
     lastAttemptAt: { type: Date, default: null },
     nextRetryAt: { type: Date, default: null, index: true },
-    lastError: { type: String, trim: true, default: '' },
+    lastError: { type: String, trim: true, default: "" },
     deadLetter: { type: Boolean, default: false, index: true },
     deadLetterAt: { type: Date, default: null },
-    deadLetterReason: { type: String, trim: true, default: '' },
+    deadLetterReason: { type: String, trim: true, default: "" },
   },
   { _id: false },
 );
 
 const documentSchema = new Schema(
   {
-    documentId: { type: String, required: true, trim: true, unique: true, index: true },
-    soKyHieu: { type: String, trim: true, default: '', index: true },
-    trichYeu: { type: String, trim: true, default: '', index: 'text' },
-    ngayDen: { type: String, trim: true, default: '', index: true },
-    doKhan: { type: String, trim: true, default: '' },
-    nguoiXuLy: { type: String, trim: true, default: '' },
+    // Legacy rows may not have verified tenancy. They are quarantined by the
+    // migration and never returned by Connector-scoped repository methods.
+    organizationId: {
+      type: Schema.Types.ObjectId,
+      ref: "Organization",
+      default: null,
+      index: true,
+    },
+    connectorId: {
+      type: Schema.Types.ObjectId,
+      ref: "Connector",
+      default: null,
+      index: true,
+    },
+    sourceSystem: { type: String, default: null, trim: true },
+    externalSourceId: { type: String, default: null, trim: true },
+    // Human-driven processing transitions use this optimistic concurrency value.
+    // Connector ingestion remains fenced separately by its durable job epochs.
+    revision: { type: Number, min: 0, default: 0, required: true },
+    documentId: { type: String, required: true, trim: true, index: true },
+    soDen: { type: String, trim: true, default: "", index: true },
+    soKyHieu: { type: String, trim: true, default: "", index: true },
+    trichYeu: { type: String, trim: true, default: "", index: "text" },
+    ngayDen: { type: String, trim: true, default: "", index: true },
+    doKhan: { type: String, trim: true, default: "" },
+    nguoiXuLy: { type: String, trim: true, default: "" },
     deadline: { type: Date, required: true, index: true },
     point: { type: Number, default: 0 },
     trackLogs: { type: [trackLogSchema], default: [] },
@@ -94,9 +128,27 @@ const documentSchema = new Schema(
 );
 
 documentSchema.index({ ngayDen: 1, deadline: 1 });
-documentSchema.index({ 'ingest.completed': 1, 'ingest.deadLetter': 1, 'ingest.nextRetryAt': 1, updatedAt: 1 });
-documentSchema.index({ 'processing.currentAssignee.userId': 1, deadline: 1 });
-documentSchema.index({ 'processing.assignees.userId': 1, updatedAt: -1 });
+documentSchema.index(
+  { organizationId: 1, connectorId: 1, sourceSystem: 1, externalSourceId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      organizationId: { $type: "objectId" },
+      connectorId: { $type: "objectId" },
+      sourceSystem: { $type: "string" },
+      externalSourceId: { $type: "string" },
+    },
+  },
+);
+documentSchema.index({
+  "ingest.completed": 1,
+  "ingest.deadLetter": 1,
+  "ingest.nextRetryAt": 1,
+  updatedAt: 1,
+});
+documentSchema.index({ "processing.currentAssignee.userId": 1, deadline: 1 });
+documentSchema.index({ "processing.assignees.userId": 1, updatedAt: -1 });
 
-export const DocumentModel = models.Document || model('Document', documentSchema);
+export const DocumentModel =
+  models.Document || model("Document", documentSchema);
 export default DocumentModel;

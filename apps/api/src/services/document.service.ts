@@ -1,7 +1,7 @@
 import { isValidObjectId, Types } from 'mongoose';
 import { documentRepository } from '../repositories/document.repository';
 import type { AuthUser } from '../types/auth';
-import { badRequest, forbidden, notFound } from '../utils/http-error';
+import { badRequest, conflict, forbidden, notFound } from '../utils/http-error';
 import { documentWorkflowFiltersFor } from './document-workflow.service';
 import { AuditLogModel } from '../models/audit-log.model';
 import DocumentModel from '../models/document.model';
@@ -11,6 +11,13 @@ const ensureCanViewIngestDocuments = (actor: AuthUser) => {
   if (actor.status !== 'ACTIVE') {
     throw forbidden('Active authentication is required to view ingest documents.');
   }
+};
+
+const tenantFilterFor = (actor: AuthUser): Record<string, unknown> => {
+  // Only the platform administrator is intentionally cross-tenant. Every
+  // tenant role, including office/commune leaders, is constrained at query time.
+  if (actor.role.code === 'ADMIN' && !actor.organization) return {};
+  return actor.organization ? { organizationId: actor.organization } : { _id: null };
 };
 
 const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -36,9 +43,32 @@ const monthDateFilter = (query: Record<string, unknown>) => {
 };
 
 const parsePagination = (query: Record<string, unknown>) => {
-  const page = Math.max(Number(query.page) || 1, 1);
-  const limit = Math.min(Math.max(Number(query.limit) || 25, 1), 100);
+  const parse = (value: unknown, fallback: number, field: string) => {
+    if (value === undefined || value === '') return fallback;
+    if (typeof value !== 'string' && typeof value !== 'number') throw badRequest(`${field} must be a positive integer.`);
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed) || parsed < 1) throw badRequest(`${field} must be a positive integer.`);
+    return parsed;
+  };
+  const page = parse(query.page, 1, 'page');
+  const limit = Math.min(parse(query.limit, 25, 'limit'), 100);
   return { page, limit, skip: (page - 1) * limit };
+};
+
+const assertListQuery = (query: Record<string, unknown>, allowed: readonly string[]) => {
+  for (const [key, value] of Object.entries(query)) {
+    if (!allowed.includes(key)) throw badRequest(`Unsupported query parameter: ${key}.`);
+    if (Array.isArray(value)) throw badRequest(`${key} must be provided once.`);
+  }
+  if (query.scope !== undefined && !['mine', 'current'].includes(String(query.scope))) {
+    throw badRequest('scope must be mine or current.');
+  }
+  if (query.sort !== undefined && !['oldest', 'newest'].includes(String(query.sort))) {
+    throw badRequest('sort must be oldest or newest.');
+  }
+  if (query.completed !== undefined && !['true', 'false'].includes(String(query.completed))) {
+    throw badRequest('completed must be true or false.');
+  }
 };
 
 const castWorkflowFilter = (filter: Record<string, unknown>) => {
@@ -81,9 +111,11 @@ export const listIngestDocumentsService = async (
   query: Record<string, unknown>,
 ) => {
   ensureCanViewIngestDocuments(actor);
+  assertListQuery(query, ['page', 'limit', 'month', 'completed', 'doKhan', 'doMat', 'search', 'scope', 'sort']);
   const { page, limit, skip } = parsePagination(query);
   const { month } = monthDateFilter(query);
   const filter = buildFilter(query);
+  Object.assign(filter, tenantFilterFor(actor));
   const personalScope = query.scope === 'mine' || query.scope === 'current';
   if (personalScope) {
     const workflowScope = await documentWorkflowFiltersFor(actor, { includeDepartment: false });
@@ -121,9 +153,11 @@ export const listOutgoingDocumentsService = async (
   query: Record<string, unknown>,
 ) => {
   ensureCanViewIngestDocuments(actor);
+  assertListQuery(query, ['page', 'limit', 'month', 'search', 'sort']);
   const { page, limit, skip } = parsePagination(query);
   const { month, regex: monthRegex } = monthDateFilter(query);
   const sourceFilter: Record<string, unknown> = { deadline: { $ne: null } };
+  Object.assign(sourceFilter, tenantFilterFor(actor));
 
   if (actor.role.code === 'SPECIALIST') {
     Object.assign(sourceFilter, (await documentWorkflowFiltersFor(actor, { includeDepartment: false })).participant);
@@ -151,6 +185,7 @@ export const listOutgoingDocumentsService = async (
     : {};
   const direction = query.sort === 'oldest' ? 1 : -1;
   const filter = {
+    ...tenantFilterFor(actor),
     sourceDocuments: { $in: sourceIds },
     $and: [
       { ngayBanHanh: monthRegex },
@@ -176,9 +211,11 @@ export const listOutgoingDocumentsService = async (
 
 export const getOutgoingDocumentService = async (actor: AuthUser, id: string) => {
   ensureCanViewIngestDocuments(actor);
-  const document = isValidObjectId(id)
-    ? await OutgoingDocumentModel.findById(id).populate({ path: 'sourceDocuments', select: 'documentId soKyHieu trichYeu ngayDen' }).lean()
-    : await OutgoingDocumentModel.findOne({ documentId: id }).populate({ path: 'sourceDocuments', select: 'documentId soKyHieu trichYeu ngayDen' }).lean();
+  const identity = isValidObjectId(id) ? { _id: id } : { documentId: id };
+  const document = await OutgoingDocumentModel.findOne({
+    ...identity,
+    ...tenantFilterFor(actor),
+  }).populate({ path: 'sourceDocuments', select: 'documentId soKyHieu trichYeu ngayDen' }).lean();
   if (!document) throw notFound('Outgoing ingest document not found.');
 
   if (!['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER'].includes(actor.role.code)) {
@@ -194,9 +231,11 @@ export const getOutgoingDocumentService = async (actor: AuthUser, id: string) =>
 
 export const getIngestDocumentService = async (actor: AuthUser, id: string) => {
   ensureCanViewIngestDocuments(actor);
-  const document = isValidObjectId(id)
-    ? await documentRepository.findById(id)
-    : await documentRepository.findByDocumentId(id);
+  const identity = isValidObjectId(id) ? { _id: id } : { documentId: id };
+  const document = await DocumentModel.findOne({
+    ...identity,
+    ...tenantFilterFor(actor),
+  }).lean();
 
   if (!document) throw notFound('Ingest document not found.');
   if (!['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER'].includes(actor.role.code)) {
@@ -215,11 +254,21 @@ export const updateIngestDocumentProcessingService = async (
   ensureCanViewIngestDocuments(actor);
   if (!isValidObjectId(id)) throw badRequest('id must be a valid ObjectId.');
   if (body.action !== 'complete') throw badRequest('action must be complete.');
+  const expectedRevision = Number(body.revision);
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+    throw badRequest('revision must be a non-negative integer.');
+  }
 
   const document = await documentRepository.findRawById(id);
   if (!document) throw notFound('Ingest document not found.');
+  const tenantFilter = tenantFilterFor(actor);
+  if (Object.keys(tenantFilter).length && String((document as any).organizationId) !== actor.organization)
+    throw forbidden('Access denied.');
   if ((document as any).processing?.status === 'COMPLETED') {
     throw badRequest('Document is already completed by the source workflow.');
+  }
+  if (Number((document as any).revision ?? 0) !== expectedRevision) {
+    throw conflict('Document has changed. Refresh before completing it.');
   }
 
   if (!['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER'].includes(actor.role.code)) {
@@ -238,26 +287,35 @@ export const updateIngestDocumentProcessingService = async (
     return assignee;
   });
 
-  (document as any).set('processing.status', 'MANUALLY_PROCESSED');
-  (document as any).set('processing.currentAssignee', null);
-  (document as any).set('processing.assignees', assignees);
-  (document as any).set('processing.manual', {
-    processedBy: actor.id,
-    username: actor.username,
-    fullName: actor.fullName,
-    position: actor.position ?? null,
-    note,
-    processedAt: now,
-  });
-  await documentRepository.save(document);
+  const updated = await DocumentModel.findOneAndUpdate(
+    { _id: id, ...tenantFilter, revision: expectedRevision, 'processing.status': { $ne: 'COMPLETED' } },
+    {
+      $set: {
+        'processing.status': 'MANUALLY_PROCESSED',
+        'processing.currentAssignee': null,
+        'processing.assignees': assignees,
+        'processing.manual': {
+          processedBy: actor.id,
+          username: actor.username,
+          fullName: actor.fullName,
+          position: actor.position ?? null,
+          note,
+          processedAt: now,
+        },
+      },
+      $inc: { revision: 1 },
+    },
+    { new: true },
+  );
+  if (!updated) throw conflict('Document has changed. Refresh before completing it.');
   await AuditLogModel.create({
     actor: actor.id,
     action: 'DOCUMENT_MANUALLY_PROCESSED',
     entityModel: 'Document',
-    entityId: (document as any)._id,
+    entityId: updated._id,
     organization: actor.organization,
     department: actor.department,
-    metadata: { note },
+    metadata: { note, previousRevision: expectedRevision, revision: expectedRevision + 1 },
   });
 
   return getIngestDocumentService(actor, id);

@@ -1,11 +1,12 @@
 import { isValidObjectId } from 'mongoose';
-import { DocumentModel, UserModel, WorkDeclarationModel } from '../models';
+import { AuditLogModel, DocumentModel, UserModel, WorkDeclarationModel } from '../models';
 import { AuthUser } from '../types/auth';
 import { badRequest, forbidden } from '../utils/http-error';
 import { documentWorkflowFiltersFor } from './document-workflow.service';
 
 const isAdmin = (actor: AuthUser) => actor.role.code === 'ADMIN';
 const isDepartmentLeader = (actor: AuthUser) => actor.role.code === 'DEPARTMENT_LEADER';
+const EXPORT_LIMIT = 1_000;
 
 const ensureCanViewReports = (actor: AuthUser) => {
   if (actor.role.level > 3) throw forbidden('Only leaders can view reports.');
@@ -48,6 +49,10 @@ const departmentUserIds = async (departmentId: string, actor: AuthUser) => {
 
 const documentFilter = async (actor: AuthUser, query: Record<string, unknown>) => {
   const filter: Record<string, unknown> = { deadline: { $ne: null } };
+  if (!isAdmin(actor)) {
+    if (!actor.organization) throw forbidden('User has no organization assigned.');
+    filter.organizationId = actor.organization;
+  }
   if (isDepartmentLeader(actor)) Object.assign(filter, (await documentWorkflowFiltersFor(actor)).participant);
 
   const departmentId = objectId(query.departmentId, 'departmentId');
@@ -137,15 +142,31 @@ export const departmentProgressReportService = async (actor: AuthUser, departmen
 
 export const documentsCsvService = async (actor: AuthUser, query: Record<string, unknown>) => {
   ensureCanViewReports(actor);
-  const items = await DocumentModel.find(await documentFilter(actor, query)).sort({ deadline: 1 }).lean();
+  const items = await DocumentModel.find(await documentFilter(actor, query)).sort({ deadline: 1 }).limit(EXPORT_LIMIT + 1).lean();
+  if (items.length > EXPORT_LIMIT) throw badRequest(`Export is limited to ${EXPORT_LIMIT} rows. Narrow the report filters.`);
+  await recordExportAudit(actor, 'documents', items.length);
   const rows = items.map((doc: any) => [doc.soDen, doc.soKyHieu, doc.trichYeu, doc.donViBanHanh, doc.processing?.status, doc.doKhan, doc.deadline?.toISOString?.(), doc.point]);
   return `\uFEFF${toCsv(['Số đến', 'Số ký hiệu', 'Trích yếu', 'Đơn vị ban hành', 'Trạng thái', 'Độ khẩn', 'Hạn xử lý', 'Điểm'], rows)}`;
 };
 
 export const tasksCsvService = async (actor: AuthUser, query: Record<string, unknown>) => {
   ensureCanViewReports(actor);
-  const items = await WorkDeclarationModel.find(declarationFilter(actor, query)).sort({ createdAt: -1 })
+  const items = await WorkDeclarationModel.find(declarationFilter(actor, query)).sort({ createdAt: -1 }).limit(EXPORT_LIMIT + 1)
     .populate('createdBy', 'fullName').populate('department', 'name').populate('sourceDocument', 'soDen soKyHieu').lean();
+  if (items.length > EXPORT_LIMIT) throw badRequest(`Export is limited to ${EXPORT_LIMIT} rows. Narrow the report filters.`);
+  await recordExportAudit(actor, 'tasks', items.length);
   const rows = items.map((item: any) => [item.title, item.status, item.declaredPoint, item.createdBy?.fullName, item.department?.name, item.sourceDocument?.soKyHieu || item.sourceDocument?.soDen, item.workStartAt?.toISOString?.(), item.workEndAt?.toISOString?.()]);
   return `\uFEFF${toCsv(['Công việc', 'Trạng thái', 'Điểm', 'Người khai báo', 'Phòng ban', 'Văn bản nguồn', 'Bắt đầu', 'Kết thúc'], rows)}`;
+};
+
+const recordExportAudit = async (actor: AuthUser, report: 'documents' | 'tasks', rowCount: number) => {
+  if (!actor.organization) return;
+  await AuditLogModel.create({
+    actor: actor.id,
+    organization: actor.organization,
+    action: 'REPORT_EXPORTED',
+    entityModel: 'ReportExport',
+    entityId: actor.organization,
+    metadata: { report, rowCount, bounded: true },
+  });
 };

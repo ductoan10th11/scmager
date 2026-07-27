@@ -95,7 +95,7 @@ const documentStatusLabel = (doc) => doc.completed
 
 const openDocument = (doc) => {
   if (!doc?.id) return
-  router.push(`/documents/${doc.id}`)
+  router.push('/office-documents')
 }
 
 const fetchData = async () => {

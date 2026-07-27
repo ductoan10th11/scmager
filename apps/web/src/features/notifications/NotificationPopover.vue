@@ -84,7 +84,7 @@ const openNotification = async (item) => {
   await markRead(item)
   open.value = false
   if (item.relatedModel === 'IncomingDocument') {
-    router.push(`/documents/${item.relatedId}`)
+    router.push('/office-documents')
   } else if (item.relatedModel === 'WorkDeclaration') {
     router.push('/assignments')
   } else if (item.relatedModel === 'Task') {
