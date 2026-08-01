@@ -48,9 +48,13 @@ const startOfToday = () => {
 const reconcileWorkDeclarationNotifications = async (recipient: string) => {
   const pending = await notificationRepository.findUnreadWorkDeclarationActions(recipient);
   if (!pending.length) return;
+  const recipientUser: any = await UserModel.findById(recipient)
+    .select('organization department role')
+    .populate('role', 'code')
+    .lean();
   const declarationIds = [...new Set(pending.map((item: any) => String(item.relatedId)))];
   const declarations = await WorkDeclarationModel.find({ _id: { $in: declarationIds } })
-    .select('_id status approval.currentApprover pointAdjustment.status pointAdjustment.currentApprover')
+    .select('_id organization department status approval.currentApprover approval.openToHigher pointAdjustment.status pointAdjustment.currentApprover')
     .lean();
   const currentById = new Map(declarations.map((item: any) => [String(item._id), item]));
   const staleIds = pending.filter((notification: any) => {
@@ -60,9 +64,20 @@ const reconcileWorkDeclarationNotifications = async (recipient: string) => {
         || declaration.pointAdjustment?.status !== 'PENDING'
         || String(declaration.pointAdjustment?.currentApprover ?? '') !== recipient;
     }
-    return !declaration
-      || !['PENDING_APPROVAL', 'PENDING_COMPLETION'].includes(declaration.status)
-      || String(declaration.approval?.currentApprover ?? '') !== recipient;
+    if (!declaration || !['PENDING_APPROVAL', 'PENDING_COMPLETION'].includes(declaration.status)) {
+      return true;
+    }
+    if (!declaration.approval?.openToHigher) {
+      return String(declaration.approval?.currentApprover ?? '') !== recipient;
+    }
+    if (!recipientUser || String(recipientUser.organization ?? '') !== String(declaration.organization ?? '')) {
+      return true;
+    }
+    if (['OFFICE_CHIEF', 'COMMUNE_LEADER'].includes(recipientUser.role?.code)) {
+      return false;
+    }
+    return recipientUser.role?.code !== 'DEPARTMENT_LEADER'
+      || String(recipientUser.department ?? '') !== String(declaration.department ?? '');
   }).map((item: any) => String(item._id));
   if (!staleIds.length) return;
   await notificationRepository.markManyRead(staleIds);
@@ -336,6 +351,24 @@ export const markAllWorkDeclarationPointAdjustmentNotificationsRead = async (dec
   );
   await Promise.all(recipients.map((recipient: any) => (
     notificationRepository.markRelatedRead(String(recipient), declarationId, POINT_ADJUSTMENT_PENDING_TYPES)
+  )));
+  recipients.forEach((recipient: any) => emitUserNotificationChanged(String(recipient)));
+};
+
+export const markAllDocumentResultNotificationsRead = async (linkId: string) => {
+  const types = ['DOCUMENT_RESULT_SUBMITTED', 'DOCUMENT_RESULT_FORWARDED'];
+  const recipients = await notificationRepository.unreadRelatedModelRecipients(
+    'DocumentResultLink',
+    linkId,
+    types,
+  );
+  await Promise.all(recipients.map((recipient: any) => (
+    notificationRepository.markRelatedModelRead(
+      String(recipient),
+      'DocumentResultLink',
+      linkId,
+      types,
+    )
   )));
   recipients.forEach((recipient: any) => emitUserNotificationChanged(String(recipient)));
 };

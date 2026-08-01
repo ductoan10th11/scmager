@@ -108,9 +108,23 @@ export const notificationRepository = {
   },
 
   markRelatedRead(recipient: string, relatedId: string, types: string[] = []) {
+    return this.markRelatedModelRead(
+      recipient,
+      'WorkDeclaration',
+      relatedId,
+      types,
+    );
+  },
+
+  markRelatedModelRead(
+    recipient: string,
+    relatedModel: string,
+    relatedId: string,
+    types: string[] = [],
+  ) {
     const filter: Record<string, unknown> = {
       recipient,
-      relatedModel: 'WorkDeclaration',
+      relatedModel,
       relatedId,
       readAt: null,
     };
@@ -143,8 +157,20 @@ export const notificationRepository = {
   },
 
   unreadRelatedRecipients(relatedId: string, types: string[]) {
+    return this.unreadRelatedModelRecipients(
+      'WorkDeclaration',
+      relatedId,
+      types,
+    );
+  },
+
+  unreadRelatedModelRecipients(
+    relatedModel: string,
+    relatedId: string,
+    types: string[],
+  ) {
     return NotificationModel.distinct('recipient', {
-      relatedModel: 'WorkDeclaration',
+      relatedModel,
       relatedId,
       type: { $in: types },
       readAt: null,

@@ -1,7 +1,20 @@
 import { config as dotenvConfig } from 'dotenv';
-import { chromium, request as pwRequest, type BrowserContext } from 'playwright';
+import type { BrowserContext } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
+
+// Production images set this explicitly. The fallback also keeps the mounted
+// development container able to recover an expired SSO session after Chromium
+// is installed at the standard shared path.
+if (!process.env.PLAYWRIGHT_BROWSERS_PATH && fs.existsSync('/ms-playwright')) {
+  process.env.PLAYWRIGHT_BROWSERS_PATH = '/ms-playwright';
+}
+
+let playwrightLoader: Promise<typeof import('playwright')> | null = null;
+const playwright = () => {
+  playwrightLoader ??= import('playwright');
+  return playwrightLoader;
+};
 
 function findEnv(start: string): string | undefined {
   let dir = start;
@@ -57,10 +70,11 @@ export async function persist(storageState: StorageState): Promise<void> {
 }
 
 async function silentProbe(state: StorageState): Promise<Session | null> {
+  const { request: pwRequest } = await playwright();
   const rc = await pwRequest.newContext({ storageState: state, userAgent: USER_AGENT });
   try {
     const res = await rc.get(PROBE_URL);
-    if (res.status() !== 200) return null;
+    if (res.status() !== 200 || !isOnApp(res.url()) || isLoginPage(await res.text())) return null;
     return { storageState: await rc.storageState(), loggedInAt: Date.now() };
   } catch {
     return null;
@@ -72,13 +86,18 @@ async function silentProbe(state: StorageState): Promise<Session | null> {
 function isOnApp(url: string): boolean {
   try {
     const u = new URL(url);
-    return u.host !== IDP_HOST && !u.pathname.includes('/authenticationendpoint/');
+    return u.host === new URL(APP_URL).host && !u.pathname.includes('/authenticationendpoint/');
   } catch {
     return false;
   }
 }
 
+function isLoginPage(html: string): boolean {
+  return /id=["']loginForm["']|authenticationendpoint\/login\.do|name=["']sessionDataKey["']/i.test(html);
+}
+
 async function fullLogin(): Promise<Session> {
+  const { chromium } = await playwright();
   const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
     headless: true,
     userAgent: USER_AGENT,

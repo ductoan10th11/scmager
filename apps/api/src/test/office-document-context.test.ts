@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
 import app from "../app";
+import DepartmentModel from "../models/department.model";
+import ConfigModel from "../models/config.model";
 import OfficeDocumentContextModel from "../models/office-document-context.model";
+import UserModel from "../models/user.model";
 import {
   createManagedOfficeDocumentContext,
   normalizeOfficeDocumentContext,
@@ -123,25 +126,70 @@ test("Office context rejects malformed or oversized observations before persiste
   );
 });
 
-test("management can create a MANUAL context while a specialist cannot", async () => {
+test("management creates tasks while specialists may only create self-owned products", async () => {
   const originalCreate = OfficeDocumentContextModel.create;
+  const originalFind = OfficeDocumentContextModel.find;
+  const originalDepartmentFindOne = DepartmentModel.findOne;
+  const originalUserFindOne = UserModel.findOne;
+  const originalConfigUpdateOne = ConfigModel.updateOne;
+  const originalConfigFindOneAndUpdate = ConfigModel.findOneAndUpdate;
   let created: any = null;
+  const organization = "64b000000000000000000001";
+  const department = "64b000000000000000000002";
+  const specialistId = "64b000000000000000000003";
+  OfficeDocumentContextModel.find = (() => ({
+    select: () => ({ lean: async () => [] }),
+  })) as unknown as typeof OfficeDocumentContextModel.find;
   OfficeDocumentContextModel.create = (async (value: any) => {
     created = value;
-    return { toObject: () => value };
+    return { _id: "64b000000000000000000004", toObject: () => value };
   }) as unknown as typeof OfficeDocumentContextModel.create;
-  const admin = { role: { code: "OFFICE_CHIEF" } } as any;
-  const specialist = { role: { code: "SPECIALIST" } } as any;
+  DepartmentModel.findOne = (() => ({
+    lean: async () => ({ _id: department, name: "Phòng Kinh tế" }),
+  })) as unknown as typeof DepartmentModel.findOne;
+  UserModel.findOne = (() => ({
+    select: () => ({
+      lean: async () => ({
+        _id: specialistId,
+        fullName: "Chuyên viên A",
+        department,
+      }),
+    }),
+  })) as unknown as typeof UserModel.findOne;
+  let reference = 0;
+  ConfigModel.updateOne = (async () => ({ acknowledged: true })) as any;
+  ConfigModel.findOneAndUpdate = (() => ({
+    lean: async () => ({ value: ++reference }),
+  })) as unknown as typeof ConfigModel.findOneAndUpdate;
+  const manager = {
+    id: "64b000000000000000000005",
+    organization,
+    department,
+    role: { code: "OFFICE_CHIEF" },
+  } as any;
+  const specialist = {
+    id: specialistId,
+    organization,
+    department,
+    role: { code: "SPECIALIST" },
+  } as any;
   try {
-    const result = await createManagedOfficeDocumentContext(admin, {
+    const result = await createManagedOfficeDocumentContext(manager, {
       pageType: "incoming",
-      documentId: "MAN-01",
       subject: "Văn bản tạo thủ công",
       dueDate: "25/07/2026",
+      management: {
+        assignment: {
+          departmentId: department,
+          userId: specialistId,
+        },
+        manualScore: 2,
+      },
     });
     assert.equal(created.origin, "MANUAL");
     assert.equal(created.pageType, "incoming");
-    assert.equal(created.externalDocumentId, "MAN-01");
+    assert.match(created.externalDocumentId, /^m-\d{13}-\d{6}$/);
+    assert.equal(created.observation.soKyHieu, "1/VBN");
     assert.equal(result.data.observation.subject, "Văn bản tạo thủ công");
     await assert.rejects(
       () =>
@@ -151,14 +199,31 @@ test("management can create a MANUAL context while a specialist cannot", async (
         }),
       { statusCode: 403 },
     );
+    const product = await createManagedOfficeDocumentContext(specialist, {
+      pageType: "outgoing",
+      subject: "Sản phẩm độc lập",
+      createdDate: "31/07/2026",
+      management: { manualScore: 2 },
+    });
+    assert.equal(product.data.pageType, "outgoing");
+    assert.equal(created.observation.draftingUser, "Chuyên viên A");
+    assert.equal(created.observation.draftingUserId, specialistId);
+    assert.equal(created["management.manualScore"], 2);
+    assert.equal(created.statusSync.completed, true);
+    assert.equal(product.data.resultLink, undefined);
   } finally {
     OfficeDocumentContextModel.create = originalCreate;
+    OfficeDocumentContextModel.find = originalFind;
+    DepartmentModel.findOne = originalDepartmentFindOne;
+    UserModel.findOne = originalUserFindOne;
+    ConfigModel.updateOne = originalConfigUpdateOne;
+    ConfigModel.findOneAndUpdate = originalConfigFindOneAndUpdate;
   }
 });
 
 test("Office context routes expose the endpoint without an environment gate", () => {
   assert.equal(extensionOfficeDocumentContextRoutes.stack.length, 2);
-  assert.equal(officeDocumentContextRoutes.stack.length, 6);
+  assert.equal(officeDocumentContextRoutes.stack.length, 7);
   assert.equal(
     extensionOfficeDocumentContextRoutes.stack[0].route?.path,
     "/version",
@@ -168,13 +233,17 @@ test("Office context routes expose the endpoint without an environment gate", ()
     "/office-contexts",
   );
   assert.equal(officeDocumentContextRoutes.stack[0].route?.path, "/");
-  assert.equal(officeDocumentContextRoutes.stack[1].route?.path, "/");
   assert.equal(
-    officeDocumentContextRoutes.stack[2].route?.path,
+    officeDocumentContextRoutes.stack[1].route?.path,
+    "/manual-reference",
+  );
+  assert.equal(officeDocumentContextRoutes.stack[2].route?.path, "/");
+  assert.equal(
+    officeDocumentContextRoutes.stack[3].route?.path,
     "/ingest-incoming",
   );
-  assert.equal(officeDocumentContextRoutes.stack[4].route?.path, "/:id");
   assert.equal(officeDocumentContextRoutes.stack[5].route?.path, "/:id");
+  assert.equal(officeDocumentContextRoutes.stack[6].route?.path, "/:id");
 });
 
 test("Office context HMAC rejects unsigned, invalid, and replayed requests", () => {

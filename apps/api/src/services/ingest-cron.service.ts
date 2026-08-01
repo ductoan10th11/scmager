@@ -20,6 +20,7 @@ export type IngestCronLogEvent =
   | 'TICK_SUCCEEDED'
   | 'TICK_FAILED'
   | 'DOC_SYNCED'
+  | 'DOC_SYNC_DEFERRED'
   | 'RUN_REQUESTED';
 
 export interface IngestCronLog {
@@ -220,6 +221,9 @@ async function executeSprint(scheduleAfter: boolean): Promise<void> {
     if (summary.errors.length) {
       lastError = summary.errors[0];
       pushLog('WARN', 'TICK_SUCCEEDED', 'Status-only ingest completed with recoverable errors.', { summary });
+      for (const error of summary.errors) {
+        pushLog('WARN', 'DOC_SYNC_DEFERRED', 'Document status sync deferred for retry.', { error });
+      }
     } else {
       pushLog('INFO', 'TICK_SUCCEEDED', 'Status-only ingest completed.', { summary });
     }

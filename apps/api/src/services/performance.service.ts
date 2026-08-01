@@ -1,9 +1,18 @@
-import { OfficeDocumentContextModel, UserModel, WorkDeclarationModel } from '../models';
+import {
+  DocumentResultLinkModel,
+  OfficeDocumentContextModel,
+  UserModel,
+  WorkDeclarationModel,
+} from '../models';
 import type { AuthUser } from '../types/auth';
 import { badRequest, forbidden } from '../utils/http-error';
 import { calculateCreditedPoint } from './kpi.service';
 import { vietnamPeriodKey, workingDaysLate } from './work-policy.service';
-import { getLatestTrackLog } from './langson-dwr.service';
+import {
+  effectiveOfficeDocumentCompletion,
+  effectiveOfficeDocumentPoint,
+  effectiveOfficeDocumentReworkCount,
+} from './office-document-completion.service';
 
 const idOf = (value: any) => String(value?._id ?? value ?? '');
 const isSpecialist = (actor: AuthUser) => actor.role.code === 'SPECIALIST';
@@ -43,17 +52,24 @@ const userFilterFor = (actor: AuthUser) => {
 };
 
 const contextCompletedAt = (context: any) => {
-  if (context.statusSync?.completed !== true) return null;
-  const latest = getLatestTrackLog(context.statusSync?.trackLogs ?? []) as any;
-  return parseVietnamDate(
-    latest?.completedAt ?? latest?.processingAt ?? latest?.updatedAt ?? context.statusSync?.completedAt,
-  ) ?? parseVietnamDate(context.statusSync?.completedAt);
+  return effectiveOfficeDocumentCompletion(context).completedAt;
 };
 
 const documentStatus = (completed: boolean, deadline: Date | null) => {
   if (completed) return 'COMPLETED';
   if (deadline && deadline.getTime() < Date.now()) return 'OVERDUE';
   return 'IN_PROGRESS';
+};
+
+export const performanceDocumentOwnerId = (
+  context: any,
+  completion = effectiveOfficeDocumentCompletion(context),
+) => {
+  const resultPerformerId =
+    completion.source === 'DOCUMENT_RESULT'
+      ? idOf(context.management?.businessCompletion?.submittedBy)
+      : '';
+  return resultPerformerId || idOf(context.management?.assignment?.userId);
 };
 
 /**
@@ -81,21 +97,52 @@ export const performanceOverviewService = async (
   const sourceContextQuery = OfficeDocumentContextModel.find(contextFilter)
     .select('externalDocumentId observation statusSync management')
     .sort({ observedAt: -1 });
-  if (options.sourceLimit === null) {
-    // Export must cover the requested deadline range, not only recent rows.
-  } else if (options.sourceLimit !== undefined) sourceContextQuery.limit(options.sourceLimit);
-  else sourceContextQuery.limit(2_000);
+  if (options.sourceLimit !== null && options.sourceLimit !== undefined) {
+    sourceContextQuery.limit(options.sourceLimit);
+  }
   const workDeclarationQuery = WorkDeclarationModel.find({
       ...(actor.organization ? { organization: actor.organization } : isOrganizationViewer(actor) ? {} : { _id: null }),
       createdBy: { $in: [...userIds] },
+      sourceDocument: null,
       status: { $in: ['APPROVED', 'PENDING_COMPLETION', 'COMPLETED'] },
     })
       .select('createdBy title description workEndAt declaredPoint pointAdjustment completion approval status workSource kpiImport')
       .sort({ workEndAt: -1 });
-  if (options.sourceLimit !== null) workDeclarationQuery.limit(options.sourceLimit ?? 2_000);
-  const [sourceContexts, workDeclarations] = await Promise.all([
+  const productContextQuery = OfficeDocumentContextModel.find({
+    ...(actor.organization
+      ? { organizationId: actor.organization }
+      : isOrganizationViewer(actor)
+        ? {}
+        : { _id: null }),
+    pageType: { $in: ['outgoing', 'outgoing_c2'] },
+    'management.assignment.userId': { $in: [...userIds] },
+  })
+    .select('externalDocumentId observation management observedAt pageType')
+    .sort({ observedAt: -1 });
+  const linkedProductQuery = DocumentResultLinkModel.find({
+    ...(actor.organization
+      ? { organization: actor.organization }
+      : isOrganizationViewer(actor)
+        ? {}
+        : { _id: null }),
+    incomingDocument: { $ne: null },
+  })
+    .select('outgoingDocument')
+    .lean();
+  if (options.sourceLimit !== null && options.sourceLimit !== undefined) {
+    workDeclarationQuery.limit(options.sourceLimit);
+    productContextQuery.limit(options.sourceLimit);
+  }
+  const [
+    sourceContexts,
+    workDeclarations,
+    productContexts,
+    linkedProductRows,
+  ] = await Promise.all([
     sourceContextQuery.lean(),
     workDeclarationQuery.lean(),
+    productContextQuery.lean(),
+    linkedProductQuery,
   ]);
 
   const incomingDocuments = sourceContexts
@@ -105,16 +152,23 @@ export const performanceOverviewService = async (
         context.management?.overrides?.dueDate ?? context.observation?.dueDate,
         true,
       );
-      const completed = imported
+      const effectiveCompletion = effectiveOfficeDocumentCompletion(context);
+      const completed = imported?.importKey
         ? Number(imported.completedQuantity ?? 0) >= Number(imported.assignedQuantity ?? 1)
-        : context.statusSync?.completed === true;
-      const completedAt = imported?.completedAt ? new Date(imported.completedAt) : contextCompletedAt(context);
+        : effectiveCompletion.completed;
+      const completedAt = imported?.importKey && imported.completedAt
+        ? new Date(imported.completedAt)
+        : contextCompletedAt(context);
       const appearsInPeriod = options.deadlineRange
         ? Boolean(deadline && deadline >= options.deadlineRange.start && deadline <= options.deadlineRange.end)
-        : (deadline && vietnamPeriodKey(deadline) === period)
-          || (completedAt && vietnamPeriodKey(completedAt) === period);
+        : completed
+          ? Boolean(completedAt && vietnamPeriodKey(completedAt) === period)
+          : Boolean(deadline && vietnamPeriodKey(deadline) === period);
       const assignment = context.management?.assignment ?? {};
-      const ownerId = idOf(assignment.userId);
+      const ownerId = performanceDocumentOwnerId(
+        context,
+        effectiveCompletion,
+      );
       const scopeAllows = isSpecialist(actor)
         ? ownerId === actor.id
         : isDepartmentLeader(actor)
@@ -122,13 +176,12 @@ export const performanceOverviewService = async (
           : true;
       if (!appearsInPeriod || !scopeAllows) return null;
 
-      const point = Number(
-        imported?.point
-          ?? context.management?.manualScore
-          ?? context.management?.overrides?.point
-          ?? context.observation?.point
-          ?? 0,
-      );
+      const point = imported?.importKey
+        ? Number(imported.point ?? 0)
+        : effectiveOfficeDocumentPoint(context);
+      const reworkCount = imported?.importKey
+        ? Math.max(0, Number(imported.reworkCount ?? 0) || 0)
+        : effectiveOfficeDocumentReworkCount(context);
       const lateWorkingDays = completed && deadline && completedAt
         ? workingDaysLate(deadline, completedAt)
         : 0;
@@ -145,9 +198,9 @@ export const performanceOverviewService = async (
         doKhan: context.management?.overrides?.priority ?? context.observation?.priority ?? '',
         deadline,
         point: Number.isFinite(point) ? point : 0,
-        reworkCount: Math.max(0, Number(imported?.reworkCount ?? context.observation?.reworkCount ?? 0) || 0),
+        reworkCount,
         creditedPoint: completed
-          ? calculateCreditedPoint(Number.isFinite(point) ? point : 0, Number(imported?.reworkCount ?? context.observation?.reworkCount ?? 0), lateWorkingDays)
+          ? calculateCreditedPoint(Number.isFinite(point) ? point : 0, reworkCount, lateWorkingDays)
           : 0,
         lateWorkingDays,
         submittedAt: completedAt,
@@ -186,8 +239,9 @@ export const performanceOverviewService = async (
         : null;
       const appearsInPeriod = options.deadlineRange
         ? Boolean(deadline && deadline >= options.deadlineRange.start && deadline <= options.deadlineRange.end)
-        : (deadline && vietnamPeriodKey(deadline) === period)
-          || (completedAt && vietnamPeriodKey(completedAt) === period);
+        : completed
+          ? Boolean(completedAt && vietnamPeriodKey(completedAt) === period)
+          : Boolean(deadline && vietnamPeriodKey(deadline) === period);
       if (!appearsInPeriod) return null;
       const ownerId = idOf(work.createdBy);
       const owner = users.find((user: any) => idOf(user._id) === ownerId);
@@ -220,7 +274,76 @@ export const performanceOverviewService = async (
       };
     })
     .filter(Boolean) as any[];
-  const documents = [...incomingDocuments, ...externalWork];
+  const linkedProductIds = new Set(
+    linkedProductRows.map((link: any) => idOf(link.outgoingDocument)),
+  );
+  const standaloneProducts = productContexts
+    .map((product: any) => {
+      if (linkedProductIds.has(idOf(product))) return null;
+      const observation = {
+        ...(product.observation ?? {}),
+        ...(product.management?.overrides ?? {}),
+      };
+      const completedAt =
+        parseVietnamDate(observation.createdDate)
+        ?? parseVietnamDate(product.observedAt);
+      const appearsInPeriod = options.deadlineRange
+        ? Boolean(
+          completedAt
+          && completedAt >= options.deadlineRange.start
+          && completedAt <= options.deadlineRange.end,
+        )
+        : Boolean(completedAt && vietnamPeriodKey(completedAt) === period);
+      if (!appearsInPeriod) return null;
+      const ownerId = idOf(product.management?.assignment?.userId);
+      const owner = users.find((user: any) => idOf(user._id) === ownerId);
+      if (!owner) return null;
+      const point = effectiveOfficeDocumentPoint(product);
+      const reworkCount = effectiveOfficeDocumentReworkCount(product);
+      return {
+        id: idOf(product._id),
+        source: 'OFFICE_PRODUCT',
+        documentId: product.externalDocumentId,
+        soDen: '',
+        soKyHieu: observation.soKyHieu ?? '',
+        trichYeu: observation.subject ?? '',
+        ngayDen: observation.createdDate ?? '',
+        doKhan: observation.priority ?? '',
+        product: product.pageType === 'outgoing_c2'
+          ? 'Sản phẩm C2'
+          : 'Sản phẩm',
+        deadline: completedAt,
+        point,
+        reworkCount,
+        creditedPoint: calculateCreditedPoint(point, reworkCount, 0),
+        lateWorkingDays: 0,
+        submittedAt: completedAt,
+        completedAt,
+        completed: true,
+        status: 'COMPLETED',
+        processing: null,
+        trackLogs: [],
+        owner: {
+          id: ownerId,
+          username: owner.username,
+          fullName: owner.fullName,
+          position: owner.position ?? null,
+          department: owner.department
+            ? {
+                id: idOf(owner.department),
+                name: owner.department.name,
+                code: owner.department.code,
+              }
+            : null,
+        },
+      };
+    })
+    .filter(Boolean) as any[];
+  const documents = [
+    ...incomingDocuments,
+    ...externalWork,
+    ...standaloneProducts,
+  ];
 
   const perUser = new Map(users.map((user: any) => [idOf(user._id), {
     user,

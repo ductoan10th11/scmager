@@ -37,7 +37,13 @@ const notificationSchema = new Schema(
     },
     relatedModel: {
       type: String,
-      enum: ["IncomingDocument", "Task", "Timesheet", "WorkDeclaration"],
+      enum: [
+        "IncomingDocument",
+        "Task",
+        "Timesheet",
+        "WorkDeclaration",
+        "DocumentResultLink",
+      ],
       required: true,
     },
     relatedId: { type: Schema.Types.ObjectId, required: true, index: true },

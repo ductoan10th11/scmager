@@ -60,6 +60,13 @@ const config = () => ({
 });
 
 const messageOf = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+// IdP redirect URLs contain short-lived authentication parameters. They are useful
+// for detecting a session failure, but must never be retained in monitoring logs.
+const safeErrorMessage = (error: unknown) => messageOf(error)
+  .replace(/(https?:\/\/[^\s?]+)\?[^\s]*/giu, '$1?[redacted]')
+  .slice(0, 1_000);
+
 const isSessionError = (error: unknown) => /(401|403|unauthorized|forbidden|login|session|authentication|probe failed)/i.test(messageOf(error));
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -106,7 +113,7 @@ const statusFrom = (trackLogs: TrackLogItem[], completed: boolean, workflow: { s
 };
 
 const appendError = (summary: ExtensionStatusSyncSummary, documentId: string, error: unknown) => {
-  if (summary.errors.length < 20) summary.errors.push(`${documentId}: ${messageOf(error)}`.slice(0, 500));
+  if (summary.errors.length < 20) summary.errors.push(`${documentId}: ${safeErrorMessage(error)}`.slice(0, 500));
 };
 
 /**
@@ -124,6 +131,7 @@ export async function runExtensionStatusOnlyIngest(
     pageType: 'incoming',
     origin: { $ne: 'MANUAL' },
     'statusSync.completed': { $ne: true },
+    'management.businessCompletion.completed': { $ne: true },
     $or: [
       { 'statusSync.nextRetryAt': null },
       { 'statusSync.nextRetryAt': { $lte: now } },
@@ -150,7 +158,7 @@ export async function runExtensionStatusOnlyIngest(
           'statusSync.lastAttemptAt': now,
           'statusSync.nextRetryAt': retryAt(attempts, now, c),
           'statusSync.attempts': attempts,
-          'statusSync.lastError': messageOf(error).slice(0, 1000),
+          'statusSync.lastError': safeErrorMessage(error),
         } },
       );
       summary.failed += 1;
@@ -218,7 +226,7 @@ export async function runExtensionStatusOnlyIngest(
           'statusSync.lastAttemptAt': now,
           'statusSync.nextRetryAt': retryAt(attempts, now, c),
           'statusSync.attempts': attempts,
-          'statusSync.lastError': messageOf(error).slice(0, 1000),
+          'statusSync.lastError': safeErrorMessage(error),
         } },
       );
       summary.failed += 1;

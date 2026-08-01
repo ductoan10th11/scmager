@@ -3,6 +3,7 @@ import {
   createManagedOfficeDocumentContext,
   deleteManagedOfficeDocumentContext,
   getOfficeDocumentContext,
+  getNextManagedOfficeDocumentReference,
   ingestIncomingBySymbol,
   listOfficeDocumentContext,
   receiveOfficeDocumentContext,
@@ -22,6 +23,11 @@ extensionOfficeDocumentContextRoutes.post(
 
 export const officeDocumentContextRoutes = Router();
 officeDocumentContextRoutes.get("/", requireAuth, listOfficeDocumentContext);
+officeDocumentContextRoutes.get(
+  "/manual-reference",
+  requireAuth,
+  getNextManagedOfficeDocumentReference,
+);
 officeDocumentContextRoutes.post(
   "/",
   requireAuth,

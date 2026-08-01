@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { CalendarDays, BarChart3, CheckCircle2, Clock3, Download, FileText, RefreshCw, TriangleAlert, Upload, Users, X } from 'lucide-vue-next'
+import { CalendarDays, BarChart3, CheckCircle2, Clock3, Download, FileText, RefreshCw, TriangleAlert, Users, X } from 'lucide-vue-next'
 import { CalendarDate } from '@internationalized/date'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -29,12 +29,6 @@ const exportRange = ref({ startDate: '', endDate: '' })
 const exportRangeError = ref(null)
 const exportStartPickerOpen = ref(false)
 const exportEndPickerOpen = ref(false)
-const importDialogOpen = ref(false)
-const importFile = ref(null)
-const importInput = ref(null)
-const importError = ref(null)
-const importResult = ref(null)
-const importing = ref(false)
 const period = ref(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit' })
   .formatToParts(new Date()).filter((part) => part.type !== 'literal').map((part) => part.value).join('-'))
 
@@ -68,7 +62,6 @@ const documentTabs = computed(() => [
   { value: 'completed', documents: documents.value.filter((document) => document.status === 'COMPLETED') },
 ])
 const canSeeAssignees = computed(() => user.value?.role?.code !== 'SPECIALIST')
-const canImportKpi = computed(() => ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER'].includes(user.value?.role?.code))
 const formatNumber = (value) => new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 2 }).format(Number(value ?? 0))
 const formatDate = (value) => value ? new Date(value).toLocaleDateString('vi-VN') : '—'
 const formatDateTime = (value) => {
@@ -203,41 +196,6 @@ const downloadKpi = async () => {
   }
 }
 
-const openImportDialog = () => {
-  importFile.value = null
-  importError.value = null
-  importResult.value = null
-  if (importInput.value) importInput.value.value = ''
-  importDialogOpen.value = true
-}
-
-const selectImportFile = (event) => {
-  importFile.value = event.target.files?.[0] || null
-  importError.value = null
-  importResult.value = null
-}
-
-const importKpiWorkbook = async () => {
-  if (!importFile.value) {
-    importError.value = 'Chọn file PL4 .xlsx trước khi nhập.'
-    return
-  }
-  importing.value = true
-  importError.value = null
-  importResult.value = null
-  try {
-    const response = await PerformanceService.importWorkbook(importFile.value)
-    importResult.value = response.data
-    await fetchData()
-  } catch (requestError) {
-    const errors = requestError.details?.errors
-    importError.value = Array.isArray(errors) && errors.length
-      ? errors.join('\n')
-      : (requestError.message || 'Không thể nhập bảng KPI.')
-  } finally {
-    importing.value = false
-  }
-}
 
 onMounted(fetchData)
 </script>
@@ -252,7 +210,6 @@ onMounted(fetchData)
         </div>
         <div class="flex items-center gap-2">
           <Input v-model="period" type="month" class="h-9 w-[150px] rounded-md border-zinc-200 bg-white px-3 text-sm font-medium" @change="fetchData" />
-          <Button v-if="canImportKpi" variant="outline" class="h-9 rounded-full" @click="openImportDialog"><Upload class="h-4 w-4" />Nhập PL4</Button>
           <Button variant="outline" size="icon" class="h-9 w-9 rounded-full" title="Làm mới" :disabled="loading" @click="fetchData"><RefreshCw class="h-4 w-4" :class="{ 'animate-spin': loading }" /></Button>
         </div>
       </div>
@@ -280,7 +237,7 @@ onMounted(fetchData)
 
         <section class="overflow-hidden rounded-md border border-zinc-200 bg-white shadow-sm">
           <Tabs v-model="documentTab">
-          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-100 px-4 py-3"><div><h2 class="text-sm font-bold text-zinc-900">Nhiệm vụ trong kỳ</h2><p class="mt-0.5 text-xs text-zinc-500">Văn bản đến và công việc ngoài hệ thống được tính theo hạn xử lý.</p><p v-if="summary.unmappedDocuments" class="mt-1 text-xs font-semibold text-amber-700">{{ formatNumber(summary.unmappedDocuments) }} văn bản chưa map được sang tài khoản nội bộ, vẫn hiển thị đầy đủ bên dưới.</p></div><TabsList aria-label="Lọc nhiệm vụ trong kỳ"><TabsTrigger value="all" class="text-xs font-bold">Tất cả</TabsTrigger><TabsTrigger value="active" class="text-xs font-bold">Đang xử lý</TabsTrigger><TabsTrigger value="completed" class="text-xs font-bold">Đã xử lý</TabsTrigger></TabsList></div>
+          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-100 px-4 py-3"><div><h2 class="text-sm font-bold text-zinc-900">Nhiệm vụ trong kỳ</h2><p class="mt-0.5 text-xs text-zinc-500">Nhiệm vụ và công việc ngoài hệ thống được tính theo hạn xử lý.</p><p v-if="summary.unmappedDocuments" class="mt-1 text-xs font-semibold text-amber-700">{{ formatNumber(summary.unmappedDocuments) }} nhiệm vụ chưa map được sang tài khoản nội bộ, vẫn hiển thị đầy đủ bên dưới.</p></div><TabsList aria-label="Lọc nhiệm vụ trong kỳ"><TabsTrigger value="all" class="text-xs font-bold">Tất cả</TabsTrigger><TabsTrigger value="active" class="text-xs font-bold">Đang xử lý</TabsTrigger><TabsTrigger value="completed" class="text-xs font-bold">Đã xử lý</TabsTrigger></TabsList></div>
             <TabsContent v-for="tab in documentTabs" :key="tab.value" :value="tab.value" class="m-0 overflow-x-auto"><table class="w-full min-w-[1180px] text-sm"><thead class="bg-zinc-50 text-left text-xs font-semibold text-zinc-500"><tr><th class="px-4 py-3">Văn bản</th><th class="px-4 py-3">Người xử lý</th><th class="px-4 py-3">Trạng thái</th><th class="px-4 py-3 text-right">Điểm</th><th class="px-4 py-3">Hạn xử lý</th><th class="px-4 py-3">Nộp kết quả</th></tr></thead><tbody class="divide-y divide-zinc-100"><tr v-for="document in tab.documents" :key="document.id" tabindex="0" role="button" class="cursor-pointer hover:bg-zinc-50/70 focus:bg-blue-50 focus:outline-none" @click="openDocument(document)" @keydown.enter="openDocument(document)" @keydown.space.prevent="openDocument(document)"><td class="max-w-[430px] px-4 py-3"><div class="flex items-center gap-2"><span v-if="document.soDen" class="shrink-0 rounded bg-zinc-900 px-1.5 py-0.5 text-[11px] font-bold text-white">SĐ {{ document.soDen }}</span><span class="truncate font-bold text-zinc-900">{{ document.soKyHieu || document.documentId }}</span></div><p class="mt-1 line-clamp-2 text-xs leading-5 text-zinc-600">{{ document.trichYeu || 'Không có trích yếu.' }}</p></td><td class="px-4 py-3"><p class="font-semibold text-zinc-800">{{ document.owner?.fullName || 'Chưa map được người xử lý' }}</p><p class="mt-0.5 text-xs text-zinc-500">{{ document.owner?.position || document.owner?.username || '—' }}</p></td><td class="px-4 py-3"><span class="inline-flex whitespace-nowrap rounded-full border px-2 py-1 text-xs font-bold" :class="statusClass(document.status)">{{ statusLabel(document.status) }}</span></td><td class="px-4 py-3 text-right"><p class="font-bold text-blue-700">{{ formatNumber(document.completed ? document.creditedPoint : document.point) }}</p><p v-if="document.completed && document.point !== document.creditedPoint" class="mt-0.5 text-xs text-rose-600">gốc {{ formatNumber(document.point) }}</p></td><td class="px-4 py-3"><p class="font-semibold text-zinc-800">{{ formatDate(document.deadline) }}</p><p v-if="document.lateWorkingDays" class="mt-0.5 text-xs font-medium text-rose-600">Trễ {{ document.lateWorkingDays }} ngày làm việc</p></td><td class="px-4 py-3 text-xs text-zinc-600"><p>{{ formatDateTime(document.submittedAt) }}</p><p v-if="document.completedAt" class="mt-1 text-zinc-400">Hoàn tất: {{ formatDateTime(document.completedAt) }}</p></td></tr><tr v-if="!tab.documents.length"><td colspan="6" class="px-4 py-12 text-center text-zinc-400">Không có văn bản phù hợp trong kỳ này.</td></tr></tbody></table></TabsContent>
           </Tabs>
         </section>
@@ -305,24 +262,6 @@ onMounted(fetchData)
       </DialogContent>
     </Dialog>
 
-    <Dialog v-model:open="importDialogOpen">
-      <DialogContent class="sm:max-w-[560px]">
-        <DialogHeader>
-          <DialogTitle>Nhập bảng KPI PL4</DialogTitle>
-          <DialogDescription>Chỉ nhận file `.xlsx` đúng mẫu PL4. Nếu sai một ô cấu trúc hoặc một dòng dữ liệu, toàn bộ file sẽ bị từ chối.</DialogDescription>
-        </DialogHeader>
-        <div v-if="!importResult" class="grid gap-3 py-2">
-          <label class="grid gap-2 text-sm font-semibold text-zinc-700"><span>File PL4</span><Input ref="importInput" type="file" accept="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx" class="h-10 cursor-pointer" @change="selectImportFile" /></label>
-          <p v-if="importFile" class="text-xs font-medium text-zinc-600">{{ importFile.name }}</p>
-          <p v-if="importError" class="max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium leading-6 text-rose-700">{{ importError }}</p>
-        </div>
-        <div v-else class="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800"><p class="font-bold">Đã nhập {{ importResult.importedRows }} dòng cho {{ importResult.user.fullName }}.</p><p class="mt-1">Cập nhật {{ importResult.updatedDocuments }} văn bản; tạo {{ importResult.createdWorks }} và cập nhật {{ importResult.updatedWorks }} công việc ngoài hệ thống.</p></div>
-        <DialogFooter class="gap-2 sm:gap-2">
-          <Button variant="outline" :disabled="importing" @click="importDialogOpen = false">{{ importResult ? 'Đóng' : 'Hủy' }}</Button>
-          <Button v-if="!importResult" :disabled="importing || !importFile" @click="importKpiWorkbook"><Upload class="h-4 w-4" :class="{ 'animate-pulse': importing }" />{{ importing ? 'Đang kiểm tra và nhập' : 'Kiểm tra và nhập' }}</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
 
     <Teleport to="body">
       <Transition name="performance-drawer">

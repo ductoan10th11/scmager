@@ -13,6 +13,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Checkbox } from '@/components/ui/checkbox'
 import { useAuth } from '@/features/auth/composables/useAuth'
 import { useRoute, useRouter } from 'vue-router'
 import { http } from '@/shared/api/http'
@@ -179,11 +180,21 @@ onMounted(async () => {
   try {
     const result = await http(`/api/office-document-contexts/${route.query.sourceDocument}`)
     const document = result.data
-    formTitle.value = `Xử lý văn bản ${document.soKyHieu || 'đến'}`
-    formDesc.value = document.trichYeu || ''
-    formPoint.value = String(document.point ?? 0)
+    const observed = {
+      ...(document.observation || {}),
+      ...(document.management?.overrides || {}),
+    }
+    formTitle.value = `Xử lý nhiệm vụ ${observed.soKyHieu || 'đến'}`
+    formDesc.value = observed.subject || ''
+    formPoint.value = String(
+      document.management?.manualScore
+        ?? document.management?.businessCompletion?.point
+        ?? observed.point
+        ?? 0,
+    )
     formSourceDocument.value = document._id
-    await openForm()
+    const assignedUserId = idOf(document.management?.assignment?.userId)
+    openForm(assignedUserId || idOf(currentUser.value), true)
   } catch (error) {
     timelineError.value = error.message || 'Không thể tạo khai báo từ văn bản.'
   } finally {
@@ -716,6 +727,7 @@ const canCreateForAssignee = (assignee) => {
 const openForm = (assigneeId = idOf(currentUser.value), lockedAssignee = false) => {
   formError.value = ''
   formAssignee.value = String(assigneeId ?? '')
+  formAssigneeIds.value = formAssignee.value ? [formAssignee.value] : []
   formAssigneeLocked.value = lockedAssignee
   isFormOpen.value = true
 }
@@ -727,6 +739,7 @@ const closeForm = () => {
   }, 400)
 }
 const formAssignee = ref('')
+const formAssigneeIds = ref([])
 const formAssigneeLocked = ref(false)
 const formTitle = ref('')
 const formDesc = ref('')
@@ -735,7 +748,7 @@ const formStartTime = ref(vietnamTime(new Date()))
 const formEndTime = ref(vietnamTime(new Date(Date.now() + 2 * 60 * 60_000)))
 
 const formSelectedUser = computed(() => {
-  const selectedId = formAssignee.value || idOf(currentUser.value)
+  const selectedId = formAssigneeIds.value[0] || formAssignee.value || idOf(currentUser.value)
   const selected = resources.value.find((r) => String(r.id) === String(selectedId))
   if (selected) return selected
   if (String(selectedId) !== String(idOf(currentUser.value))) return null
@@ -749,7 +762,43 @@ const formSelectedUser = computed(() => {
   }
 })
 
+const formSelectedUsers = computed(() => formAssigneeIds.value
+  .map((id) => resources.value.find((resource) => String(resource.id) === String(id)))
+  .filter(Boolean))
+
 const assignableResources = computed(() => resources.value.filter((resource) => canCreateForAssignee(resource)))
+
+const toggleFormAssignee = (personId, checked) => {
+  const actorId = String(idOf(currentUser.value) ?? '')
+  const targetId = String(personId)
+  if (formAssigneeLocked.value) return
+  if (checked) {
+    // A self-declaration follows a different approval path from an assignment.
+    // Keep the two paths separate in one submission to make the result clear.
+    formAssigneeIds.value = targetId === actorId
+      ? [targetId]
+      : [...new Set(formAssigneeIds.value.filter((id) => String(id) !== actorId).concat(targetId))]
+  } else {
+    formAssigneeIds.value = formAssigneeIds.value.filter((id) => String(id) !== targetId)
+  }
+  formAssignee.value = formAssigneeIds.value[0] ?? ''
+}
+
+const selectAllAssignableAssignees = () => {
+  const actorId = String(idOf(currentUser.value) ?? '')
+  const directAssignees = assignableResources.value.filter((person) => String(person.id) !== actorId)
+  // Self-declaration has its own approval path, so bulk assignment includes
+  // every eligible subordinate and leaves the current user out.
+  formAssigneeIds.value = (directAssignees.length ? directAssignees : assignableResources.value)
+    .map((person) => String(person.id))
+  formAssignee.value = formAssigneeIds.value[0] ?? ''
+}
+
+const selectedAssigneeLabel = computed(() => {
+  if (!formSelectedUsers.value.length) return 'Chọn người thực hiện'
+  if (formSelectedUsers.value.length === 1) return formSelectedUsers.value[0].name
+  return `Đã chọn ${formSelectedUsers.value.length} người thực hiện`
+})
 
 const calculatedDurationHours = computed(() => {
   if (!formStartTime.value || !formEndTime.value) return 0
@@ -771,8 +820,8 @@ const predictedStatus = computed(() => {
   return 'danger'
 })
 
-const isFormValid = computed(() => Boolean(formSelectedUser.value)
-  && canCreateForAssignee(formSelectedUser.value)
+const isFormValid = computed(() => formSelectedUsers.value.length > 0
+  && formSelectedUsers.value.every((person) => canCreateForAssignee(person))
   && formTitle.value.trim().length > 0
   && Number(calculatedDurationHours.value) > 0
   && Number.isFinite(Number(formPoint.value))
@@ -784,6 +833,7 @@ const resetForm = () => {
   formDesc.value = ''
   formPoint.value = '0'
   formAssignee.value = String(idOf(currentUser.value) ?? '')
+  formAssigneeIds.value = formAssignee.value ? [formAssignee.value] : []
   formAssigneeLocked.value = false
   formSourceDocument.value = ''
   formDate.value = vietnamDateKey(now)
@@ -952,6 +1002,8 @@ const submitAssignment = async () => {
   try {
     const startAt = vietnamDateTime(formDate.value, formStartTime.value)
     const endAt = vietnamDateTime(formDate.value, formEndTime.value)
+    const assigneeIds = formAssigneeIds.value
+    const isSelfDeclaration = assigneeIds.length === 1 && String(assigneeIds[0]) === String(idOf(currentUser.value))
     await AssignmentService.createTask({
       title: formTitle.value.trim(),
       description: formDesc.value.trim(),
@@ -959,8 +1011,8 @@ const submitAssignment = async () => {
       workEndAt: endAt.toISOString(),
       declaredPoint: Number(formPoint.value),
       sourceDocument: formSourceDocument.value || undefined,
-      assigneeId: isSpecialist.value ? undefined : formSelectedUser.value.id,
-      submit: isSpecialist.value,
+      ...(!isSpecialist.value ? { assigneeIds } : {}),
+      submit: isSpecialist.value || isSelfDeclaration,
     })
     timelineDate.value = startAt
     await refreshResources()
@@ -1853,16 +1905,32 @@ onBeforeUnmount(() => {
                   </div>
                   <span class="ml-auto shrink-0 rounded-full bg-zinc-200 px-2 py-1 text-[9px] font-bold uppercase text-zinc-500">Đã khóa</span>
                 </div>
-                <Select v-else v-model="formAssignee">
-                  <SelectTrigger class="h-12 rounded-xl border-zinc-200/80 bg-white text-sm font-semibold">
-                    <SelectValue placeholder="Chọn người thực hiện" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem v-for="person in assignableResources" :key="person.id" :value="String(person.id)">
-                      {{ person.name }} · {{ person.role }}
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
+                <Popover v-else>
+                  <PopoverTrigger as-child>
+                    <Button type="button" variant="outline" class="h-12 w-full justify-between rounded-xl border-zinc-200/80 bg-white px-4 text-left text-sm font-semibold hover:bg-zinc-50">
+                      <span class="truncate">{{ selectedAssigneeLabel }}</span>
+                      <ChevronRight class="h-4 w-4 shrink-0 rotate-90 text-zinc-400" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" class="z-[90] w-[360px] rounded-xl border-zinc-200 p-2 shadow-xl">
+                    <div class="flex items-center justify-between gap-3 px-2 py-2">
+                      <p class="text-xs font-semibold text-zinc-500">Có thể giao cùng một việc cho nhiều người.</p>
+                      <Button type="button" variant="ghost" size="sm" class="h-7 rounded-lg px-2 text-xs font-semibold" @click="selectAllAssignableAssignees">Chọn tất cả</Button>
+                    </div>
+                    <div class="max-h-64 space-y-1 overflow-y-auto">
+                      <label v-for="person in assignableResources" :key="person.id" class="flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2.5 hover:bg-zinc-50">
+                        <Checkbox
+                          :checked="formAssigneeIds.includes(String(person.id))"
+                          @update:checked="(checked) => toggleFormAssignee(person.id, checked === true)"
+                        />
+                        <span class="min-w-0">
+                          <span class="block truncate text-sm font-semibold text-zinc-900">{{ person.name }}</span>
+                          <span class="block truncate text-xs text-zinc-500">{{ person.role }}</span>
+                        </span>
+                      </label>
+                    </div>
+                  </PopoverContent>
+                </Popover>
               </div>
 
               <!-- Tên & Mô tả -->

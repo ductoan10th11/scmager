@@ -16,6 +16,7 @@ import policyRoutes from "./policy.route";
 import connectorRoutes from "./connector.route";
 import configRoutes from "./config.route";
 import assignmentAiRoutes from "./assignment-ai.route";
+import documentResultLinkRoutes from "./document-result-link.route";
 import { extensionOfficeDocumentContextRoutes, officeDocumentContextRoutes } from "./office-document-context.route";
 import { healthService } from "../services/health.service";
 
@@ -51,6 +52,7 @@ router.use("/dashboard", dashboardRoutes);
 router.use("/extension", extensionOfficeDocumentContextRoutes);
 router.use("/extension", extensionRoutes);
 router.use("/office-document-contexts", officeDocumentContextRoutes);
+router.use("/document-result-links", documentResultLinkRoutes);
 router.use("/performance", performanceRoutes);
 router.use("/policy", policyRoutes);
 export default router;

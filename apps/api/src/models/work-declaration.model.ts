@@ -31,6 +31,10 @@ const approvalHistorySchema = new Schema(
 const approvalSchema = new Schema(
   {
     currentApprover: { type: Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+    // A specialist's self-declaration may be approved by any higher-level
+    // account in the same organization. Once one person approves it, this is
+    // closed and currentApprover becomes that person for completion review.
+    openToHigher: { type: Boolean, default: false, index: true },
     submittedAt: { type: Date, default: null },
     approvedAt: { type: Date, default: null },
     returnedAt: { type: Date, default: null },

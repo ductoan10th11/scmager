@@ -176,16 +176,26 @@ Hệ thống được thiết kế với 26 Schemas / Models chính trong MongoD
 
 ### FR-04: Phân hệ Đánh giá Hiệu suất & KPI Analytics
 
-#### **FR-04.1: Thuật toán Tính Điểm Hiệu suất (Performance Scoring Algorithm)**
-- **Mô tả:** Tính toán tự động điểm KPI cá nhân và phòng ban dựa trên dữ liệu nhiệm vụ và khai báo công việc (`performance.service.ts` & `kpi.service.ts`).
-- **Công thức tính điểm cơ bản:**
-  $$\text{Score}_{\text{Task}} = \text{BaseScore} \times \text{DifficultyWeight} \times \text{TimelinessFactor}$$
-  Trong đó $\text{TimelinessFactor} = 1.0$ nếu đúng hạn, $< 1.0$ nếu quá hạn.
+#### **FR-04.1: Thuật toán Tính Điểm Hiệu suất (KPI)**
+- **Mô tả:** Tự động tính điểm KPI của nhân viên dựa trên các văn bản và công việc được giao (`kpi.service.ts` & `performance.service.ts`).
+- **Quy tắc tính điểm:**
+  1. **Điểm gốc:** Điểm giao ban đầu của văn bản hoặc điểm khai báo công việc được duyệt.
+  2. **Quy tắc trừ điểm (Trừ 25% mỗi vi phạm):**
+     - Bị trả lại / yêu cầu làm lại: **Trừ 25%** điểm gốc cho mỗi lần.
+     - Trễ hạn làm việc: **Trừ 25%** điểm gốc cho mỗi ngày trễ.
+  3. **Điểm KPI thực nhận:**
+     - Công việc **chưa xong**: `0 điểm` (chuyển vào điểm chờ).
+     - Công việc **đã xong**: `Điểm thực nhận = Điểm gốc - (Số lần trả lại × 25%) - (Số ngày trễ × 25%)` (Điểm tối thiểu = 0).
+- **Chỉ số KPI tổng hợp:**
+  - **Điểm đạt được:** Tổng điểm của các công việc đã hoàn thành.
+  - **Điểm chờ:** Tổng điểm gốc của các công việc đang làm.
+  - **Điểm dự kiến:** Điểm đạt được + Điểm chờ.
 
 #### **FR-04.2: Báo cáo Thống kê Dashboard (Executive Dashboard)**
 - **Mô tả:** Cung cấp biểu đồ trực quan cho Ban Lãnh đạo theo dõi sức khỏe vận hành của đơn vị.
 - **Yêu cầu chi tiết:**
-  - Biểu đồ tỷ lệ hoàn thành công việc đúng hạn / quá hạn.
+  - Biểu đồ tỷ lệ hoàn thành công việc đúng hạn / quá hạn (`documentStatus`: `COMPLETED`, `IN_PROGRESS`, `OVERDUE`).
+  - Biểu đồ thống kê điểm KPI ghi nhận và điểm dự kiến theo từng cán bộ/phòng ban.
   - Bảng xếp hạng hiệu suất cán bộ (Top Performers).
   - Thống kê văn bản đến/đi cần xử lý tồn đọng.
 

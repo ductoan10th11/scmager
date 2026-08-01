@@ -21,4 +21,5 @@ export * from "./ingest-run.model";
 export * from "./dead-letter.model";
 export * from "./migration-quarantine.model";
 export * from "./office-document-context.model";
+export * from "./document-result-link.model";
 export * from "./config.model";

@@ -3,6 +3,7 @@ import {
   createManagedOfficeDocumentContext as createManagedOfficeDocumentContextService,
   deleteManagedOfficeDocumentContext as deleteManagedOfficeDocumentContextService,
   getOfficeDocumentContext as getOfficeDocumentContextService,
+  getNextManagedOfficeDocumentReference as getNextManagedOfficeDocumentReferenceService,
   ingestIncomingBySymbol as ingestIncomingBySymbolService,
   listOfficeDocumentContexts,
   updateManagedOfficeDocumentContext as updateManagedOfficeDocumentContextService,
@@ -75,6 +76,18 @@ export const createManagedOfficeDocumentContext = async (
       .json(
         await createManagedOfficeDocumentContextService(actor(req), req.body),
       );
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getNextManagedOfficeDocumentReference = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    res.json(await getNextManagedOfficeDocumentReferenceService(actor(req)));
   } catch (error) {
     next(error);
   }

@@ -1,10 +1,11 @@
 import { isValidObjectId } from "mongoose";
-import { randomUUID } from "node:crypto";
 import OfficeDocumentContextModel from "../models/office-document-context.model";
 import DepartmentModel from "../models/department.model";
 import UserModel from "../models/user.model";
+import DocumentResultLinkModel from "../models/document-result-link.model";
+import ConfigModel from "../models/config.model";
 import type { AuthUser } from "../types/auth";
-import { badRequest, forbidden, notFound } from "../utils/http-error";
+import { badRequest, conflict, forbidden, notFound } from "../utils/http-error";
 import {
   getCsrfToken,
   getDocDetail,
@@ -17,6 +18,19 @@ import {
   type TrackLogItem,
 } from "./langson-dwr.service";
 import { resolveDocumentWorkflow } from "./document-workflow.service";
+import {
+  effectiveOfficeDocumentCompletion,
+  effectiveOfficeDocumentPoint,
+  effectiveOfficeProductPoint,
+  normalizeOfficeDocumentSymbol,
+} from "./office-document-completion.service";
+import {
+  canReadDocumentResultLink,
+  createDocumentResultLinkService,
+  DOCUMENT_RESULT_INCOMING_POPULATE_SELECT,
+  DOCUMENT_RESULT_OUTGOING_POPULATE_SELECT,
+  resolveDocumentResultLinkService,
+} from "./document-result-link.service";
 
 const PAGE_TYPES = ["incoming", "outgoing", "outgoing_c2"] as const;
 const RECIPIENT_ROLES = [
@@ -433,17 +447,19 @@ export const normalizeOfficeDocumentContext = (payload: unknown) => {
     reworkCount > 10000
   )
     throw badRequest("reworkCount must be an integer from 0 to 10000.");
+  const soKyHieu = string(body.soKyHieu, "soKyHieu", 500);
   return {
     sourceHost,
     pageType,
     externalDocumentId: string(body.documentId, "documentId", 240, true),
     sourceUrl,
+    normalizedSoKyHieu: normalizeOfficeDocumentSymbol(soKyHieu),
     observation: {
       available: bool(body.available, "available"),
       modalOpen: bool(body.modalOpen, "modalOpen"),
       title: string(body.title, "title", 500),
       subject: string(body.subject, "subject", 4000),
-      soKyHieu: string(body.soKyHieu, "soKyHieu", 500),
+      soKyHieu,
       receivedDate: string(body.receivedDate, "receivedDate", 100),
       dueDate: string(body.dueDate, "dueDate", 100),
       documentForm: string(body.documentForm, "documentForm", 300),
@@ -777,8 +793,9 @@ export const listOfficeDocumentContexts = async (
     const observed = (field: string) =>
       context.management?.overrides?.[field] ?? context.observation?.[field];
     const dueAt = parseDocumentDate(observed("dueDate"), true);
-    const completedAt = parseDocumentDate(sync.completedAt);
-    const completed = sync.completed === true;
+    const completion = effectiveOfficeDocumentCompletion(context);
+    const completedAt = completion.completedAt;
+    const completed = completion.completed;
     const now = new Date();
     const deadlineStatus = !dueAt
       ? "NO_DEADLINE"
@@ -789,8 +806,9 @@ export const listOfficeDocumentContexts = async (
         : now <= dueAt
           ? "PENDING_IN_TIME"
           : "PENDING_OVERDUE";
-    const status =
-      context.pageType !== "incoming"
+    const status = completed
+      ? "COMPLETED"
+      : context.pageType !== "incoming"
         ? "NOT_SYNCED"
         : String(sync.status || "PENDING_RESPONSE");
     const officialActorName = workflowAssignee.fullName || "Chuyên viên";
@@ -809,7 +827,7 @@ export const listOfficeDocumentContexts = async (
         )[0]?.sender?.fullName || officialActorName;
     const statusLabel =
       status === "COMPLETED"
-        ? "Đã hoàn tất"
+        ? "Đã xử lý"
         : status === "RESPONSE_CREATED"
           ? `${responseCreator} đã tạo phúc đáp`
           : status === "IN_PROGRESS"
@@ -829,7 +847,7 @@ export const listOfficeDocumentContexts = async (
               : dateField === "completed"
                 ? completedAt
                 : parseDocumentDate(context.observedAt);
-    const score = context.management?.manualScore ?? observed("point") ?? null;
+    const score = effectiveOfficeDocumentPoint(context);
     return {
       assignee,
       dueAt,
@@ -840,6 +858,7 @@ export const listOfficeDocumentContexts = async (
       date,
       score,
       manualScore: context.management?.manualScore ?? null,
+      completionSource: completion.source,
     };
   };
 
@@ -912,13 +931,17 @@ export const listOfficeDocumentContexts = async (
               "",
           ).trim(),
         )
+        .map(normalizeOfficeDocumentSymbol)
         .filter(Boolean),
     ),
   ];
   const linkedIncoming = relatedIncomingSymbols.length
     ? await OfficeDocumentContextModel.find({
         pageType: "incoming",
-        "observation.soKyHieu": { $in: relatedIncomingSymbols },
+        ...(actor.role.code !== "ADMIN"
+          ? { organizationId: actor.organization }
+          : {}),
+        normalizedSoKyHieu: { $in: relatedIncomingSymbols },
       }).lean()
     : [];
   const incomingPoints = new Map(
@@ -933,7 +956,10 @@ export const listOfficeDocumentContexts = async (
         context.management?.overrides?.point ??
         context.observation?.point ??
         null;
-      return [`${context.sourceHost}|${symbol}`, score];
+      return [
+        `${context.organizationId ?? ""}|${normalizeOfficeDocumentSymbol(symbol)}`,
+        score,
+      ];
     }),
   );
   const itemsWithTracking = allItems.map((context: any) => {
@@ -944,8 +970,12 @@ export const listOfficeDocumentContexts = async (
           context.observation?.relatedIncomingSoKyHieu ??
           "",
       ).trim();
-      tracking.score =
-        incomingPoints.get(`${context.sourceHost}|${relatedSymbol}`) ?? null;
+      const relatedPoint = relatedSymbol
+        ? incomingPoints.get(
+          `${context.organizationId ?? ""}|${normalizeOfficeDocumentSymbol(relatedSymbol)}`,
+        )
+        : undefined;
+      tracking.score = effectiveOfficeProductPoint(context, relatedPoint);
     }
     return { ...context, tracking };
   });
@@ -1016,7 +1046,36 @@ export const getOfficeDocumentContext = async (actor: AuthUser, id: string) => {
   if (!actorCanReadOfficeDocument(context, actor)) {
     throw notFound("Office document context was not found.");
   }
-  return { data: context };
+  const resultLinks = await DocumentResultLinkModel.find({
+    organization: context.organizationId,
+    $or: [
+      { incomingDocument: context._id },
+      { outgoingDocument: context._id },
+    ],
+  })
+    .sort({ updatedAt: -1 })
+    .populate(
+      "incomingDocument",
+      DOCUMENT_RESULT_INCOMING_POPULATE_SELECT,
+    )
+    .populate(
+      "outgoingDocument",
+      DOCUMENT_RESULT_OUTGOING_POPULATE_SELECT,
+    )
+    .populate("submittedBy", "_id username fullName position")
+    .populate("performedBy", "_id username fullName position")
+    .populate("approval.currentApprover", "_id username fullName position")
+    .populate("approval.history.actor", "_id username fullName position")
+    .populate("approval.history.fromApprover", "_id username fullName position")
+    .populate("approval.history.toApprover", "_id username fullName position")
+    .lean();
+  return {
+    data: {
+      ...context,
+      resultLinks: resultLinks.filter((link: any) =>
+        canReadDocumentResultLink(actor, link, true)),
+    },
+  };
 };
 
 const requireManager = (actor: AuthUser) => {
@@ -1218,6 +1277,7 @@ const managedInput = (payload: unknown, allowIdentity = false) => {
   const allowed = new Set<string>([
     ...MANAGED_FIELDS,
     "management",
+    "completed",
     ...(allowIdentity ? ["pageType", "documentId"] : []),
   ]);
   for (const key of Object.keys(body)) {
@@ -1235,18 +1295,23 @@ const observationPayload = (
   normalizeOfficeDocumentContext({
     available: true,
     modalOpen: false,
-    pageType: identity.pageType,
-    documentId: identity.documentId,
-    url: identity.sourceUrl,
     ...Object.fromEntries(
       MANAGED_FIELDS.map((field) => [field, current[field]]),
     ),
     ...input,
+    // The manual form may send documentId: ''. Preserve the generated identity.
+    pageType: identity.pageType,
+    documentId: identity.documentId,
+    url: identity.sourceUrl,
   });
 
-const normalizeManagement = async (actor: AuthUser, value: unknown) => {
-  if (value === undefined) return {};
-  const management = record(value, "management");
+const normalizeManagement = async (
+  actor: AuthUser,
+  value: unknown,
+  forceSelfAssignment = false,
+) => {
+  if (value === undefined && !forceSelfAssignment) return {};
+  const management = value === undefined ? {} : record(value, "management");
   const allowed = new Set(["assignment", "manualScore", "note"]);
   for (const key of Object.keys(management)) {
     if (!allowed.has(key))
@@ -1274,8 +1339,10 @@ const normalizeManagement = async (actor: AuthUser, value: unknown) => {
       "management.note",
       12000,
     );
-  if (management.assignment !== undefined) {
-    const assignment = record(management.assignment, "management.assignment");
+  if (management.assignment !== undefined || forceSelfAssignment) {
+    const assignment = forceSelfAssignment
+      ? { departmentId: actor.department ?? "", userId: actor.id }
+      : record(management.assignment, "management.assignment");
     const assignmentAllowed = new Set(["departmentId", "userId"]);
     for (const key of Object.keys(assignment))
       if (!assignmentAllowed.has(key))
@@ -1300,18 +1367,35 @@ const normalizeManagement = async (actor: AuthUser, value: unknown) => {
       department = await DepartmentModel.findOne({
         _id: departmentId,
         isActive: true,
+        ...(actor.organization && actor.role.code !== "ADMIN"
+          ? { organization: actor.organization }
+          : {}),
       }).lean();
       if (!department)
         throw badRequest(
           "management.assignment.departmentId does not exist or is inactive.",
         );
+      if (
+        actor.role.code === "DEPARTMENT_LEADER"
+        && String(department._id) !== String(actor.department ?? "")
+      ) {
+        throw forbidden(
+          "Trưởng phòng chỉ được phân công trong phòng ban của mình.",
+        );
+      }
     }
     if (userId) {
       if (!isValidObjectId(userId))
         throw badRequest(
           "management.assignment.userId must be a valid ObjectId.",
         );
-      user = await UserModel.findOne({ _id: userId, status: "ACTIVE" })
+      user = await UserModel.findOne({
+        _id: userId,
+        status: "ACTIVE",
+        ...(actor.organization && actor.role.code !== "ADMIN"
+          ? { organization: actor.organization }
+          : {}),
+      })
         .select("_id fullName department")
         .lean();
       if (!user)
@@ -1340,30 +1424,166 @@ export const createManagedOfficeDocumentContext = async (
   actor: AuthUser,
   payload: unknown,
 ) => {
-  requireManager(actor);
   const input = managedInput(payload, true);
   const pageType = string(input.pageType, "pageType", 20, true);
   if (!PAGE_TYPES.includes(pageType as (typeof PAGE_TYPES)[number]))
     throw badRequest("pageType is invalid.");
+  if (pageType === "incoming") requireManager(actor);
+  if (!actor.organization)
+    throw forbidden("User has no organization assigned.");
   const subject = string(input.subject, "subject", 4000, true);
   const documentId =
-    string(input.documentId, "documentId", 240) || `MANUAL-${randomUUID()}`;
+    string(input.documentId, "documentId", 240)
+    || `m-${Date.now()}-${Math.floor(Math.random() * 1_000_000).toString().padStart(6, "0")}`;
   const sourceUrl = `https://manual.ework.local/office-document-contexts/${documentId}`;
-  const { management: managementInput, ...observationInput } = input;
+  const { management: managementInput, completed: completedInput, ...observationInput } = input;
+  // Manual references are issued by eWork. Ignore a client-supplied value on
+  // create so every manual document follows the same <number>/VBN convention.
+  const soKyHieu = await nextManualReference(actor);
   const normalized = observationPayload(
-    { ...observationInput, subject },
+    { ...observationInput, subject, soKyHieu },
     { pageType, documentId, sourceUrl },
   );
-  const management = await normalizeManagement(actor, managementInput);
+  const management = await normalizeManagement(
+    actor,
+    managementInput,
+    actor.role.code === "SPECIALIST",
+  );
+  if (pageType !== "incoming") {
+    normalized.observation.draftingUser = String(
+      management["management.assignment.fullName"] ?? "",
+    );
+    normalized.observation.draftingUserId = String(
+      management["management.assignment.userId"] ?? "",
+    );
+  }
+  if (actor.role.code === "SPECIALIST") {
+    normalized.observation.draftingUnit = String(
+      management["management.assignment.departmentName"] ?? "",
+    );
+  }
+  if (completedInput !== undefined && typeof completedInput !== "boolean")
+    throw badRequest("completed must be a boolean.");
+  if (pageType !== "incoming") {
+    const createdDate = normalized.observation.createdDate;
+    const draftingUnit = normalized.observation.draftingUnit;
+    const manualScore = management["management.manualScore"];
+    if (!createdDate || !draftingUnit || !management["management.assignment.departmentId"] || !management["management.assignment.userId"])
+      throw badRequest("Outgoing documents require createdDate, draftingUnit, assigned department, and assigned user.");
+    if (manualScore === null || manualScore === undefined)
+      throw badRequest("Outgoing documents require a non-negative manual score.");
+  } else {
+    const dueDate = normalized.observation.dueDate;
+    const manualScore = management["management.manualScore"];
+    if (
+      !dueDate
+      || !management["management.assignment.departmentId"]
+      || !management["management.assignment.userId"]
+    ) {
+      throw badRequest(
+        "Manual tasks require a due date, assigned department, and assigned user.",
+      );
+    }
+    if (manualScore === null || manualScore === undefined) {
+      throw badRequest("Manual tasks require a non-negative score.");
+    }
+  }
+  const completed = pageType !== "incoming" || completedInput === true;
+  const now = new Date();
   const created = await OfficeDocumentContextModel.create({
     ...normalized,
     ...management,
     organizationId: actor.organization ?? null,
     tenantResolution: "MANUAL",
     origin: "MANUAL",
-    observedAt: new Date(),
+    observedAt: now,
+    statusSync: {
+      status: completed ? "COMPLETED" : "PENDING_RESPONSE",
+      completed,
+      completedRule: completed ? "MANUAL" : "",
+      completedAt: completed ? now : null,
+      trackLogs: [],
+      processing: null,
+      lastSyncedAt: now,
+      lastAttemptAt: now,
+      nextRetryAt: null,
+      attempts: 0,
+      lastError: "",
+    },
   });
-  return { data: created.toObject() };
+  let resultLink: any = null;
+  const relatedIncomingSoKyHieu = normalized.observation.relatedIncomingSoKyHieu;
+  if (pageType !== "incoming" && relatedIncomingSoKyHieu) {
+    try {
+      resultLink = await createDocumentResultLinkService(actor, {
+        outgoingDocumentId: String(created._id),
+        soKyHieu: relatedIncomingSoKyHieu,
+      });
+    } catch (error) {
+      await OfficeDocumentContextModel.deleteOne({
+        _id: created._id,
+        origin: "MANUAL",
+      });
+      throw error;
+    }
+  }
+  return {
+    data: {
+      ...created.toObject(),
+      ...(resultLink?.data ? { resultLink: resultLink.data } : {}),
+    },
+  };
+};
+
+const MANUAL_REFERENCE_PATTERN = /^(\d{1,5})\/VBN$/i;
+
+const nextManualReference = async (actor: AuthUser, reserve = true) => {
+  if (!actor.organization) {
+    throw forbidden("User has no organization assigned.");
+  }
+  const counterKey = `manual-office-reference:${actor.organization}`;
+  const contexts = await OfficeDocumentContextModel.find({
+    origin: "MANUAL",
+    organizationId: actor.organization,
+  })
+    .select("observation.soKyHieu")
+    .lean();
+  const current = contexts.reduce((maximum, context: any) => {
+    const match = String(context.observation?.soKyHieu ?? "").match(MANUAL_REFERENCE_PATTERN);
+    return match ? Math.max(maximum, Number(match[1])) : maximum;
+  }, 0);
+  try {
+    await ConfigModel.updateOne(
+      { key: counterKey },
+      { $setOnInsert: { key: counterKey, value: current } },
+      { upsert: true },
+    );
+  } catch (error: any) {
+    if (Number(error?.code) !== 11000) throw error;
+  }
+  if (!reserve) {
+    const counter: any = await ConfigModel.findOne({ key: counterKey })
+      .select("value")
+      .lean();
+    const nextValue = Math.max(current, Number(counter?.value) || 0) + 1;
+    if (nextValue > 99_999) {
+      throw badRequest("Đã hết dải số ký hiệu văn bản thủ công.");
+    }
+    return `${nextValue}/VBN`;
+  }
+  const counter: any = await ConfigModel.findOneAndUpdate(
+    { key: counterKey, value: { $lt: 99_999 } },
+    { $inc: { value: 1 } },
+    { new: true },
+  ).lean();
+  if (!counter) throw badRequest("Đã hết dải số ký hiệu văn bản thủ công.");
+  return `${Number(counter.value)}/VBN`;
+};
+
+export const getNextManagedOfficeDocumentReference = async (actor: AuthUser) => {
+  if (!actor.organization)
+    throw forbidden("User has no organization assigned.");
+  return { data: { soKyHieu: await nextManualReference(actor, false) } };
 };
 
 export const updateManagedOfficeDocumentContext = async (
@@ -1371,14 +1591,46 @@ export const updateManagedOfficeDocumentContext = async (
   id: string,
   payload: unknown,
 ) => {
-  requireManager(actor);
   if (!isValidObjectId(id)) throw badRequest("id must be a valid ObjectId.");
   const input = managedInput(payload);
   if (!Object.keys(input).length)
     throw badRequest("At least one managed document field is required.");
   const context = await OfficeDocumentContextModel.findById(id).lean();
   if (!context) throw notFound("Office document context was not found.");
-  const { management: managementInput, ...observationInput } = input;
+  if (
+    actor.role.code !== "ADMIN"
+    && (
+      !actor.organization
+      || String(context.organizationId ?? "") !== actor.organization
+      || !actorCanReadOfficeDocument(context, actor)
+    )
+  ) {
+    throw notFound("Office document context was not found.");
+  }
+  if (
+    actor.role.code === "SPECIALIST"
+    && (
+      context.pageType === "incoming"
+      || String(context.management?.assignment?.userId ?? "") !== actor.id
+    )
+  ) {
+    throw forbidden("Bạn chỉ được sửa sản phẩm do chính mình khai báo.");
+  }
+  if (actor.role.code !== "SPECIALIST") requireManager(actor);
+  if (context.pageType !== "incoming") {
+    const lockedLink = await DocumentResultLinkModel.exists({
+      outgoingDocument: context._id,
+      status: { $in: ["PENDING_APPROVAL", "APPROVED"] },
+    });
+    if (lockedLink) {
+      throw conflict(
+        "Sản phẩm đã gửi duyệt hoặc đã duyệt nên không thể sửa trực tiếp.",
+      );
+    }
+  }
+  const { management: managementInput, completed: completedInput, ...observationInput } = input;
+  if (completedInput !== undefined && typeof completedInput !== "boolean")
+    throw badRequest("completed must be a boolean.");
   const normalized = observationPayload(
     observationInput,
     {
@@ -1389,6 +1641,33 @@ export const updateManagedOfficeDocumentContext = async (
     (context.observation ?? {}) as Input,
   );
   const management = await normalizeManagement(actor, managementInput);
+  if (
+    context.pageType !== "incoming"
+    && (
+      management["management.assignment.userId"]
+      || management["management.assignment.fullName"]
+    )
+  ) {
+    normalized.observation.draftingUser = String(
+      management["management.assignment.fullName"] ?? "",
+    );
+    normalized.observation.draftingUserId = String(
+      management["management.assignment.userId"] ?? "",
+    );
+  }
+  const relatedIncomingSoKyHieu =
+    context.pageType !== "incoming"
+    && Object.prototype.hasOwnProperty.call(
+      observationInput,
+      "relatedIncomingSoKyHieu",
+    )
+      ? normalized.observation.relatedIncomingSoKyHieu
+      : "";
+  if (relatedIncomingSoKyHieu) {
+    await resolveDocumentResultLinkService(actor, {
+      soKyHieu: relatedIncomingSoKyHieu,
+    });
+  }
   const observationUpdate =
     context.origin === "MANUAL"
       ? { observation: normalized.observation }
@@ -1406,18 +1685,97 @@ export const updateManagedOfficeDocumentContext = async (
         };
   const updated = await OfficeDocumentContextModel.findByIdAndUpdate(
     id,
-    { $set: { ...observationUpdate, ...management } },
+    {
+      $set: {
+        ...observationUpdate,
+        ...management,
+        ...(Object.prototype.hasOwnProperty.call(observationInput, "soKyHieu")
+          ? {
+              normalizedSoKyHieu: normalizeOfficeDocumentSymbol(
+                normalized.observation.soKyHieu,
+              ),
+            }
+          : {}),
+        ...(context.origin === "MANUAL" && context.pageType === "incoming" && completedInput !== undefined
+          ? {
+              "statusSync.status": completedInput === true ? "COMPLETED" : "PENDING_RESPONSE",
+              "statusSync.completed": completedInput === true,
+              "statusSync.completedRule": completedInput === true ? "MANUAL" : "",
+              "statusSync.completedAt": completedInput === true ? new Date() : null,
+            }
+          : {}),
+      },
+    },
     { new: true, runValidators: true },
   ).lean();
-  return { data: updated };
+  let resultLink: any = null;
+  if (
+    updated
+    && context.pageType !== "incoming"
+    && relatedIncomingSoKyHieu
+  ) {
+    try {
+      resultLink = await createDocumentResultLinkService(actor, {
+        outgoingDocumentId: String(updated._id),
+        soKyHieu: relatedIncomingSoKyHieu,
+      });
+    } catch (error) {
+      await OfficeDocumentContextModel.updateOne(
+        { _id: id, updatedAt: updated.updatedAt },
+        {
+          $set: {
+            observation: context.observation,
+            management: context.management,
+            statusSync: context.statusSync,
+            normalizedSoKyHieu: context.normalizedSoKyHieu ?? "",
+          },
+        },
+      );
+      throw error;
+    }
+  }
+  return {
+    data: {
+      ...updated,
+      ...(resultLink?.data ? { resultLink: resultLink.data } : {}),
+    },
+  };
 };
 
 export const deleteManagedOfficeDocumentContext = async (
   actor: AuthUser,
   id: string,
 ) => {
-  requireManager(actor);
   if (!isValidObjectId(id)) throw badRequest("id must be a valid ObjectId.");
+  const context = await OfficeDocumentContextModel.findById(id).lean();
+  if (!context) throw notFound("Office document context was not found.");
+  if (
+    actor.role.code !== "ADMIN"
+    && (
+      !actor.organization
+      || String(context.organizationId ?? "") !== actor.organization
+      || !actorCanReadOfficeDocument(context, actor)
+    )
+  ) {
+    throw notFound("Office document context was not found.");
+  }
+  if (
+    actor.role.code === "SPECIALIST"
+    && (
+      context.pageType === "incoming"
+      || String(context.management?.assignment?.userId ?? "") !== actor.id
+    )
+  ) {
+    throw forbidden("Bạn chỉ được xóa sản phẩm do chính mình khai báo.");
+  }
+  if (actor.role.code !== "SPECIALIST") requireManager(actor);
+  const linked = await DocumentResultLinkModel.exists({
+    $or: [{ incomingDocument: id }, { outgoingDocument: id }],
+    status: { $ne: "SUPERSEDED" },
+  });
+  if (linked) {
+    throw conflict("Không thể xóa dữ liệu đang có liên kết nhiệm vụ - sản phẩm.");
+  }
   const deleted = await OfficeDocumentContextModel.findByIdAndDelete(id).lean();
   if (!deleted) throw notFound("Office document context was not found.");
   return { data: { id, deleted: true } };

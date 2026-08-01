@@ -4,6 +4,7 @@ import { isValidObjectId } from 'mongoose';
 import { OfficeDocumentContextModel, UserModel, WorkDeclarationModel } from '../models';
 import type { AuthUser } from '../types/auth';
 import { badRequest, forbidden } from '../utils/http-error';
+import { assertSafeKpiWorkbookBuffer } from '../utils/kpi-import-upload';
 
 const FIRST_DATA_ROW = 8;
 const REQUIRED_HEADERS: Array<[string, string]> = [
@@ -12,7 +13,13 @@ const REQUIRED_HEADERS: Array<[string, string]> = [
   ['H6', 'Số lượng hoàn thành thực tế'], ['J6', 'Ngày hoàn thành'],
   ['M6', 'Số lần yêu cầu làm lại'],
 ];
-const IMPORT_ROLES = new Set(['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER']);
+const REQUIRED_HEADER_MERGES = [
+  'A4:A6', 'B4:B6', 'C4:G4', 'H4:N4', 'C5:C6', 'D5:D6',
+  'E5:E6', 'F5:F6', 'G5:G6', 'H5:I5', 'J5:L5', 'M5:N5',
+];
+const LEGACY_NOTE_MERGE = 'O4:O5';
+const MAX_IMPORT_ROWS = 500;
+const IMPORT_ROLES = new Set(['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST']);
 
 type ImportRow = {
   row: number;
@@ -34,6 +41,12 @@ const asText = (value: unknown) => {
   if (typeof value === 'object' && value && 'text' in value) return String((value as any).text).trim();
   return String(value).replace(/\s+/g, ' ').trim();
 };
+
+const hasFormula = (value: unknown) => Boolean(
+  value && typeof value === 'object' && 'formula' in value,
+);
+
+const isUnsafeSpreadsheetText = (value: string) => /^[=+\-@]/u.test(value.trim());
 
 const normalized = (value: unknown) => asText(value)
   .normalize('NFD')
@@ -61,8 +74,8 @@ const asDate = (value: unknown): Date | null => {
   return null;
 };
 
-const asNumber = (value: unknown, row: number, column: string, errors: string[], allowFormula = false): number | null => {
-  if (typeof value === 'object' && value && 'formula' in value && !(value as any).result && !allowFormula) {
+const asNumber = (value: unknown, row: number, column: string, errors: string[]): number | null => {
+  if (hasFormula(value)) {
     errors.push(`Dòng ${row}, cột ${column}: không được dùng công thức cho dữ liệu nhập.`);
     return null;
   }
@@ -76,22 +89,35 @@ const asNumber = (value: unknown, row: number, column: string, errors: string[],
 };
 
 const parseWorkbook = async (buffer: Buffer) => {
+  assertSafeKpiWorkbookBuffer(buffer);
   const workbook = new ExcelJS.Workbook();
   try {
     await workbook.xlsx.load(buffer as any);
   } catch {
     throw badRequest('Tệp không phải Excel .xlsx hợp lệ.');
   }
-  if (workbook.worksheets.length !== 1 || workbook.worksheets[0]?.name !== 'Pl4 Tinh diem') {
-    throw badRequest('File phải có đúng một sheet tên "Pl4 Tinh diem".');
+  if (workbook.worksheets.length !== 1) {
+    throw badRequest('File phải có đúng một sheet dữ liệu.');
   }
   const sheet = workbook.worksheets[0];
   const errors: string[] = [];
+  if (sheet.state !== 'visible' || ![14, 15].includes(sheet.columnCount)) {
+    errors.push('Sheet PL4 phải hiển thị và có đúng 14 cột, hoặc 15 cột với ghi chú chuẩn.');
+  }
+  const merges = new Set(Array.from((sheet.model as any).merges ?? []));
+  for (const merge of REQUIRED_HEADER_MERGES) {
+    if (!merges.has(merge)) errors.push(`Sai cấu trúc gộp ô ${merge} của mẫu PL4.`);
+  }
+  if (sheet.columnCount === 15 && (!merges.has(LEGACY_NOTE_MERGE) || asText(sheet.getCell('O4').value) !== 'Ghi chú')) {
+    errors.push('Cột O chỉ được phép là cột "Ghi chú" đúng cấu trúc của mẫu PL4 cũ.');
+  }
   for (const [cell, expected] of REQUIRED_HEADERS) {
+    if (hasFormula(sheet.getCell(cell).value)) errors.push(`Ô ${cell} không được chứa công thức.`);
     if (asText(sheet.getCell(cell).value) !== expected) errors.push(`Sai mẫu tại ô ${cell}; cần "${expected}".`);
   }
+  if (hasFormula(sheet.getCell('B3').value)) errors.push('Ô B3 không được chứa công thức.');
   const fullName = asText(sheet.getCell('B3').value).replace(/^Họ và tên\s*:\s*/iu, '').trim();
-  if (!fullName || asText(sheet.getCell('B3').value) !== `Họ và tên: ${fullName}`) {
+  if (!fullName || isUnsafeSpreadsheetText(fullName) || asText(sheet.getCell('B3').value) !== `Họ và tên: ${fullName}`) {
     errors.push('Ô B3 phải có đúng dạng "Họ và tên: <tên nhân sự>".');
   }
   let totalRow = 0;
@@ -101,23 +127,33 @@ const parseWorkbook = async (buffer: Buffer) => {
   if (!totalRow) errors.push('Không tìm thấy dòng "Tổng cộng" của mẫu PL4.');
   const rows: ImportRow[] = [];
   if (totalRow) {
+    if (totalRow - FIRST_DATA_ROW > MAX_IMPORT_ROWS) errors.push(`Mẫu PL4 chỉ nhận tối đa ${MAX_IMPORT_ROWS} dòng nhiệm vụ.`);
     for (let row = FIRST_DATA_ROW; row < totalRow; row += 1) {
-      const order = asNumber(sheet.getCell(`A${row}`).value, row, 'A', errors);
-      const content = asText(sheet.getCell(`B${row}`).value);
-      const deadlineCell = asDate(sheet.getCell(`C${row}`).value);
-      const product = asText(sheet.getCell(`D${row}`).value);
-      const point = asNumber(sheet.getCell(`E${row}`).value, row, 'E', errors);
-      const assignedQuantity = asNumber(sheet.getCell(`F${row}`).value, row, 'F', errors);
-      const completedRaw = sheet.getCell(`H${row}`).value;
-      const completedQuantity = typeof completedRaw === 'object' && completedRaw && 'formula' in completedRaw && !(completedRaw as any).result
-        && String((completedRaw as any).formula).replace(/\s/g, '') === `=F${row}`
+      const cells = Object.fromEntries(
+        ['A', 'B', 'C', 'D', 'E', 'F', 'H', 'J', 'M'].map((column) => [column, sheet.getCell(`${column}${row}`).value]),
+      ) as Record<string, unknown>;
+      for (const column of ['A', 'B', 'C', 'D', 'E', 'F', 'J', 'M']) {
+        if (hasFormula(cells[column])) errors.push(`Dòng ${row}, cột ${column}: không được dùng công thức cho dữ liệu nhập.`);
+      }
+      const order = asNumber(cells.A, row, 'A', errors);
+      const content = asText(cells.B);
+      const deadlineCell = asDate(cells.C);
+      const product = asText(cells.D);
+      const point = asNumber(cells.E, row, 'E', errors);
+      const assignedQuantity = asNumber(cells.F, row, 'F', errors);
+      const completedRaw = cells.H;
+      const completedFormula = hasFormula(completedRaw)
+        ? String((completedRaw as any).formula).replace(/\s/g, '')
+        : '';
+      const completedQuantity = completedFormula === `F${row}`
         ? assignedQuantity
         : asNumber(completedRaw, row, 'H', errors);
-      const completedAt = asDate(sheet.getCell(`J${row}`).value);
-      const reworkCount = asNumber(sheet.getCell(`M${row}`).value, row, 'M', errors);
+      const completedAt = asDate(cells.J);
+      const reworkCount = asNumber(cells.M, row, 'M', errors);
 
       if (!Number.isSafeInteger(order) || order !== row - FIRST_DATA_ROW + 1) errors.push(`Dòng ${row}, cột A: STT phải liên tục từ 1.`);
       if (!content) errors.push(`Dòng ${row}, cột B: nội dung nhiệm vụ là bắt buộc.`);
+      if (isUnsafeSpreadsheetText(content) || isUnsafeSpreadsheetText(product)) errors.push(`Dòng ${row}: nội dung không được bắt đầu bằng ký tự công thức Excel.`);
       if (!deadlineCell) errors.push(`Dòng ${row}, cột C: ngày hết hạn không hợp lệ.`);
       if (!product) errors.push(`Dòng ${row}, cột D: sản phẩm công việc là bắt buộc.`);
       if (point !== null && point < 0) errors.push(`Dòng ${row}, cột E: điểm không được âm.`);
@@ -136,8 +172,12 @@ const parseWorkbook = async (buffer: Buffer) => {
 };
 
 const requireImportPermission = (actor: AuthUser, target: any) => {
-  if (!IMPORT_ROLES.has(actor.role.code)) throw forbidden('Chỉ cấp quản lý mới được nhập bảng KPI.');
+  if (!IMPORT_ROLES.has(actor.role.code)) throw forbidden('Vai trò hiện tại không được nhập bảng KPI.');
   if (actor.role.code !== 'ADMIN' && (!actor.organization || String(target.organization ?? '') !== actor.organization)) throw forbidden('Nhân sự không thuộc tổ chức của bạn.');
+  if (actor.role.code === 'SPECIALIST') {
+    if (String(target._id) !== actor.id) throw forbidden('Chuyên viên chỉ được nhập bảng KPI của chính mình.');
+    return;
+  }
   if (actor.role.code === 'DEPARTMENT_LEADER' && String(target.department ?? '') !== String(actor.department ?? '')) throw forbidden('Trưởng phòng chỉ được nhập KPI cho nhân sự trong phòng ban.');
 };
 
@@ -155,13 +195,140 @@ const documentForRow = (row: ImportRow, contexts: any[]) => {
     .sort((left, right) => normalized(right.management?.overrides?.soKyHieu ?? right.observation?.soKyHieu).length - normalized(left.management?.overrides?.soKyHieu ?? left.observation?.soKyHieu).length)[0] ?? null;
 };
 
+const objectId = (value: unknown) => String((value as any)?._id ?? value ?? '');
+const vietnamDate = (key: string) => {
+  const [year, month, day] = key.split('-');
+  return `${day}/${month}/${year}`;
+};
+
+const importedDocumentId = (importKey: string) => `kpi-import-${importKey}`;
+
+const importedDocumentReference = (row: ImportRow) => {
+  const candidate = row.content.match(/^\s*(\d{1,5}\/[A-Za-z0-9Đđ._-]{1,32})(?:\s|$)/u)?.[1];
+  return candidate || `PL4-${row.order}/${row.deadlineKey.slice(0, 4)}`;
+};
+
+type ImportedIncomingDocument = {
+  target: any;
+  row: ImportRow;
+  importKey: string;
+  point: number;
+  importedBy: unknown;
+  now: Date;
+};
+
+const upsertImportedIncomingDocument = async ({
+  target, row, importKey, point, importedBy, now,
+}: ImportedIncomingDocument) => {
+  const completed = row.completedQuantity >= row.assignedQuantity;
+  const department = target.department ?? null;
+  const departmentId = objectId(department) || null;
+  const departmentName = typeof department === 'object' ? String(department?.name ?? '') : '';
+  const dueDate = vietnamDate(row.deadlineKey);
+  const documentId = importedDocumentId(importKey);
+  const update = await OfficeDocumentContextModel.updateOne(
+    {
+      sourceHost: 'manual.ework.local',
+      pageType: 'incoming',
+      externalDocumentId: documentId,
+    },
+    {
+      $set: {
+        organizationId: target.organization,
+        tenantResolution: 'MANUAL',
+        origin: 'MANUAL_INGEST',
+        sourceHost: 'manual.ework.local',
+        pageType: 'incoming',
+        externalDocumentId: documentId,
+        sourceUrl: `https://manual.ework.local/kpi-import/${importKey}`,
+        observation: {
+          available: true,
+          modalOpen: true,
+          title: 'Văn bản đến',
+          subject: row.content,
+          soKyHieu: importedDocumentReference(row),
+          receivedDate: dueDate,
+          dueDate,
+          documentForm: row.product,
+          priority: 'Thường',
+          createdDate: '',
+          draftingUnit: '',
+          draftingUnitId: '',
+          draftingUser: '',
+          draftingUserId: '',
+          senderUser: '',
+          senderUserId: '',
+          senderDepartment: '',
+          sender: { userId: '', fullName: '', department: '' },
+          relatedIncomingSoKyHieu: '',
+          comment: `Nhập từ bảng KPI PL4. ${row.product}`,
+          point,
+          reworkCount: row.reworkCount,
+          note: row.product,
+          recipients: [{
+            userId: String(target.username ?? ''),
+            department: departmentName,
+            fullName: target.fullName,
+            role: 'main',
+            entityType: 'person',
+          }],
+          timeline: [],
+        },
+        observedAt: now,
+        statusSync: {
+          status: completed ? 'COMPLETED' : 'PENDING_RESPONSE',
+          completed,
+          completedRule: completed ? 'KPI_IMPORT' : '',
+          completedAt: completed ? row.completedAt ?? now : null,
+          trackLogs: [],
+          processing: null,
+          lastSyncedAt: now,
+          lastAttemptAt: now,
+          nextRetryAt: null,
+          attempts: 0,
+          lastError: '',
+        },
+        management: {
+          overrides: {},
+          assignment: {
+            departmentId,
+            departmentName,
+            userId: target._id,
+            fullName: target.fullName,
+          },
+          kpiImport: {
+            importKey,
+            point,
+            product: row.product,
+            assignedQuantity: row.assignedQuantity,
+            completedQuantity: row.completedQuantity,
+            completedAt: row.completedAt,
+            reworkCount: row.reworkCount,
+            importedBy,
+            importedAt: now,
+          },
+          manualScore: point,
+          note: `Nhập từ bảng KPI PL4. ${row.product}`,
+          updatedBy: importedBy,
+          updatedAt: now,
+        },
+      },
+    },
+    { upsert: true },
+  );
+  return update.upsertedCount > 0 ? 'created' : 'updated';
+};
+
 export const importPerformanceWorkbook = async (actor: AuthUser, file: Express.Multer.File | undefined) => {
   if (!file?.buffer?.length) throw badRequest('Chọn một file PL4 .xlsx để nhập.');
   const parsed = await parseWorkbook(file.buffer);
-  const target = await UserModel.findOne({ fullName: parsed.fullName, status: 'ACTIVE' })
-    .select('_id fullName organization department')
+  const targets = await UserModel.find({ fullName: parsed.fullName, status: 'ACTIVE' })
+    .select('_id username fullName organization department')
+    .populate('department', '_id name')
+    .limit(2)
     .lean();
-  if (!target || !isValidObjectId(target._id)) throw badRequest(`Không tìm thấy đúng một nhân sự hoạt động tên "${parsed.fullName}".`);
+  if (targets.length !== 1 || !isValidObjectId(targets[0]._id)) throw badRequest(`Không tìm thấy đúng một nhân sự hoạt động tên "${parsed.fullName}".`);
+  const [target] = targets;
   await requireImportPermission(actor, target);
 
   const organizationId = String(target.organization ?? '');
@@ -172,8 +339,7 @@ export const importPerformanceWorkbook = async (actor: AuthUser, file: Express.M
     .lean();
   const now = new Date();
   let updatedDocuments = 0;
-  let createdWorks = 0;
-  let updatedWorks = 0;
+  let createdDocuments = 0;
 
   for (const row of parsed.rows) {
     const importKey = importKeyFor(String(target._id), row);
@@ -185,7 +351,9 @@ export const importPerformanceWorkbook = async (actor: AuthUser, file: Express.M
           $set: {
             'management.assignment.userId': target._id,
             'management.assignment.fullName': target.fullName,
-            'management.assignment.departmentId': target.department ?? null,
+            'management.assignment.departmentId': objectId(target.department) || null,
+            'management.assignment.departmentName': typeof target.department === 'object' ? String((target.department as any)?.name ?? '') : '',
+            'management.manualScore': row.point * row.assignedQuantity,
             'management.kpiImport': {
               importKey,
               point: row.point * row.assignedQuantity,
@@ -204,38 +372,81 @@ export const importPerformanceWorkbook = async (actor: AuthUser, file: Express.M
       continue;
     }
 
-    const isCompleted = row.completedQuantity === row.assignedQuantity;
-    const workStartAt = dateAt(row.deadlineKey, '08:00:00.000');
-    const workEndAt = dateAt(row.deadlineKey, '17:00:00.000');
-    const update = {
-      organization: target.organization,
-      department: target.department ?? null,
-      createdBy: target._id,
-      assignedBy: actor.id,
-      workSource: 'KPI_IMPORT',
-      title: row.content,
-      description: row.product,
-      workStartAt,
-      workEndAt,
-      durationMinutes: 540,
-      declaredPoint: row.point * row.assignedQuantity,
-      status: isCompleted ? 'COMPLETED' : 'APPROVED',
-      approval: { currentApprover: actor.id, submittedAt: now, approvedAt: now, history: [] },
-      completion: isCompleted
-        ? { submittedAt: row.completedAt, confirmedAt: row.completedAt, returnedAt: null, submittedResult: 'Nhập từ bảng KPI PL4.', confirmationNote: 'Nhập từ bảng KPI PL4.' }
-        : { submittedAt: null, confirmedAt: null, returnedAt: null, submittedResult: '', confirmationNote: null },
-      kpiImport: { importKey, product: row.product, assignedQuantity: row.assignedQuantity, completedQuantity: row.completedQuantity, reworkCount: row.reworkCount, importedBy: actor.id, importedAt: now },
-    };
-    const existing = await WorkDeclarationModel.findOneAndUpdate(
-      { organization: target.organization, workSource: 'KPI_IMPORT', 'kpiImport.importKey': importKey },
-      { $set: update, $setOnInsert: { revision: 1 } },
-      { new: true, upsert: true, rawResult: true },
-    ) as any;
-    if (existing?.lastErrorObject?.updatedExisting) updatedWorks += 1;
-    else createdWorks += 1;
+    const result = await upsertImportedIncomingDocument({
+      target,
+      row,
+      importKey,
+      point: row.point * row.assignedQuantity,
+      importedBy: actor.id,
+      now,
+    });
+    if (result === 'created') createdDocuments += 1;
+    else updatedDocuments += 1;
   }
 
-  return { data: { user: { id: String(target._id), fullName: target.fullName }, importedRows: parsed.rows.length, updatedDocuments, createdWorks, updatedWorks } };
+  return { data: { user: { id: String(target._id), fullName: target.fullName }, importedRows: parsed.rows.length, createdDocuments, updatedDocuments } };
+};
+
+/** Moves the early KPI-import fallback records into incoming office documents. */
+export const migrateKpiImportWorksToIncomingDocuments = async () => {
+  const works = await WorkDeclarationModel.find({ workSource: 'KPI_IMPORT' })
+    .select('_id createdBy assignedBy title description workEndAt declaredPoint status completion kpiImport')
+    .lean();
+  if (!works.length) return { scanned: 0, createdDocuments: 0, updatedDocuments: 0, removedWorks: 0, skipped: 0 };
+
+  const users = await UserModel.find({
+    _id: { $in: works.map((work: any) => work.createdBy).filter(Boolean) },
+    status: 'ACTIVE',
+  })
+    .select('_id username fullName organization department')
+    .populate('department', '_id name')
+    .lean();
+  const usersById = new Map(users.map((user: any) => [objectId(user._id), user]));
+  const now = new Date();
+  const summary = { scanned: works.length, createdDocuments: 0, updatedDocuments: 0, removedWorks: 0, skipped: 0 };
+
+  for (const work of works as any[]) {
+    const target = usersById.get(objectId(work.createdBy));
+    const importKey = String(work.kpiImport?.importKey ?? '');
+    const deadline = work.workEndAt ? new Date(work.workEndAt) : null;
+    if (!target?.organization || !importKey || !deadline || Number.isNaN(deadline.getTime())) {
+      summary.skipped += 1;
+      continue;
+    }
+    const assignedQuantity = Math.max(1, Number(work.kpiImport?.assignedQuantity ?? 1));
+    const completed = work.status === 'COMPLETED';
+    const completedQuantity = completed
+      ? assignedQuantity
+      : Math.max(0, Math.min(assignedQuantity, Number(work.kpiImport?.completedQuantity ?? 0)));
+    const completedAtRaw = work.kpiImport?.completedAt ?? work.completion?.confirmedAt ?? null;
+    const completedAt = completedAtRaw ? new Date(completedAtRaw) : null;
+    const row: ImportRow = {
+      row: 0,
+      order: 1,
+      content: String(work.title ?? '').trim() || 'Nhiệm vụ nhập KPI PL4',
+      deadline,
+      deadlineKey: dateKey(deadline),
+      product: String(work.kpiImport?.product ?? work.description ?? '').trim() || 'Công việc',
+      point: Number(work.declaredPoint ?? 0),
+      assignedQuantity,
+      completedQuantity,
+      completedAt: completedAt && !Number.isNaN(completedAt.getTime()) ? completedAt : null,
+      reworkCount: Math.max(0, Number(work.kpiImport?.reworkCount ?? 0)),
+    };
+    const result = await upsertImportedIncomingDocument({
+      target,
+      row,
+      importKey,
+      point: Math.max(0, Number(work.declaredPoint ?? 0)),
+      importedBy: work.kpiImport?.importedBy ?? work.assignedBy ?? target._id,
+      now,
+    });
+    if (result === 'created') summary.createdDocuments += 1;
+    else summary.updatedDocuments += 1;
+    const removed = await WorkDeclarationModel.deleteOne({ _id: work._id, workSource: 'KPI_IMPORT' });
+    summary.removedWorks += removed.deletedCount;
+  }
+  return summary;
 };
 
 export const parsePerformanceWorkbook = parseWorkbook;

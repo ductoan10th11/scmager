@@ -103,8 +103,11 @@ graph TD
 - Tự động đồng bộ sang bảng chấm công Timesheet.
 
 ### 4.4. Phân hệ Đánh giá Hiệu suất (KPI & Performance Analytics)
-- Tính điểm hiệu suất công việc theo độ hoàn thành, đúng hạn, chất lượng.
-- Báo cáo thống kê Dashboard trực quan cho Lãnh đạo.
+- **Quy tắc tính điểm KPI:**
+  - **Điểm gốc:** Điểm ban đầu giao cho văn bản / công việc.
+  - **Trừ điểm:** Trừ 25% điểm gốc cho mỗi lần bị trả lại làm lại và mỗi ngày làm việc quá hạn.
+  - **Điểm thực nhận:** Chỉ tính khi công việc đã hoàn thành = `Điểm gốc - (Số lần làm lại × 25%) - (Số ngày trễ × 25%)` (Điểm tối thiểu = 0).
+- **Tổng hợp:** Điểm đã đạt (đã hoàn thành), Điểm chờ (đang làm) và Điểm dự kiến.
 
 ### 4.5. Phân hệ Connector & Automation Ingest
 - Tự động đăng nhập và thu thập văn bản từ cổng thông tin liên thông (ví dụ: Cổng văn bản Tỉnh/Bộ).

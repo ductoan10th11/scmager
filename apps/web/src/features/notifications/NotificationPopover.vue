@@ -27,6 +27,10 @@ const typeLabels = {
   WORK_DECLARATION_FORWARDED: 'Công việc chuyển duyệt',
   WORK_DECLARATION_APPROVED: 'Công việc đã duyệt',
   WORK_DECLARATION_RETURNED: 'Công việc cần bổ sung',
+  DOCUMENT_RESULT_SUBMITTED: 'Sản phẩm chờ duyệt',
+  DOCUMENT_RESULT_FORWARDED: 'Sản phẩm chuyển duyệt',
+  DOCUMENT_RESULT_APPROVED: 'Sản phẩm đã duyệt',
+  DOCUMENT_RESULT_RETURNED: 'Sản phẩm cần bổ sung',
 }
 
 const defaultTypeMeta = { icon: Bell, class: 'bg-zinc-100 text-zinc-600' }
@@ -41,6 +45,10 @@ const typeMeta = {
   WORK_DECLARATION_FORWARDED: { icon: Forward, class: 'bg-indigo-50 text-indigo-700' },
   WORK_DECLARATION_APPROVED: { icon: CheckCircle2, class: 'bg-emerald-50 text-emerald-700' },
   WORK_DECLARATION_RETURNED: { icon: RotateCcw, class: 'bg-amber-50 text-amber-700' },
+  DOCUMENT_RESULT_SUBMITTED: { icon: Send, class: 'bg-sky-50 text-sky-700' },
+  DOCUMENT_RESULT_FORWARDED: { icon: Forward, class: 'bg-indigo-50 text-indigo-700' },
+  DOCUMENT_RESULT_APPROVED: { icon: CheckCircle2, class: 'bg-emerald-50 text-emerald-700' },
+  DOCUMENT_RESULT_RETURNED: { icon: RotateCcw, class: 'bg-amber-50 text-amber-700' },
 }
 
 const fetchUnreadCount = async () => {
@@ -83,7 +91,7 @@ const markAllRead = async () => {
 const openNotification = async (item) => {
   await markRead(item)
   open.value = false
-  if (item.relatedModel === 'IncomingDocument') {
+  if (['IncomingDocument', 'DocumentResultLink'].includes(item.relatedModel)) {
     router.push('/office-documents')
   } else if (item.relatedModel === 'WorkDeclaration') {
     router.push('/assignments')
@@ -97,8 +105,12 @@ const formatDateTime = (value) => value ? new Date(value).toLocaleString('vi-VN'
 onMounted(() => {
   refresh()
   socket = io('/', { path: '/api/socket.io', withCredentials: true, transports: ['websocket', 'polling'] })
-  socket.on('notification:new', refresh)
-  socket.on('notification:changed', refresh)
+  const refreshNotifications = async () => {
+    await refresh()
+    window.dispatchEvent(new CustomEvent('notification:changed'))
+  }
+  socket.on('notification:new', refreshNotifications)
+  socket.on('notification:changed', refreshNotifications)
   socket.on('work-declaration:changed', (payload) => {
     window.dispatchEvent(new CustomEvent('work-declaration:changed', { detail: payload }))
   })

@@ -117,11 +117,34 @@ const kpiImportSchema = new Schema(
   { _id: false },
 );
 
+const businessCompletionSchema = new Schema(
+  {
+    completed: { type: Boolean, default: false, index: true },
+    evidenceType: {
+      type: String,
+      enum: ["DOCUMENT_RESULT", "WORK_DECLARATION"],
+      default: null,
+    },
+    evidenceId: { type: Schema.Types.ObjectId, default: null },
+    submittedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    submittedAt: { type: Date, default: null },
+    approvedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    approvedAt: { type: Date, default: null },
+    point: { type: Number, min: 0, default: null },
+    reworkCount: { type: Number, min: 0, default: 0 },
+  },
+  { _id: false },
+);
+
 const managementSchema = new Schema(
   {
     overrides: { type: Schema.Types.Mixed, default: () => ({}) },
     assignment: { type: managementAssignmentSchema, default: () => ({}) },
     kpiImport: { type: kpiImportSchema, default: () => ({}) },
+    businessCompletion: {
+      type: businessCompletionSchema,
+      default: () => ({ completed: false }),
+    },
     manualScore: { type: Number, min: 0, max: 1_000_000, default: null },
     note: { type: String, trim: true, default: "" },
     updatedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
@@ -153,6 +176,7 @@ const officeDocumentContextSchema = new Schema(
       index: true,
     },
     sourceHost: { type: String, required: true, trim: true, lowercase: true },
+    normalizedSoKyHieu: { type: String, trim: true, default: "", index: true },
     pageType: {
       type: String,
       enum: ["incoming", "outgoing", "outgoing_c2"],
@@ -176,6 +200,11 @@ officeDocumentContextSchema.index(
 );
 officeDocumentContextSchema.index({ pageType: 1, updatedAt: -1 });
 officeDocumentContextSchema.index({ organizationId: 1, pageType: 1, updatedAt: -1 });
+officeDocumentContextSchema.index({
+  organizationId: 1,
+  pageType: 1,
+  normalizedSoKyHieu: 1,
+});
 officeDocumentContextSchema.index({
   pageType: 1,
   "statusSync.completed": 1,

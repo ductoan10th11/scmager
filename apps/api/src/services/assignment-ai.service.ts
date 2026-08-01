@@ -509,7 +509,7 @@ const confirmDraft = async (actor: AuthUser, token: unknown) => {
       assigneeId: (draft as any).payload.assigneeId ?? actor.id,
     });
     declarationId = String((created as any).data?._id ?? '');
-    let result = created;
+    let result: any = created;
     let submissionError: string | null = null;
     if (actor.role.code === 'SPECIALIST') {
       try {

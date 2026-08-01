@@ -1,4 +1,8 @@
-import { getLatestTrackLog } from './langson-dwr.service';
+import {
+  effectiveOfficeDocumentCompletion,
+  effectiveOfficeDocumentPoint,
+  effectiveOfficeDocumentReworkCount,
+} from './office-document-completion.service';
 
 export const idOf = (value: any) => String(value?._id ?? value ?? '');
 
@@ -19,11 +23,9 @@ export const officeDocumentProjection = (context: any) => {
   const observation = context.observation ?? {};
   const overrides = context.management?.overrides ?? {};
   const sync = context.statusSync ?? {};
-  const completed = sync.completed === true;
-  const latestTrackLog: any = getLatestTrackLog(sync.trackLogs ?? []);
-  const completedAt = completed
-    ? parseOfficeDate(latestTrackLog?.completedAt ?? latestTrackLog?.processingAt ?? latestTrackLog?.updatedAt ?? sync.completedAt)
-    : null;
+  const completion = effectiveOfficeDocumentCompletion(context);
+  const completed = completion.completed;
+  const completedAt = completion.completedAt;
   const deadline = parseOfficeDate(overrides.dueDate ?? observation.dueDate, true);
   const assignment = context.management?.assignment ?? {};
   const workflowAssignee = sync.processing?.currentAssignee ?? null;
@@ -40,7 +42,7 @@ export const officeDocumentProjection = (context: any) => {
         departmentId: idOf(workflowAssignee?.departmentId) || null,
         departmentName: '',
       };
-  const point = Number(context.management?.manualScore ?? overrides.point ?? observation.point ?? 0);
+  const point = effectiveOfficeDocumentPoint(context);
   const status = completed
     ? 'COMPLETED'
     : deadline && deadline.getTime() < Date.now()
@@ -56,10 +58,11 @@ export const officeDocumentProjection = (context: any) => {
     ngayDen: overrides.receivedDate ?? observation.receivedDate ?? '',
     ngayBanHanh: overrides.createdDate ?? observation.createdDate ?? '',
     deadline,
-    point: Number.isFinite(point) ? point : 0,
-    reworkCount: Number(observation.reworkCount ?? 0),
+    point,
+    reworkCount: effectiveOfficeDocumentReworkCount(context),
     completed,
     completedAt,
+    completionSource: completion.source,
     status,
     owner,
     trackLogs: sync.trackLogs ?? [],
