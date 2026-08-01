@@ -220,6 +220,27 @@ const approvalSelected = computed(() =>
 const resultLinks = computed(() =>
   Array.isArray(selected.value?.resultLinks) ? selected.value.resultLinks : [],
 );
+const productReconciliation = computed(() =>
+  selected.value?.pageType === "incoming"
+    ? null
+    : selected.value?.management?.product || {},
+);
+const productStateLabel = (state) => ({
+  LINKED_RESULT: "Đã liên kết nhiệm vụ",
+  PENDING_RELATION: "Chờ đối soát liên kết",
+  STANDALONE_PRODUCT: "Sản phẩm độc lập",
+  RESOLVED: "Đã map người soạn",
+  UNRESOLVED: "Chưa map người soạn",
+  APPROVED: "Đã chốt KPI",
+  PENDING: "Chờ duyệt điểm",
+  NOT_APPLICABLE: "Dùng điểm nhiệm vụ",
+}[state] || "Chưa đối soát");
+const productStateVariant = (state) =>
+  ["LINKED_RESULT", "RESOLVED", "APPROVED"].includes(state)
+    ? "default"
+    : ["PENDING_RELATION", "PENDING"].includes(state)
+      ? "outline"
+      : "secondary";
 const linkedCounterpart = (link, context = selected.value) =>
   context?.pageType === "incoming"
     ? link?.outgoingDocument
@@ -1316,6 +1337,31 @@ onUnmounted(() => {
                     {{ displayIdentifier(selected) }}
                   </p>
                 </section>
+                <section
+                  v-if="productReconciliation"
+                  class="border-b border-zinc-100 py-5"
+                >
+                  <h3 class="text-xs font-bold uppercase text-zinc-400">
+                    Trạng thái đối soát
+                  </h3>
+                  <div class="mt-3 flex flex-wrap gap-2">
+                    <Badge :variant="productStateVariant(productReconciliation.classification)">
+                      {{ productStateLabel(productReconciliation.classification) }}
+                    </Badge>
+                    <Badge :variant="productStateVariant(productReconciliation.performerStatus)">
+                      {{ productStateLabel(productReconciliation.performerStatus) }}
+                    </Badge>
+                    <Badge :variant="productStateVariant(productReconciliation.scoreStatus)">
+                      {{ productStateLabel(productReconciliation.scoreStatus) }}
+                    </Badge>
+                  </div>
+                  <p
+                    v-if="productReconciliation.lastError"
+                    class="mt-3 text-sm leading-5 text-amber-700"
+                  >
+                    {{ productReconciliation.lastError }}
+                  </p>
+                </section>
                 <section class="border-b border-zinc-100 py-5">
                   <h3 class="text-xs font-bold uppercase text-zinc-400">
                     Thông tin ghi nhận
@@ -1386,7 +1432,11 @@ onUnmounted(() => {
                     {{
                       selected.pageType === "incoming"
                         ? "Chưa có sản phẩm hoặc công việc được liên kết."
-                        : "Sản phẩm độc lập, được tính là một nhiệm vụ đã hoàn thành."
+                        : productReconciliation?.classification === "PENDING_RELATION"
+                          ? "Đang chờ đối soát với nhiệm vụ nguồn."
+                          : productReconciliation?.scoreStatus === "APPROVED"
+                            ? "Sản phẩm độc lập đã được duyệt điểm KPI."
+                            : "Sản phẩm độc lập chỉ được tính KPI sau khi lãnh đạo duyệt điểm."
                     }}
                   </p>
                 </section>

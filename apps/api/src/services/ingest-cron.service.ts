@@ -9,6 +9,14 @@ import {
   type ExtensionStatusSyncLogInfo,
   type ExtensionStatusSyncSummary,
 } from './extension-status-ingest.service';
+import {
+  syncCurrentYearOutgoingProducts,
+  type OutgoingProductSyncSummary,
+} from './outgoing-product-reconciliation.service';
+
+type IngestSprintSummary = ExtensionStatusSyncSummary & {
+  outgoing?: OutgoingProductSyncSummary;
+};
 
 export type IngestCronLogLevel = 'INFO' | 'WARN' | 'ERROR';
 export type IngestCronLogEvent =
@@ -29,7 +37,7 @@ export interface IngestCronLog {
   level: IngestCronLogLevel;
   event: IngestCronLogEvent;
   message: string;
-  summary?: ExtensionStatusSyncSummary;
+  summary?: IngestSprintSummary;
   error?: string;
   actor?: {
     id: string;
@@ -46,7 +54,7 @@ export interface IngestCronStatus {
   nextRunAt: string | null;
   lastStartedAt: string | null;
   lastFinishedAt: string | null;
-  lastSummary: ExtensionStatusSyncSummary | null;
+  lastSummary: IngestSprintSummary | null;
   lastError: string;
   logSize: number;
 }
@@ -75,7 +83,7 @@ let running = false;
 let nextRunAt: Date | null = null;
 let lastStartedAt: Date | null = null;
 let lastFinishedAt: Date | null = null;
-let lastSummary: ExtensionStatusSyncSummary | null = null;
+let lastSummary: IngestSprintSummary | null = null;
 let lastError = '';
 const logs: IngestCronLog[] = [];
 
@@ -211,21 +219,47 @@ async function executeSprint(scheduleAfter: boolean): Promise<void> {
     lastError = '';
     pushLog('INFO', 'TICK_STARTED', 'Status-only ingest started for extension documents.');
 
-    const summary = await runExtensionStatusOnlyIngest({
-      onDocumentSynced: (info) => {
-        pushLog('INFO', 'DOC_SYNCED', documentLogMessage(info));
-      },
-    });
+    let statusSummary: ExtensionStatusSyncSummary;
+    try {
+      statusSummary = await runExtensionStatusOnlyIngest({
+        onDocumentSynced: (info) => {
+          pushLog('INFO', 'DOC_SYNCED', documentLogMessage(info));
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      statusSummary = {
+        selected: 0,
+        synced: 0,
+        completed: 0,
+        failed: 1,
+        sessionHealed: 0,
+        errors: [`Incoming status: ${message}`],
+      };
+    }
+    let outgoing: OutgoingProductSyncSummary | undefined;
+    try {
+      outgoing = await syncCurrentYearOutgoingProducts();
+      if (outgoing.failed) {
+        statusSummary.errors.push(
+          ...outgoing.errors.map((error) => `Outgoing product: ${error}`),
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      statusSummary.errors.push(`Outgoing products: ${message}`);
+    }
+    const summary: IngestSprintSummary = { ...statusSummary, outgoing };
     lastSummary = summary;
     lastFinishedAt = new Date();
     if (summary.errors.length) {
       lastError = summary.errors[0];
-      pushLog('WARN', 'TICK_SUCCEEDED', 'Status-only ingest completed with recoverable errors.', { summary });
+      pushLog('WARN', 'TICK_SUCCEEDED', 'Document ingest completed with recoverable errors.', { summary });
       for (const error of summary.errors) {
         pushLog('WARN', 'DOC_SYNC_DEFERRED', 'Document status sync deferred for retry.', { error });
       }
     } else {
-      pushLog('INFO', 'TICK_SUCCEEDED', 'Status-only ingest completed.', { summary });
+      pushLog('INFO', 'TICK_SUCCEEDED', 'Document ingest completed.', { summary });
     }
   } catch (error) {
     lastFinishedAt = new Date();

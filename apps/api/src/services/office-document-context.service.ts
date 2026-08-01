@@ -295,7 +295,7 @@ const resolveContextTenant = async (context: { pageType: string; observation: an
   const draftingIds = [observation.draftingUserId];
   const userGroups = context.pageType === "incoming"
     ? [[senderIds, "SENDER"], [recipientIds, "RECIPIENT"], [draftingIds, "DRAFTING_USER"]] as const
-    : [[senderIds, "SENDER"], [draftingIds, "DRAFTING_USER"], [recipientIds, "RECIPIENT"]] as const;
+    : [[draftingIds, "DRAFTING_USER"], [senderIds, "SENDER"], [recipientIds, "RECIPIENT"]] as const;
 
   for (const [ids, resolution] of userGroups) {
     const match = await tenantFromUsernames(ids, resolution);
@@ -323,8 +323,11 @@ const assignmentFromUsernames = async (
   const usernames = [...new Set(values.flatMap(usernameVariants))];
   if (!usernames.length) return null;
   const filter: Record<string, unknown> = {
-    username: { $in: usernames },
     status: "ACTIVE",
+    $or: [
+      { username: { $in: usernames } },
+      ...usernames.filter(isValidObjectId).map((value) => ({ _id: value })),
+    ],
   };
   if (organizationId) filter.organization = organizationId;
   const users = await UserModel.find(filter)
@@ -351,7 +354,41 @@ const assignmentFromUsernames = async (
   };
 };
 
-const resolveContextManagementAssignment = async (
+const assignmentFromUniqueFullName = async (
+  value: unknown,
+  organizationId: string | null,
+): Promise<ResolvedManagementAssignment | null> => {
+  const identity = normalizedIdentity(value);
+  if (!identity) return null;
+  const users = await UserModel.find({
+    status: "ACTIVE",
+    ...(organizationId ? { organization: organizationId } : {}),
+  })
+    .select("_id fullName department organization")
+    .lean();
+  const matches = users.filter(
+    (user: any) => normalizedIdentity(user.fullName) === identity,
+  );
+  if (matches.length !== 1) return null;
+  const user: any = matches[0];
+  const department = user.department
+    ? await DepartmentModel.findOne({
+        _id: user.department,
+        isActive: true,
+        ...(organizationId ? { organization: organizationId } : {}),
+      })
+        .select("_id name")
+        .lean()
+    : null;
+  return {
+    departmentId: department?._id ?? null,
+    departmentName: department?.name ?? "",
+    userId: user._id,
+    fullName: user.fullName ?? "",
+  };
+};
+
+export const resolveContextManagementAssignment = async (
   context: { pageType: string; observation: any },
   organizationId: string | null,
 ): Promise<ResolvedManagementAssignment | null> => {
@@ -365,11 +402,17 @@ const resolveContextManagementAssignment = async (
   const draftingIds = [observation.draftingUserId];
   const senderIds = [observation.sender?.userId, observation.senderUserId];
 
-  // Incoming documents belong to the person receiving the work. Outgoing
-  // records are supporting evidence, so prefer their drafter/sender instead.
-  const groups = context.pageType === "incoming"
-    ? [mainRecipientIds, draftingIds, senderIds]
-    : [draftingIds, senderIds, mainRecipientIds];
+  if (context.pageType !== "incoming") {
+    return (
+      (await assignmentFromUsernames(draftingIds, organizationId))
+      ?? (await assignmentFromUniqueFullName(
+        observation.draftingUser,
+        organizationId,
+      ))
+    );
+  }
+
+  const groups = [mainRecipientIds, draftingIds, senderIds];
   for (const ids of groups) {
     const assignment = await assignmentFromUsernames(ids, organizationId);
     if (assignment) return assignment;
@@ -497,15 +540,46 @@ export const upsertOfficeDocumentContext = async (payload: unknown) => {
     externalDocumentId: normalized.externalDocumentId,
   };
   const previous = await OfficeDocumentContextModel.findOne(filter)
-    .select("management.assignment management.updatedBy")
+    .select("management.assignment management.product management.manualScore management.updatedBy")
     .lean();
   // Any management edit, including intentionally clearing an assignment, is
   // authoritative over extension-derived ownership.
   const isManaged = Boolean(previous?.management?.updatedBy);
   const assignment = isManaged
-    ? null
+    ? (previous?.management?.assignment?.userId
+      ? previous.management.assignment
+      : null)
     : await resolveContextManagementAssignment(normalized, tenant.organizationId);
   const observedAt = new Date();
+  const isProduct = normalized.pageType !== "incoming";
+  const previousProduct = previous?.management?.product ?? {};
+  const proposedPoint = normalized.observation.point;
+  const sameApprovedPoint =
+    previousProduct.scoreStatus === "APPROVED"
+    && previousProduct.proposedPoint === proposedPoint;
+  const productState = isProduct
+    ? {
+        "management.product.classification":
+          previousProduct.classification === "LINKED_RESULT"
+            ? "LINKED_RESULT"
+            : normalized.observation.relatedIncomingSoKyHieu
+              ? "PENDING_RELATION"
+              : "STANDALONE_PRODUCT",
+        "management.product.performerStatus": assignment
+          ? "RESOLVED"
+          : "UNRESOLVED",
+        "management.product.scoreStatus":
+          previousProduct.classification === "LINKED_RESULT"
+            ? "NOT_APPLICABLE"
+            : sameApprovedPoint
+              ? "APPROVED"
+              : "PENDING",
+        "management.product.scoreSource": proposedPoint === null ? "NONE" : "EOFFICE",
+        "management.product.proposedPoint": proposedPoint,
+        "management.product.lastReconciledAt": observedAt,
+        "management.product.lastError": "",
+      }
+    : {};
   const update = () =>
     OfficeDocumentContextModel.findOneAndUpdate(
       filter,
@@ -516,7 +590,7 @@ export const upsertOfficeDocumentContext = async (payload: unknown) => {
             organizationId: tenant.organizationId,
             tenantResolution: tenant.resolution,
           } : {}),
-          ...(assignment
+          ...(!isManaged && assignment
             ? {
                 "management.assignment.departmentId": assignment.departmentId,
                 "management.assignment.departmentName": assignment.departmentName,
@@ -524,6 +598,15 @@ export const upsertOfficeDocumentContext = async (payload: unknown) => {
                 "management.assignment.fullName": assignment.fullName,
               }
             : {}),
+          ...(isProduct && !isManaged && !assignment
+            ? {
+                "management.assignment.departmentId": null,
+                "management.assignment.departmentName": "",
+                "management.assignment.userId": null,
+                "management.assignment.fullName": "",
+              }
+            : {}),
+          ...productState,
           observedAt,
         },
       },
@@ -549,9 +632,40 @@ export const upsertOfficeDocumentContext = async (payload: unknown) => {
       tenantResolution: tenant.resolution,
       ...(assignment
         ? {
-            management: { assignment },
+            management: {
+              assignment,
+              ...(isProduct
+                ? {
+                    product: {
+                      classification: normalized.observation.relatedIncomingSoKyHieu
+                        ? "PENDING_RELATION"
+                        : "STANDALONE_PRODUCT",
+                      performerStatus: "RESOLVED",
+                      scoreStatus: "PENDING",
+                      scoreSource: proposedPoint === null ? "NONE" : "EOFFICE",
+                      proposedPoint,
+                      lastReconciledAt: observedAt,
+                    },
+                  }
+                : {}),
+            },
           }
-        : {}),
+        : isProduct
+          ? {
+              management: {
+                product: {
+                  classification: normalized.observation.relatedIncomingSoKyHieu
+                    ? "PENDING_RELATION"
+                    : "STANDALONE_PRODUCT",
+                  performerStatus: "UNRESOLVED",
+                  scoreStatus: "PENDING",
+                  scoreSource: proposedPoint === null ? "NONE" : "EOFFICE",
+                  proposedPoint,
+                  lastReconciledAt: observedAt,
+                },
+              },
+            }
+          : {}),
       observedAt,
     });
     return {
@@ -1490,6 +1604,28 @@ export const createManagedOfficeDocumentContext = async (
   }
   const completed = pageType !== "incoming" || completedInput === true;
   const now = new Date();
+  if (pageType !== "incoming") {
+    const proposedPoint = Number(management["management.manualScore"]);
+    const managerApproved = actor.role.code !== "SPECIALIST";
+    management["management.product.classification"] =
+      normalized.observation.relatedIncomingSoKyHieu
+        ? "PENDING_RELATION"
+        : "STANDALONE_PRODUCT";
+    management["management.product.performerStatus"] = "RESOLVED";
+    management["management.product.scoreStatus"] = managerApproved
+      ? "APPROVED"
+      : "PENDING";
+    management["management.product.scoreSource"] = "MANUAL";
+    management["management.product.proposedPoint"] = proposedPoint;
+    management["management.product.approvedBy"] = managerApproved
+      ? actor.id
+      : null;
+    management["management.product.approvedAt"] = managerApproved
+      ? now
+      : null;
+    management["management.product.lastReconciledAt"] = now;
+    if (!managerApproved) management["management.manualScore"] = null;
+  }
   const created = await OfficeDocumentContextModel.create({
     ...normalized,
     ...management,
@@ -1663,6 +1799,48 @@ export const updateManagedOfficeDocumentContext = async (
     )
       ? normalized.observation.relatedIncomingSoKyHieu
       : "";
+  if (context.pageType !== "incoming") {
+    const hasScoreChange = managementInput
+      && typeof managementInput === "object"
+      && !Array.isArray(managementInput)
+      && Object.prototype.hasOwnProperty.call(managementInput, "manualScore");
+    if (hasScoreChange) {
+      const proposedPoint = management["management.manualScore"];
+      const managerApproved = actor.role.code !== "SPECIALIST";
+      management["management.product.proposedPoint"] = proposedPoint;
+      management["management.product.scoreStatus"] = proposedPoint == null
+        ? "PENDING"
+        : managerApproved
+        ? "APPROVED"
+        : "PENDING";
+      management["management.product.scoreSource"] = "MANUAL";
+      management["management.product.approvedBy"] = managerApproved && proposedPoint != null
+        ? actor.id
+        : null;
+      management["management.product.approvedAt"] = managerApproved && proposedPoint != null
+        ? new Date()
+        : null;
+      if (!managerApproved) management["management.manualScore"] = null;
+    }
+    const hasAssignmentChange = managementInput
+      && typeof managementInput === "object"
+      && !Array.isArray(managementInput)
+      && Object.prototype.hasOwnProperty.call(managementInput, "assignment");
+    if (hasAssignmentChange) {
+      management["management.product.performerStatus"] = management[
+        "management.assignment.userId"
+      ] ? "RESOLVED" : "UNRESOLVED";
+    } else if (context.management?.assignment?.userId) {
+      management["management.product.performerStatus"] = "RESOLVED";
+    }
+    if (Object.prototype.hasOwnProperty.call(observationInput, "relatedIncomingSoKyHieu")) {
+      management["management.product.classification"] = relatedIncomingSoKyHieu
+        ? "PENDING_RELATION"
+        : "STANDALONE_PRODUCT";
+      management["management.product.lastReconciledAt"] = new Date();
+      management["management.product.lastError"] = "";
+    }
+  }
   if (relatedIncomingSoKyHieu) {
     await resolveDocumentResultLinkService(actor, {
       soKyHieu: relatedIncomingSoKyHieu,

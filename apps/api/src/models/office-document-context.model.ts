@@ -136,6 +136,57 @@ const businessCompletionSchema = new Schema(
   { _id: false },
 );
 
+const productReconciliationHistorySchema = new Schema(
+  {
+    classification: { type: String, trim: true, default: "" },
+    performerStatus: { type: String, trim: true, default: "" },
+    scoreStatus: { type: String, trim: true, default: "" },
+    reason: { type: String, trim: true, default: "" },
+    recordedAt: { type: Date, default: Date.now },
+  },
+  { _id: false },
+);
+
+const productReconciliationSchema = new Schema(
+  {
+    classification: {
+      type: String,
+      enum: ["LINKED_RESULT", "PENDING_RELATION", "STANDALONE_PRODUCT"],
+      default: "STANDALONE_PRODUCT",
+      index: true,
+    },
+    performerStatus: {
+      type: String,
+      enum: ["RESOLVED", "UNRESOLVED"],
+      default: "UNRESOLVED",
+      index: true,
+    },
+    scoreStatus: {
+      type: String,
+      enum: ["PENDING", "APPROVED", "NOT_APPLICABLE"],
+      default: "PENDING",
+      index: true,
+    },
+    scoreSource: {
+      type: String,
+      enum: ["NONE", "EOFFICE", "MANUAL", "SOURCE_TASK"],
+      default: "NONE",
+    },
+    proposedPoint: { type: Number, min: 0, max: 1_000_000, default: null },
+    sourcePointTrackLogId: { type: String, trim: true, default: "" },
+    sourceFingerprint: { type: String, trim: true, default: "" },
+    relatedIncomingExternalIds: { type: [String], default: [] },
+    approvedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    approvedAt: { type: Date, default: null },
+    attempts: { type: Number, min: 0, default: 0 },
+    nextRetryAt: { type: Date, default: null },
+    history: { type: [productReconciliationHistorySchema], default: [] },
+    lastReconciledAt: { type: Date, default: null },
+    lastError: { type: String, trim: true, default: "" },
+  },
+  { _id: false },
+);
+
 const managementSchema = new Schema(
   {
     overrides: { type: Schema.Types.Mixed, default: () => ({}) },
@@ -144,6 +195,10 @@ const managementSchema = new Schema(
     businessCompletion: {
       type: businessCompletionSchema,
       default: () => ({ completed: false }),
+    },
+    product: {
+      type: productReconciliationSchema,
+      default: () => ({}),
     },
     manualScore: { type: Number, min: 0, max: 1_000_000, default: null },
     note: { type: String, trim: true, default: "" },
@@ -214,6 +269,13 @@ officeDocumentContextSchema.index({
 officeDocumentContextSchema.index({
   "management.assignment.departmentId": 1,
   "management.assignment.userId": 1,
+});
+officeDocumentContextSchema.index({
+  organizationId: 1,
+  pageType: 1,
+  "management.product.classification": 1,
+  "management.product.performerStatus": 1,
+  "management.product.scoreStatus": 1,
 });
 officeDocumentContextSchema.index({
   "observation.subject": "text",

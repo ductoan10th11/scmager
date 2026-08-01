@@ -9,6 +9,7 @@ import UserModel from "../models/user.model";
 import {
   createManagedOfficeDocumentContext,
   normalizeOfficeDocumentContext,
+  resolveContextManagementAssignment,
 } from "../services/office-document-context.service";
 import {
   extensionOfficeDocumentContextRoutes,
@@ -208,7 +209,9 @@ test("management creates tasks while specialists may only create self-owned prod
     assert.equal(product.data.pageType, "outgoing");
     assert.equal(created.observation.draftingUser, "Chuyên viên A");
     assert.equal(created.observation.draftingUserId, specialistId);
-    assert.equal(created["management.manualScore"], 2);
+    assert.equal(created["management.manualScore"], null);
+    assert.equal(created["management.product.proposedPoint"], 2);
+    assert.equal(created["management.product.scoreStatus"], "PENDING");
     assert.equal(created.statusSync.completed, true);
     assert.equal(product.data.resultLink, undefined);
   } finally {
@@ -218,6 +221,60 @@ test("management creates tasks while specialists may only create self-owned prod
     UserModel.findOne = originalUserFindOne;
     ConfigModel.updateOne = originalConfigUpdateOne;
     ConfigModel.findOneAndUpdate = originalConfigFindOneAndUpdate;
+  }
+});
+
+test("outgoing owner resolution only accepts the drafter and rejects ambiguous names", async () => {
+  const originalUserFind = UserModel.find;
+  const originalDepartmentFindOne = DepartmentModel.findOne;
+  const organization = "64b000000000000000000011";
+  const department = "64b000000000000000000012";
+  const drafter = "64b000000000000000000013";
+  let users: any[] = [];
+  UserModel.find = (() => ({
+    select: () => ({
+      limit: () => ({ lean: async () => users }),
+      lean: async () => users,
+    }),
+  })) as unknown as typeof UserModel.find;
+  DepartmentModel.findOne = (() => ({
+    select: () => ({ lean: async () => ({ _id: department, name: "Phòng Kinh tế" }) }),
+  })) as unknown as typeof DepartmentModel.findOne;
+  try {
+    users = [{ _id: drafter, fullName: "Người Soạn", department }];
+    const resolved = await resolveContextManagementAssignment({
+      pageType: "outgoing",
+      observation: {
+        draftingUser: "Người Soạn",
+        senderUserId: "nguoi-gui.lsn",
+        recipients: [{ userId: "nguoi-nhan.lsn", role: "main", entityType: "person" }],
+      },
+    }, organization);
+    assert.equal(String(resolved?.userId), drafter);
+
+    users = [
+      { _id: drafter, fullName: "Người Soạn", department },
+      { _id: "64b000000000000000000014", fullName: "Người Soạn", department },
+    ];
+    const ambiguous = await resolveContextManagementAssignment({
+      pageType: "outgoing",
+      observation: {
+        draftingUser: "Người Soạn",
+        senderUserId: "nguoi-gui.lsn",
+        recipients: [{ userId: "nguoi-nhan.lsn", role: "main", entityType: "person" }],
+      },
+    }, organization);
+    assert.equal(ambiguous, null);
+
+    users = [{ _id: drafter, fullName: "Người Gửi", department }];
+    const senderOnly = await resolveContextManagementAssignment({
+      pageType: "outgoing",
+      observation: { senderUserId: "nguoi-gui.lsn" },
+    }, organization);
+    assert.equal(senderOnly, null);
+  } finally {
+    UserModel.find = originalUserFind;
+    DepartmentModel.findOne = originalDepartmentFindOne;
   }
 });
 

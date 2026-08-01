@@ -158,6 +158,17 @@ export interface DocumentListItem {
   deadline: Date | null;
 }
 
+export interface OutgoingDocumentListItem {
+  documentId: string;
+  soKyHieu: string;
+  trichYeu: string;
+  donViBanHanh: string;
+  hinhThuc: string;
+  ngayVanBan: string;
+  doKhan: string;
+  donViSoanThao: string;
+}
+
 export function newestNgayDenFilter(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     vanban_lichsu: '',
@@ -490,6 +501,182 @@ export async function getDocList(
 
   const raw = String(res.data);
   return parseDocListHtml(raw);
+}
+
+const currentVietnamYear = () => Number(
+  new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    year: "numeric",
+  }).format(new Date()),
+);
+
+export function outgoingPublishedFilter(
+  year: number = currentVietnamYear(),
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  if (!Number.isSafeInteger(year) || year < 2000 || year > 9999) {
+    throw new Error("Outgoing document year is invalid");
+  }
+  return {
+    value_search: "",
+    field_search: "trich_yeu",
+    typeget: "vanban_di_da_banhanh",
+    gmh_status: "",
+    vbdi_songaydenhan: "0",
+    isConfigFuncHanchexem: "0",
+    typeDongBang: "",
+    tachkho: "",
+    vbchidao: "",
+    giaoDienBLU: "0",
+    check_tb_kho_vbdi: "",
+    vanbannoibo: "",
+    hinhthucvb: "",
+    value_search_start_date: `01/01/${year}`,
+    value_search_end_date: `31/12/${year}`,
+    field_search_date: "ngay_tao",
+    trong_ngay: "",
+    fieldSort: "ngay_tao",
+    sort: "desc",
+    color_clk: "",
+    lanhdao: "",
+    filter_ykien: "",
+    sel_year_search: String(year),
+    is_current_year: "1",
+    kyso: "",
+    chobanhanh: "",
+    lanhdaoduyet: "",
+    trangthai_doc: "",
+    order_do_khan: "0",
+    order_vb_denhan: "0",
+    para_tooltip: "0",
+    view_hslt: "0",
+    trinhchuyen: "",
+    vb_layykien: "",
+    type_layykien: null,
+    ...overrides,
+  };
+}
+
+const tableRowsFromDwrHtml = (raw: string) => {
+  const html = extractS0Html(raw);
+  const rows: Array<{ tag: string; content: string }> = [];
+  let position = 0;
+  while (true) {
+    const start = html.indexOf("<tr", position);
+    if (start === -1) break;
+    let cursor = start + 3;
+    let quote = "";
+    while (cursor < html.length) {
+      const character = html[cursor];
+      if (quote) {
+        if (character === quote) quote = "";
+      } else if (character === '"' || character === "'") {
+        quote = character;
+      } else if (character === ">") {
+        break;
+      }
+      cursor += 1;
+    }
+    const tagEnd = cursor + 1;
+    const close = html.indexOf("</tr>", tagEnd);
+    if (close === -1) break;
+    rows.push({
+      tag: html.slice(start, tagEnd),
+      content: html.slice(tagEnd, close),
+    });
+    position = close + 5;
+  }
+  return rows;
+};
+
+export function parseOutgoingDocumentListHtml(
+  raw: string,
+): OutgoingDocumentListItem[] {
+  return tableRowsFromDwrHtml(raw)
+    .map(({ tag, content }) => {
+      const rowId = trAttr(tag, "tridrecord")
+        || trAttr(tag, "FlyID")
+        || trAttr(tag, "id").replace(/^vbdi_/iu, "");
+      const onclickId = trAttr(tag, "onclick").match(/getDSDuKienNhan\((\d+)/u)?.[1] ?? "";
+      const documentId = rowId || onclickId;
+      if (!documentId) return null;
+      const cells = extractTdCells(content);
+      return {
+        documentId,
+        soKyHieu: trAttr(tag, "so_ky_hieu") || cells[1]?.text || "",
+        trichYeu: trAttr(tag, "trich_yeu") || cells[2]?.text || "",
+        donViBanHanh: trAttr(tag, "don_vi_ban_hanh"),
+        hinhThuc: trAttr(tag, "hinh_thuc"),
+        ngayVanBan: trAttr(tag, "ngay_van_ban"),
+        doKhan: trAttr(tag, "do_khan"),
+        donViSoanThao: trAttr(tag, "don_vi_soan_thao"),
+      } satisfies OutgoingDocumentListItem;
+    })
+    .filter((item): item is OutgoingDocumentListItem => item !== null);
+}
+
+export async function getOutgoingPublishedList(
+  page: number = 1,
+  limit: number = DOC_PAGE_LIMIT,
+  filterJson: Record<string, unknown> = outgoingPublishedFilter(),
+  csrfToken?: string,
+): Promise<OutgoingDocumentListItem[]> {
+  const csrf = csrfToken ?? (await getCsrfToken());
+  const body = [
+    "callCount=1",
+    "c0-scriptName=DataRemoting",
+    "c0-methodName=getDoc",
+    `c0-id=${createCallId()}`,
+    `c0-param0=string:qlvb.vanban_di.act_activiti.getList("${page}","${limit}",'${JSON.stringify(filterJson)}')`,
+    "c0-param1=boolean:false",
+    "xml=true",
+    "",
+  ].join("\n");
+  const response = await langson.post(DWR_DATA_PATH, {
+    data: body,
+    responseType: "text",
+    transformResponse: [(data) => data],
+    headers: {
+      Accept: "*/*",
+      "Content-Type": "text/plain",
+      "csrf-token": csrf,
+      Origin: undefined,
+      "X-Requested-With": undefined,
+    },
+  });
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`POST ${DWR_DATA_PATH} -> ${response.status}`);
+  }
+  const raw = String(response.data);
+  if (
+    !/\bvar\s+s0\s*=/u.test(raw)
+    || !raw.includes("DWREngine._handleResponse")
+    || /authenticationendpoint|login\.do|<form[^>]+login/iu.test(raw)
+  ) {
+    throw new Error("Outgoing document DWR response is not a valid document list");
+  }
+  return parseOutgoingDocumentListHtml(raw);
+}
+
+export async function getAllOutgoingPublishedDocuments(options: {
+  year?: number;
+  limit?: number;
+  maxPages?: number;
+  csrfToken?: string;
+} = {}): Promise<OutgoingDocumentListItem[]> {
+  const limit = Math.min(100, Math.max(1, options.limit ?? DOC_PAGE_LIMIT));
+  const maxPages = Math.min(2_000, Math.max(1, options.maxPages ?? 500));
+  const csrf = options.csrfToken ?? (await getCsrfToken());
+  const filter = outgoingPublishedFilter(options.year ?? currentVietnamYear());
+  const documents = new Map<string, OutgoingDocumentListItem>();
+  for (let page = 1; page <= maxPages; page += 1) {
+    const items = await getOutgoingPublishedList(page, limit, filter, csrf);
+    if (!items.length) return [...documents.values()];
+    const previousSize = documents.size;
+    for (const item of items) documents.set(item.documentId, item);
+    if (documents.size === previousSize) return [...documents.values()];
+  }
+  throw new Error(`Outgoing document pagination exceeded ${maxPages} pages`);
 }
 
 export interface DocDetailResult {

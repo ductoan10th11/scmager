@@ -108,6 +108,12 @@ export const performanceOverviewService = async (
     })
       .select('createdBy title description workEndAt declaredPoint pointAdjustment completion approval status workSource kpiImport')
       .sort({ workEndAt: -1 });
+  const productScope: Record<string, unknown> = {};
+  if (isSpecialist(actor)) {
+    productScope['management.assignment.userId'] = actor.id;
+  } else if (isDepartmentLeader(actor)) {
+    productScope['management.assignment.userId'] = { $in: [...userIds] };
+  }
   const productContextQuery = OfficeDocumentContextModel.find({
     ...(actor.organization
       ? { organizationId: actor.organization }
@@ -115,7 +121,7 @@ export const performanceOverviewService = async (
         ? {}
         : { _id: null }),
     pageType: { $in: ['outgoing', 'outgoing_c2'] },
-    'management.assignment.userId': { $in: [...userIds] },
+    ...productScope,
   })
     .select('externalDocumentId observation management observedAt pageType')
     .sort({ observedAt: -1 });
@@ -126,6 +132,7 @@ export const performanceOverviewService = async (
         ? {}
         : { _id: null }),
     incomingDocument: { $ne: null },
+    status: 'APPROVED',
   })
     .select('outgoingDocument')
     .lean();
@@ -277,9 +284,23 @@ export const performanceOverviewService = async (
   const linkedProductIds = new Set(
     linkedProductRows.map((link: any) => idOf(link.outgoingDocument)),
   );
+  const preferredProductByExternalId = new Map<string, string>();
+  for (const product of productContexts) {
+    const externalId = String(product.externalDocumentId ?? '');
+    const preferredId = preferredProductByExternalId.get(externalId);
+    if (!preferredId || product.pageType === 'outgoing') {
+      preferredProductByExternalId.set(externalId, idOf(product));
+    }
+  }
   const standaloneProducts = productContexts
     .map((product: any) => {
-      if (linkedProductIds.has(idOf(product))) return null;
+      const productState = product.management?.product ?? {};
+      if (
+        preferredProductByExternalId.get(String(product.externalDocumentId ?? '')) !== idOf(product)
+        ||
+        linkedProductIds.has(idOf(product))
+        || productState.classification === 'LINKED_RESULT'
+      ) return null;
       const observation = {
         ...(product.observation ?? {}),
         ...(product.management?.overrides ?? {}),
@@ -297,8 +318,19 @@ export const performanceOverviewService = async (
       if (!appearsInPeriod) return null;
       const ownerId = idOf(product.management?.assignment?.userId);
       const owner = users.find((user: any) => idOf(user._id) === ownerId);
-      if (!owner) return null;
-      const point = effectiveOfficeDocumentPoint(product);
+      const performerResolved = productState.performerStatus === 'RESOLVED'
+        && Boolean(owner);
+      const scoreApproved = productState.scoreStatus === 'APPROVED';
+      const kpiEligible = productState.classification === 'STANDALONE_PRODUCT'
+        && performerResolved
+        && scoreApproved;
+      const point = scoreApproved
+        ? effectiveOfficeDocumentPoint(product)
+        : Number(
+          productState.proposedPoint
+          ?? product.observation?.point
+          ?? 0,
+        );
       const reworkCount = effectiveOfficeDocumentReworkCount(product);
       return {
         id: idOf(product._id),
@@ -315,15 +347,30 @@ export const performanceOverviewService = async (
         deadline: completedAt,
         point,
         reworkCount,
-        creditedPoint: calculateCreditedPoint(point, reworkCount, 0),
+        creditedPoint: kpiEligible
+          ? calculateCreditedPoint(point, reworkCount, 0)
+          : 0,
         lateWorkingDays: 0,
         submittedAt: completedAt,
         completedAt,
         completed: true,
-        status: 'COMPLETED',
+        status: productState.classification === 'PENDING_RELATION'
+          ? 'PENDING_RECONCILIATION'
+          : performerResolved
+            ? scoreApproved
+              ? 'COMPLETED'
+              : 'PENDING_SCORE'
+            : 'UNRESOLVED_PERFORMER',
+        kpiEligible,
+        reconciliation: {
+          classification: productState.classification ?? 'STANDALONE_PRODUCT',
+          performerStatus: productState.performerStatus ?? 'UNRESOLVED',
+          scoreStatus: productState.scoreStatus ?? 'PENDING',
+          lastError: productState.lastError ?? '',
+        },
         processing: null,
         trackLogs: [],
-        owner: {
+        owner: owner ? {
           id: ownerId,
           username: owner.username,
           fullName: owner.fullName,
@@ -335,6 +382,14 @@ export const performanceOverviewService = async (
                 code: owner.department.code,
               }
             : null,
+        } : {
+          id: null,
+          username: null,
+          fullName: product.management?.assignment?.fullName
+            || observation.draftingUser
+            || 'Chưa map được người soạn thảo',
+          position: null,
+          department: null,
         },
       };
     })
@@ -368,10 +423,11 @@ export const performanceOverviewService = async (
   };
 
   for (const document of documents) {
-    if (document.completed) summary.completedDocuments += 1;
+    const finalized = document.status === 'COMPLETED';
+    if (finalized) summary.completedDocuments += 1;
     else summary.inProgressDocuments += 1;
     if (document.status === 'OVERDUE') summary.overdueDocuments += 1;
-    if (document.completed) {
+    if (finalized && document.kpiEligible !== false) {
       summary.totalPoint += Number(document.creditedPoint ?? 0);
       summary.lateWorkingDays += Number(document.lateWorkingDays ?? 0);
     } else {
@@ -384,7 +440,7 @@ export const performanceOverviewService = async (
       continue;
     }
     row.documentCount += 1;
-    if (document.completed) {
+    if (finalized && document.kpiEligible !== false) {
       row.completedDocumentCount += 1;
       row.totalPoint += Number(document.creditedPoint ?? 0);
       row.monthlyKpi += Number(document.creditedPoint ?? 0);
@@ -426,8 +482,15 @@ export const performanceOverviewService = async (
     });
 
   documents.sort((left, right) => {
-    const statusRank = { OVERDUE: 0, IN_PROGRESS: 1, COMPLETED: 2 } as Record<string, number>;
-    return statusRank[left.status] - statusRank[right.status]
+    const statusRank = {
+      OVERDUE: 0,
+      PENDING_RECONCILIATION: 1,
+      UNRESOLVED_PERFORMER: 2,
+      PENDING_SCORE: 3,
+      IN_PROGRESS: 4,
+      COMPLETED: 5,
+    } as Record<string, number>;
+    return (statusRank[left.status] ?? 99) - (statusRank[right.status] ?? 99)
       || (right.deadline?.getTime?.() ?? 0) - (left.deadline?.getTime?.() ?? 0);
   });
 
@@ -437,7 +500,7 @@ export const performanceOverviewService = async (
       scope: { role: actor.role.code, userId: actor.id, organizationId: actor.organization, departmentId: actor.department },
       summary: { ...summary, projectedPoint: summary.totalPoint + summary.pendingPoint },
       assignees,
-      documents: documents.slice(0, options.documentLimit ?? 250),
+      documents: documents.slice(0, options.documentLimit ?? 2_000),
     },
   };
 };

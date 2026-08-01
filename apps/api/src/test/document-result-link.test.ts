@@ -177,6 +177,7 @@ test("product drafter owns the result while a linked task supplies its KPI point
   const outgoing = {
     management: {
       assignment: { userId: productOwner },
+      product: { performerStatus: "RESOLVED" },
       manualScore: 0,
     },
     observation: { point: 0 },

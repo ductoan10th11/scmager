@@ -379,19 +379,14 @@ export const documentResultCompletionValues = (
 });
 
 export const resolveDocumentResultPerformerId = (
-  actorId: string,
+  _actorId: string,
   outgoing: any,
-  incoming?: any,
+  _incoming?: any,
 ) => {
-  const draftingUserId = idOf(
-    outgoing.management?.overrides?.draftingUserId
-    ?? outgoing.observation?.draftingUserId,
-  );
-  if (isValidObjectId(draftingUserId)) return draftingUserId;
-  const assignedUserId = idOf(outgoing.management?.assignment?.userId);
-  if (isValidObjectId(assignedUserId)) return assignedUserId;
-  const sourceAssigneeId = idOf(incoming?.management?.assignment?.userId);
-  return isValidObjectId(sourceAssigneeId) ? sourceAssigneeId : actorId;
+  const assignedUserId = outgoing.management?.product?.performerStatus === "RESOLVED"
+    ? idOf(outgoing.management?.assignment?.userId)
+    : "";
+  return isValidObjectId(assignedUserId) ? assignedUserId : null;
 };
 
 const resolveDocumentResultPerformer = async (
@@ -419,7 +414,6 @@ const resolveDocumentResultPerformer = async (
   if (usernameCandidates.length) {
     identityFilters.push({ username: { $in: usernameCandidates } });
   }
-  if (draftingUser) identityFilters.push({ fullName: draftingUser });
   if (identityFilters.length) {
     const users: any[] = await UserModel.find({
       organization: organizationId,
@@ -430,8 +424,33 @@ const resolveDocumentResultPerformer = async (
       .limit(2)
       .lean();
     if (users.length === 1) return idOf(users[0]);
+    if (users.length > 1) {
+      throw conflict("Danh tính người soạn thảo khớp nhiều tài khoản trong tổ chức.");
+    }
   }
-  return resolveDocumentResultPerformerId(actorId, outgoing, incoming);
+  if (draftingUser) {
+    const users: any[] = await UserModel.find({
+      organization: organizationId,
+      status: "ACTIVE",
+      fullName: draftingUser,
+    })
+      .select("_id")
+      .limit(2)
+      .lean();
+    if (users.length === 1) return idOf(users[0]);
+  }
+  const resolved = resolveDocumentResultPerformerId(actorId, outgoing, incoming);
+  if (resolved) {
+    const verified: any = await UserModel.findOne({
+      _id: resolved,
+      organization: organizationId,
+      status: "ACTIVE",
+    }).select("_id").lean();
+    if (verified) return idOf(verified);
+  }
+  throw conflict(
+    "Không xác định duy nhất người soạn thảo của sản phẩm. Hãy phân công lại trước khi gửi duyệt.",
+  );
 };
 
 const finalizeLinkApproval = async ({
@@ -493,7 +512,21 @@ const finalizeLinkApproval = async ({
     },
     { new: true, runValidators: true },
   );
-  if (updated) return updated;
+  if (updated) {
+    await OfficeDocumentContextModel.updateOne(
+      { _id: idOf(outgoing), organizationId },
+      {
+        $set: {
+          "management.product.classification": "LINKED_RESULT",
+          "management.product.scoreStatus": "NOT_APPLICABLE",
+          "management.product.scoreSource": "SOURCE_TASK",
+          "management.product.lastReconciledAt": now,
+          "management.product.lastError": "",
+        },
+      },
+    );
+    return updated;
+  }
 
   const latest: any = await DocumentResultLinkModel.findById(linkId).lean();
   if (incoming && latest?.status !== "APPROVED") {
@@ -759,6 +792,17 @@ export const createDocumentResultLinkService = async (
       throw error;
     }
   }
+
+  await OfficeDocumentContextModel.updateOne(
+    { _id: outgoing._id, organizationId: outgoing.organizationId },
+    {
+      $set: {
+        "management.product.classification": "PENDING_RELATION",
+        "management.product.lastReconciledAt": now,
+        "management.product.lastError": "",
+      },
+    },
+  );
 
   if (approver.selfApproved) {
     try {
