@@ -7,6 +7,7 @@ export * from "./file-attachment.model";
 export * from "./task.model";
 export * from "./work-declaration.model";
 export * from "./work-policy.model";
+export * from "./leadership-assessment.model";
 export * from "./timesheet.model";
 export * from "./notification.model";
 export * from "./ai-job.model";

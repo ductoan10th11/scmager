@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuth } from '@/features/auth/composables/useAuth'
 import { preloadProtectedRouteComponents, preloadRouteComponent } from '@/router/page-loaders'
-import { Activity, BarChart3, Building2, CalendarRange, FileText, LayoutDashboard, ChevronLeft, ChevronRight, Users } from 'lucide-vue-next'
+import { Activity, AlertTriangle, BarChart3, Building2, CalendarRange, FileText, LayoutDashboard, ChevronLeft, ChevronRight, Users } from 'lucide-vue-next'
 import NotificationPopover from '@/features/notifications/NotificationPopover.vue'
 
 const route = useRoute()
@@ -28,6 +28,7 @@ const navItems = computed(() => {
     { name: 'Văn bản',       path: '/office-documents', icon: FileText,       roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
     { name: 'Hiệu suất',     path: '/performance',    icon: BarChart3,       roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
     { name: 'Lịch công việc', path: '/assignments',   icon: CalendarRange,   roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
+    { name: 'Báo cáo quá hạn', path: '/reports',      icon: AlertTriangle,   roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER'] },
     // --- Quản trị ---
     { name: 'Ingest cron',   path: '/ingest-monitor', icon: Activity,         roles: ['ADMIN'] },
     { name: 'Connector ingest', path: '/connectors', icon: Activity,          roles: ['ADMIN'] },

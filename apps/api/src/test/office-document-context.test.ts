@@ -10,6 +10,7 @@ import {
   createManagedOfficeDocumentContext,
   normalizeOfficeDocumentContext,
   resolveContextManagementAssignment,
+  upsertOfficeDocumentContext,
 } from "../services/office-document-context.service";
 import {
   extensionOfficeDocumentContextRoutes,
@@ -127,6 +128,238 @@ test("Office context rejects malformed or oversized observations before persiste
   );
 });
 
+test("update-only context sync skips missing records without creating them", async () => {
+  const originalFindOne = OfficeDocumentContextModel.findOne;
+  const originalCreate = OfficeDocumentContextModel.create;
+  let createCalled = false;
+  OfficeDocumentContextModel.findOne = (() => ({
+    select: () => ({ lean: async () => null }),
+  })) as unknown as typeof OfficeDocumentContextModel.findOne;
+  OfficeDocumentContextModel.create = (async () => {
+    createCalled = true;
+    throw new Error("create must not be called in update-only mode");
+  }) as unknown as typeof OfficeDocumentContextModel.create;
+  try {
+    const result = await upsertOfficeDocumentContext(payload, { createIfMissing: false });
+    assert.equal(result.data, null);
+    assert.equal(result.skipped, true);
+    assert.equal(createCalled, false);
+  } finally {
+    OfficeDocumentContextModel.findOne = originalFindOne;
+    OfficeDocumentContextModel.create = originalCreate;
+  }
+});
+
+test("incoming ingest refuses a task that has no processing deadline", async () => {
+  const originalFindOne = OfficeDocumentContextModel.findOne;
+  const originalCreate = OfficeDocumentContextModel.create;
+  let touched = false;
+  OfficeDocumentContextModel.findOne = (() => {
+    touched = true;
+    return { select: () => ({ lean: async () => null }) };
+  }) as unknown as typeof OfficeDocumentContextModel.findOne;
+  OfficeDocumentContextModel.create = (async () => {
+    touched = true;
+    throw new Error("create must not be called without a due date");
+  }) as unknown as typeof OfficeDocumentContextModel.create;
+  try {
+    const result = await upsertOfficeDocumentContext({ ...payload, dueDate: "" });
+    assert.equal(result.data, null);
+    assert.equal(result.skipped, true);
+    assert.equal(result.reason, "NO_DEADLINE");
+    assert.equal(touched, false);
+  } finally {
+    OfficeDocumentContextModel.findOne = originalFindOne;
+    OfficeDocumentContextModel.create = originalCreate;
+  }
+});
+
+test("outgoing ingest refuses standalone product without score or rework count", async () => {
+  const originalFindOne = OfficeDocumentContextModel.findOne;
+  const originalCreate = OfficeDocumentContextModel.create;
+  let createCalled = false;
+  OfficeDocumentContextModel.findOne = (() => ({
+    select: () => ({ lean: async () => null }),
+  })) as unknown as typeof OfficeDocumentContextModel.findOne;
+  OfficeDocumentContextModel.create = (async () => {
+    createCalled = true;
+    throw new Error("create must not be called for unscored standalone product");
+  }) as unknown as typeof OfficeDocumentContextModel.create;
+  try {
+    const result = await upsertOfficeDocumentContext({
+      ...payload,
+      pageType: "outgoing",
+      dueDate: "",
+      relatedIncomingSoKyHieu: "",
+      point: null,
+      reworkCount: 0,
+    });
+    assert.equal(result.data, null);
+    assert.equal(result.skipped, true);
+    assert.equal(result.reason, "STANDALONE_WITHOUT_SCORE_OR_REWORK");
+    assert.equal(createCalled, false);
+  } finally {
+    OfficeDocumentContextModel.findOne = originalFindOne;
+    OfficeDocumentContextModel.create = originalCreate;
+  }
+});
+
+test("outgoing ingest accepts standalone product with score", async () => {
+  const originalFindOne = OfficeDocumentContextModel.findOne;
+  const originalCreate = OfficeDocumentContextModel.create;
+  const originalFindOneAndUpdate = OfficeDocumentContextModel.findOneAndUpdate;
+  const originalUserFind = UserModel.find;
+  const originalDepartmentFind = DepartmentModel.find;
+  const originalDepartmentFindOne = DepartmentModel.findOne;
+  let created = false;
+  OfficeDocumentContextModel.findOne = (() => ({
+    select: () => ({ lean: async () => null }),
+  })) as unknown as typeof OfficeDocumentContextModel.findOne;
+  OfficeDocumentContextModel.findOneAndUpdate = (async () => null) as unknown as typeof OfficeDocumentContextModel.findOneAndUpdate;
+  OfficeDocumentContextModel.create = (async (doc: any) => {
+    created = true;
+    return { ...doc, _id: "new-prod-id" };
+  }) as unknown as typeof OfficeDocumentContextModel.create;
+  UserModel.find = (() => ({
+    select: () => ({
+      limit: () => ({ lean: async () => [] }),
+      lean: async () => [],
+    }),
+    lean: async () => [],
+  })) as unknown as typeof UserModel.find;
+  DepartmentModel.find = (() => ({
+    select: () => ({ lean: async () => [] }),
+    lean: async () => [],
+  })) as unknown as typeof DepartmentModel.find;
+  DepartmentModel.findOne = (() => ({
+    select: () => ({ lean: async () => null }),
+    lean: async () => null,
+  })) as unknown as typeof DepartmentModel.findOne;
+  try {
+    const result = await upsertOfficeDocumentContext({
+      ...payload,
+      pageType: "outgoing",
+      dueDate: "",
+      relatedIncomingSoKyHieu: "",
+      point: 0.9,
+      reworkCount: 0,
+    });
+    assert.equal(created, true);
+    assert.equal(result.data?.id, "new-prod-id");
+  } finally {
+    OfficeDocumentContextModel.findOne = originalFindOne;
+    OfficeDocumentContextModel.create = originalCreate;
+    OfficeDocumentContextModel.findOneAndUpdate = originalFindOneAndUpdate;
+    UserModel.find = originalUserFind;
+    DepartmentModel.find = originalDepartmentFind;
+    DepartmentModel.findOne = originalDepartmentFindOne;
+  }
+});
+
+test("outgoing ingest accepts standalone product with rework count", async () => {
+  const originalFindOne = OfficeDocumentContextModel.findOne;
+  const originalCreate = OfficeDocumentContextModel.create;
+  const originalFindOneAndUpdate = OfficeDocumentContextModel.findOneAndUpdate;
+  const originalUserFind = UserModel.find;
+  const originalDepartmentFind = DepartmentModel.find;
+  const originalDepartmentFindOne = DepartmentModel.findOne;
+  let created = false;
+  OfficeDocumentContextModel.findOne = (() => ({
+    select: () => ({ lean: async () => null }),
+  })) as unknown as typeof OfficeDocumentContextModel.findOne;
+  OfficeDocumentContextModel.findOneAndUpdate = (async () => null) as unknown as typeof OfficeDocumentContextModel.findOneAndUpdate;
+  OfficeDocumentContextModel.create = (async (doc: any) => {
+    created = true;
+    return { ...doc, _id: "new-prod-id" };
+  }) as unknown as typeof OfficeDocumentContextModel.create;
+  UserModel.find = (() => ({
+    select: () => ({
+      limit: () => ({ lean: async () => [] }),
+      lean: async () => [],
+    }),
+    lean: async () => [],
+  })) as unknown as typeof UserModel.find;
+  DepartmentModel.find = (() => ({
+    select: () => ({ lean: async () => [] }),
+    lean: async () => [],
+  })) as unknown as typeof DepartmentModel.find;
+  DepartmentModel.findOne = (() => ({
+    select: () => ({ lean: async () => null }),
+    lean: async () => null,
+  })) as unknown as typeof DepartmentModel.findOne;
+  try {
+    const result = await upsertOfficeDocumentContext({
+      ...payload,
+      pageType: "outgoing",
+      dueDate: "",
+      relatedIncomingSoKyHieu: "",
+      point: null,
+      reworkCount: 1,
+    });
+    assert.equal(created, true);
+    assert.equal(result.data?.id, "new-prod-id");
+  } finally {
+    OfficeDocumentContextModel.findOne = originalFindOne;
+    OfficeDocumentContextModel.create = originalCreate;
+    OfficeDocumentContextModel.findOneAndUpdate = originalFindOneAndUpdate;
+    UserModel.find = originalUserFind;
+    DepartmentModel.find = originalDepartmentFind;
+    DepartmentModel.findOne = originalDepartmentFindOne;
+  }
+});
+
+test("outgoing ingest accepts product linked to an incoming document even without score", async () => {
+  const originalFindOne = OfficeDocumentContextModel.findOne;
+  const originalCreate = OfficeDocumentContextModel.create;
+  const originalFindOneAndUpdate = OfficeDocumentContextModel.findOneAndUpdate;
+  const originalUserFind = UserModel.find;
+  const originalDepartmentFind = DepartmentModel.find;
+  const originalDepartmentFindOne = DepartmentModel.findOne;
+  let created = false;
+  OfficeDocumentContextModel.findOne = (() => ({
+    select: () => ({ lean: async () => null }),
+  })) as unknown as typeof OfficeDocumentContextModel.findOne;
+  OfficeDocumentContextModel.findOneAndUpdate = (async () => null) as unknown as typeof OfficeDocumentContextModel.findOneAndUpdate;
+  OfficeDocumentContextModel.create = (async (doc: any) => {
+    created = true;
+    return { ...doc, _id: "new-linked-prod-id" };
+  }) as unknown as typeof OfficeDocumentContextModel.create;
+  UserModel.find = (() => ({
+    select: () => ({
+      limit: () => ({ lean: async () => [] }),
+      lean: async () => [],
+    }),
+    lean: async () => [],
+  })) as unknown as typeof UserModel.find;
+  DepartmentModel.find = (() => ({
+    select: () => ({ lean: async () => [] }),
+    lean: async () => [],
+  })) as unknown as typeof DepartmentModel.find;
+  DepartmentModel.findOne = (() => ({
+    select: () => ({ lean: async () => null }),
+    lean: async () => null,
+  })) as unknown as typeof DepartmentModel.findOne;
+  try {
+    const result = await upsertOfficeDocumentContext({
+      ...payload,
+      pageType: "outgoing",
+      dueDate: "",
+      relatedIncomingSoKyHieu: "01/TEST",
+      point: null,
+      reworkCount: 0,
+    });
+    assert.equal(created, true);
+    assert.equal(result.data?.id, "new-linked-prod-id");
+  } finally {
+    OfficeDocumentContextModel.findOne = originalFindOne;
+    OfficeDocumentContextModel.create = originalCreate;
+    OfficeDocumentContextModel.findOneAndUpdate = originalFindOneAndUpdate;
+    UserModel.find = originalUserFind;
+    DepartmentModel.find = originalDepartmentFind;
+    DepartmentModel.findOne = originalDepartmentFindOne;
+  }
+});
+
 test("management creates tasks while specialists may only create self-owned products", async () => {
   const originalCreate = OfficeDocumentContextModel.create;
   const originalFind = OfficeDocumentContextModel.find;
@@ -192,6 +425,20 @@ test("management creates tasks while specialists may only create self-owned prod
     assert.match(created.externalDocumentId, /^m-\d{13}-\d{6}$/);
     assert.equal(created.observation.soKyHieu, "1/VBN");
     assert.equal(result.data.observation.subject, "Văn bản tạo thủ công");
+    const customReference = await createManagedOfficeDocumentContext(manager, {
+      pageType: "incoming",
+      subject: "Văn bản có số ký hiệu nhập tay",
+      soKyHieu: "1281/UBND-KT",
+      dueDate: "25/07/2026",
+      management: {
+        assignment: {
+          departmentId: department,
+          userId: specialistId,
+        },
+        manualScore: 2,
+      },
+    });
+    assert.equal(customReference.data.observation.soKyHieu, "1281/UBND-KT");
     await assert.rejects(
       () =>
         createManagedOfficeDocumentContext(specialist, {
@@ -207,6 +454,7 @@ test("management creates tasks while specialists may only create self-owned prod
       management: { manualScore: 2 },
     });
     assert.equal(product.data.pageType, "outgoing");
+    assert.equal(product.data.observation.soKyHieu, "2/VBN");
     assert.equal(created.observation.draftingUser, "Chuyên viên A");
     assert.equal(created.observation.draftingUserId, specialistId);
     assert.equal(created["management.manualScore"], null);
@@ -280,7 +528,7 @@ test("outgoing owner resolution only accepts the drafter and rejects ambiguous n
 
 test("Office context routes expose the endpoint without an environment gate", () => {
   assert.equal(extensionOfficeDocumentContextRoutes.stack.length, 2);
-  assert.equal(officeDocumentContextRoutes.stack.length, 7);
+  assert.equal(officeDocumentContextRoutes.stack.length, 10);
   assert.equal(
     extensionOfficeDocumentContextRoutes.stack[0].route?.path,
     "/version",
@@ -299,8 +547,21 @@ test("Office context routes expose the endpoint without an environment gate", ()
     officeDocumentContextRoutes.stack[3].route?.path,
     "/ingest-incoming",
   );
-  assert.equal(officeDocumentContextRoutes.stack[5].route?.path, "/:id");
-  assert.equal(officeDocumentContextRoutes.stack[6].route?.path, "/:id");
+  assert.equal(
+    officeDocumentContextRoutes.stack[4].route?.path,
+    "/:id/complaint/request",
+  );
+  assert.equal(
+    officeDocumentContextRoutes.stack[5].route?.path,
+    "/:id/complaint/decide",
+  );
+  assert.equal(
+    officeDocumentContextRoutes.stack[6].route?.path,
+    "/:id/complaint/cancel",
+  );
+  assert.equal(officeDocumentContextRoutes.stack[7].route?.path, "/:id");
+  assert.equal(officeDocumentContextRoutes.stack[8].route?.path, "/:id");
+  assert.equal(officeDocumentContextRoutes.stack[9].route?.path, "/:id");
 });
 
 test("Office context HMAC rejects unsigned, invalid, and replayed requests", () => {

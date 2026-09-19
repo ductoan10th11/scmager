@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   ArrowRight,
   Building2,
@@ -13,7 +13,6 @@ import {
   Play,
   Plus,
   Power,
-  RefreshCw,
   ShieldCheck,
   Trash2,
 } from 'lucide-vue-next'
@@ -120,9 +119,13 @@ const stateMeta = (state) => ({
   DRAFT: { label: 'Chờ thiết lập', class: 'border-blue-200 bg-blue-50 text-blue-700', icon: Clock3 },
 }[state] || { label: state || 'Không xác định', class: 'border-zinc-200 bg-zinc-100 text-zinc-600', icon: CircleAlert })
 
-const load = async () => {
-  loading.value = true
-  error.value = ''
+let pollTimer = null
+
+const load = async (isBackground = false) => {
+  if (!isBackground) {
+    loading.value = true
+    error.value = ''
+  }
   try {
     const [connectorRes, organizationRes] = await Promise.all([
       http('/api/connectors'),
@@ -142,9 +145,13 @@ const load = async () => {
     )
     operational.value = Object.fromEntries(results)
   } catch (exception) {
-    error.value = exception.message || 'Không thể tải danh sách Connector.'
+    if (!isBackground) {
+      error.value = exception.message || 'Không thể tải danh sách Connector.'
+    }
   } finally {
-    loading.value = false
+    if (!isBackground) {
+      loading.value = false
+    }
   }
 }
 
@@ -250,7 +257,23 @@ const removeConnector = async () => {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+
+  // Polling 10 RPM (mỗi 6 giây) tự động làm mới ngầm khi tab đang mở
+  pollTimer = setInterval(() => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible' && !dialogOpen.value && !deleteTarget.value && !manualTriggerOpen.value) {
+      load(true)
+    }
+  }, 6000)
+})
+
+onUnmounted(() => {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+})
 </script>
 
 <template>
@@ -267,10 +290,7 @@ onMounted(load)
           </div>
         </div>
         <div class="flex flex-wrap items-center gap-2">
-          <Button variant="outline" size="sm" :disabled="loading" @click="load">
-            <RefreshCw :class="['size-4', loading && 'animate-spin']" /> Làm mới
-          </Button>
-          <Button v-if="canProvision" class="bg-blue-600 font-bold text-white hover:bg-blue-700 shadow-lg shadow-blue-600/15" @click="openCreate">
+          <Button v-if="canProvision" class="rounded-full bg-blue-600 font-bold text-white hover:bg-blue-700 shadow-lg shadow-blue-600/15" @click="openCreate">
             <Plus class="size-4" /> Tạo Connector
           </Button>
         </div>

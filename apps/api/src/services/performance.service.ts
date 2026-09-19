@@ -1,5 +1,6 @@
 import {
   DocumentResultLinkModel,
+  LeadershipAssessmentModel,
   OfficeDocumentContextModel,
   UserModel,
   WorkDeclarationModel,
@@ -69,7 +70,14 @@ export const performanceDocumentOwnerId = (
     completion.source === 'DOCUMENT_RESULT'
       ? idOf(context.management?.businessCompletion?.submittedBy)
       : '';
-  return resultPerformerId || idOf(context.management?.assignment?.userId);
+  if (resultPerformerId) return resultPerformerId;
+  // KPI follows the first specialist the document reached: office chief and
+  // department leader only dispatch it, and whoever the first specialist hands
+  // it to afterwards is assisting. A manager's explicit assignment still wins.
+  const managerEdited = Boolean(context.management?.updatedBy);
+  const primaryId = idOf(context.statusSync?.processing?.primaryAssignee?.userId);
+  if (!managerEdited && primaryId) return primaryId;
+  return idOf(context.management?.assignment?.userId);
 };
 
 /**
@@ -481,6 +489,86 @@ export const performanceOverviewService = async (
         || left.user.fullName.localeCompare(right.user.fullName, 'vi');
     });
 
+  // A department leader carries the department's whole workload, not just their
+  // own paperwork: every task and every point of the specialists they manage
+  // adds up on their row. The three PL4 leadership criteria on top of that are
+  // filled in by a higher-level leader.
+  type DepartmentTotals = {
+    members: number;
+    monthlyKpi: number;
+    totalPoint: number;
+    pendingPoint: number;
+    documentCount: number;
+    completedDocumentCount: number;
+    inProgressDocumentCount: number;
+    overdueDocumentCount: number;
+    lateWorkingDays: number;
+  };
+  const departmentTotals = new Map<string, DepartmentTotals>();
+  for (const row of assignees) {
+    if (row.user.role?.code !== 'SPECIALIST') continue;
+    const departmentId = row.user.department?.id;
+    if (!departmentId) continue;
+    if (!departmentTotals.has(departmentId)) {
+      departmentTotals.set(departmentId, {
+        members: 0, monthlyKpi: 0, totalPoint: 0, pendingPoint: 0, documentCount: 0,
+        completedDocumentCount: 0, inProgressDocumentCount: 0, overdueDocumentCount: 0, lateWorkingDays: 0,
+      });
+    }
+    const totals = departmentTotals.get(departmentId)!;
+    totals.members += 1;
+    totals.monthlyKpi += row.monthlyKpi;
+    totals.totalPoint += row.totalPoint;
+    totals.pendingPoint += row.pendingPoint;
+    totals.documentCount += row.documentCount;
+    totals.completedDocumentCount += row.completedDocumentCount;
+    totals.inProgressDocumentCount += row.inProgressDocumentCount;
+    totals.overdueDocumentCount += row.overdueDocumentCount;
+    totals.lateWorkingDays += row.lateWorkingDays;
+  }
+
+  const leaderIds = assignees
+    .filter((row) => row.user.role?.code === 'DEPARTMENT_LEADER')
+    .map((row) => row.user.id);
+  const assessments = leaderIds.length && actor.organization
+    ? await LeadershipAssessmentModel.find({
+      organization: actor.organization,
+      period,
+      user: { $in: leaderIds },
+    }).lean()
+    : [];
+  const assessmentByUser = new Map(assessments.map((item: any) => [idOf(item.user), item]));
+
+  const enrichedAssignees = assignees.map((row) => {
+    if (row.user.role?.code !== 'DEPARTMENT_LEADER') return row;
+    const totals = departmentTotals.get(row.user.department?.id ?? '');
+    const assessment: any = assessmentByUser.get(row.user.id) ?? null;
+    // The leader's own figures are rolled into the department total, so their
+    // row shows the department's whole output.
+    return {
+      ...row,
+      monthlyKpi: row.monthlyKpi + (totals?.monthlyKpi ?? 0),
+      totalPoint: row.totalPoint + (totals?.totalPoint ?? 0),
+      pendingPoint: row.pendingPoint + (totals?.pendingPoint ?? 0),
+      projectedPoint: row.projectedPoint + (totals?.totalPoint ?? 0) + (totals?.pendingPoint ?? 0),
+      documentCount: row.documentCount + (totals?.documentCount ?? 0),
+      completedDocumentCount: row.completedDocumentCount + (totals?.completedDocumentCount ?? 0),
+      inProgressDocumentCount: row.inProgressDocumentCount + (totals?.inProgressDocumentCount ?? 0),
+      overdueDocumentCount: row.overdueDocumentCount + (totals?.overdueDocumentCount ?? 0),
+      lateWorkingDays: row.lateWorkingDays + (totals?.lateWorkingDays ?? 0),
+      ownMonthlyKpi: row.monthlyKpi,
+      ownDocumentCount: row.documentCount,
+      departmentMemberCount: totals?.members ?? 0,
+      leadership: {
+        fieldResultScore: assessment?.fieldResultScore ?? null,
+        executionScore: assessment?.executionScore ?? null,
+        cohesionScore: assessment?.cohesionScore ?? null,
+        note: assessment?.note ?? '',
+        ratedAt: assessment?.ratedAt ?? null,
+      },
+    };
+  });
+
   documents.sort((left, right) => {
     const statusRank = {
       OVERDUE: 0,
@@ -499,7 +587,7 @@ export const performanceOverviewService = async (
       period,
       scope: { role: actor.role.code, userId: actor.id, organizationId: actor.organization, departmentId: actor.department },
       summary: { ...summary, projectedPoint: summary.totalPoint + summary.pendingPoint },
-      assignees,
+      assignees: enrichedAssignees,
       documents: documents.slice(0, options.documentLimit ?? 2_000),
     },
   };

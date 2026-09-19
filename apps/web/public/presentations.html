@@ -1,0 +1,1381 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hướng dẫn sử dụng Hệ thống eWork & eWork Assistant Extension</title>
+<style>
+  /* Space Grotesk: Tiêu đề, Cover slide, Kicker; Inter: Nội dung chuẩn đọc */
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+
+  :root {
+    --navy: #0d2b52;
+    --navy-dark: #07172e;
+    --blue: #1a56a8;
+    --sky: #e8f1fb;
+    --accent: #f0a500;
+    --accent-light: #fef3c7;
+    --ok: #1e7e34;
+    --warn: #b45309;
+    --ink: #17263b;
+    --muted: #5b6b80;
+    --border: #d8e2ee;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    background: #0b111c;
+    overflow: hidden;
+    font-family: "Inter", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+
+  #viewport {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #stage {
+    width: 1280px;
+    height: 720px;
+    position: relative;
+    transform-origin: center center;
+  }
+
+  .slide {
+    position: absolute;
+    inset: 0;
+    background: #ffffff;
+    color: var(--ink);
+    display: none;
+    flex-direction: column;
+    padding: 38px 56px 72px;
+    border-radius: 6px;
+  }
+  .slide.active { display: flex; }
+
+  .slide h1 {
+    color: var(--navy);
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 32px;
+    font-weight: 700;
+    line-height: 1.25;
+    margin-bottom: 14px;
+    padding-bottom: 10px;
+    border-bottom: 4px solid var(--accent);
+  }
+  .slide h1 .kicker {
+    display: block;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--blue);
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-bottom: 4px;
+  }
+  .body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 0;
+  }
+
+  ul.points { list-style: none; font-size: 18.5px; line-height: 1.48; }
+  ul.points li { padding-left: 24px; position: relative; margin-bottom: 8px; }
+  ul.points li::before { content: "▸"; color: var(--accent); position: absolute; left: 2px; font-weight: bold; }
+  ul.points li b { color: var(--navy); }
+  .small li { font-size: 15.5px; margin-bottom: 6px; line-height: 1.42; }
+  .tiny li { font-size: 13.5px; margin-bottom: 5px; line-height: 1.38; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 15px; }
+  th { background: var(--navy); color: #fff; padding: 7px 10px; text-align: left; font-weight: 600; font-family: 'Space Grotesk', sans-serif; }
+  td { padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  tr:nth-child(even) td { background: var(--sky); }
+  td.ok { color: var(--ok); font-weight: 700; }
+  td.warn { color: var(--warn); font-weight: 700; }
+  tr.hl td { background: var(--accent-light); font-weight: 700; }
+
+  .punch {
+    margin-top: auto;
+    background: var(--sky);
+    border-left: 6px solid var(--accent);
+    padding: 10px 16px;
+    font-size: 16.5px;
+    font-style: italic;
+    color: var(--navy);
+    border-radius: 0 6px 6px 0;
+  }
+  .punch::before { content: "💬 "; font-style: normal; }
+
+  .evidence { font-size: 13.5px; color: var(--muted); margin-top: 2px; }
+  .evidence::before { content: "↗ "; color: var(--muted); }
+  .evidence a { color: var(--blue); text-decoration: none; border-bottom: 1px dotted var(--blue); margin-right: 12px; font-weight: 500; }
+  .evidence a:hover { color: var(--accent); }
+
+  .cols { display: flex; gap: 22px; min-height: 0; }
+  .cols > div { flex: 1; min-width: 0; }
+  .cols-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; min-height: 0; }
+  .cols-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; min-height: 0; }
+
+  .panel {
+    background: var(--sky);
+    border-radius: 8px;
+    padding: 12px 16px;
+    border: 1px solid #d3e1f0;
+  }
+  .panel h3 {
+    color: var(--blue);
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 16.5px;
+    margin-bottom: 6px;
+    font-weight: 600;
+  }
+
+  .badge {
+    display: inline-block;
+    background: var(--blue);
+    color: #fff;
+    border-radius: 20px;
+    padding: 2px 10px;
+    font-size: 13px;
+    font-weight: 600;
+    margin: 2px 4px 2px 0;
+  }
+  .badge.gold { background: var(--accent); color: var(--navy); }
+  .badge.green { background: var(--ok); }
+  .badge.red { background: #dc2626; }
+
+  /* Quy trình luồng bước */
+  .flow { display: flex; align-items: stretch; gap: 0; margin: 4px 0; }
+  .step {
+    flex: 1;
+    background: var(--sky);
+    border: 2px solid var(--blue);
+    border-radius: 8px;
+    padding: 9px 10px;
+    text-align: center;
+    font-size: 14.5px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+  .step b { color: var(--navy); font-size: 15px; font-family: 'Space Grotesk', sans-serif; }
+  .step small { color: var(--muted); font-size: 12px; }
+  .arrow { align-self: center; padding: 0 6px; color: var(--accent); font-size: 24px; font-weight: 700; }
+
+  /* Khung hiển thị ảnh chụp màn hình */
+  .figure {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+  }
+  .figure a {
+    display: block;
+    line-height: 0;
+    max-width: 100%;
+    cursor: zoom-in;
+    transition: transform 0.2s;
+  }
+  .figure a:hover {
+    transform: scale(1.015);
+  }
+  .figure img {
+    max-width: 100%;
+    max-height: 420px;
+    object-fit: contain;
+    border: 1px solid #c9d8eb;
+    border-radius: 8px;
+    background: #fff;
+    box-shadow: 0 6px 16px rgba(13, 43, 82, 0.08);
+  }
+  .figure .cap {
+    font-size: 12.5px;
+    color: var(--muted);
+    margin-top: 5px;
+    line-height: 1.3;
+    text-align: center;
+  }
+
+  /* Switch button toggle chuẩn UX rule */
+  .switch-demo {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: #fff;
+    padding: 4px 10px;
+    border-radius: 20px;
+    border: 1px solid #cbd5e1;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .switch-toggle {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    background: #cbd5e1;
+    border-radius: 20px;
+    transition: background 0.3s;
+  }
+  .switch-toggle.on { background: #16a34a; }
+  .switch-toggle::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    background: white;
+    border-radius: 50%;
+    transition: transform 0.3s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  }
+  .switch-toggle.on::after { transform: translateX(16px); }
+
+  /* Footer & Titlebar */
+  .footer {
+    position: absolute;
+    left: 56px;
+    right: 56px;
+    bottom: 22px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    color: var(--muted);
+    border-top: 1px solid #dfe7f0;
+    padding-top: 8px;
+  }
+  .titlebar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 8px;
+    background: linear-gradient(90deg, var(--navy) 60%, var(--accent));
+    border-radius: 6px 6px 0 0;
+  }
+
+  /* ================= SLIDE BÌA & KẾT THÚC (COVER TECH THEME) ================= */
+  .cover {
+    background: linear-gradient(150deg, var(--navy) 0%, #123a6e 55%, #1a56a8 100%);
+    color: #fff;
+    justify-content: center;
+  }
+  .cover-video {
+    --c-bg: #0b1329;
+    --c-primary: #38bdf8;
+    --c-accent: #818cf8;
+    --c-gold: #f59e0b;
+    --c-fg: #f1f5f9;
+    --c-muted: #94a3b8;
+    overflow: hidden;
+    overflow: clip;
+    padding: 0;
+    background: radial-gradient(ellipse at top, rgba(30, 58, 138, 0.6), transparent 60%),
+                linear-gradient(180deg, #070d1e 0%, #0b152d 100%);
+    font-family: 'Space Grotesk', "Segoe UI", sans-serif;
+  }
+  .cover-video > .cover-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    background: linear-gradient(115deg, rgba(7, 13, 30, 0.92) 0%, rgba(7, 13, 30, 0.70) 50%, rgba(7, 13, 30, 0.88) 100%);
+  }
+  .cover-video > .cover-grid {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    opacity: 0.45;
+    background-image: linear-gradient(rgba(56, 189, 248, 0.08) 1px, transparent 1px),
+                      linear-gradient(90deg, rgba(56, 189, 248, 0.08) 1px, transparent 1px);
+    background-size: 48px 48px;
+    animation: cover-grid-move 24s linear infinite;
+  }
+  .cover-video > .cover-orb {
+    position: absolute;
+    z-index: 1;
+    pointer-events: none;
+    border-radius: 50%;
+    filter: blur(95px);
+  }
+  .cover-video > .cover-orb-a {
+    left: -120px;
+    top: 15%;
+    width: 440px;
+    height: 440px;
+    background: rgba(56, 189, 248, 0.22);
+    animation: cover-orb 9s ease-in-out infinite alternate;
+  }
+  .cover-video > .cover-orb-b {
+    right: -130px;
+    bottom: 8%;
+    width: 420px;
+    height: 420px;
+    background: rgba(129, 140, 248, 0.20);
+    animation: cover-orb 9s ease-in-out 3s infinite alternate;
+  }
+  @keyframes cover-grid-move { from { background-position: 0 0; } to { background-position: 48px 48px; } }
+  @keyframes cover-orb { from { opacity: 0.5; transform: scale(0.94); } to { opacity: 1; transform: scale(1.06); } }
+
+  .cover-video > .cover-content {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    padding: 34px 58px 30px;
+    color: var(--c-fg);
+  }
+  .slide.active.cover-video > .cover-content { animation: cover-in .6s cubic-bezier(.22,.8,.3,1) both; }
+  @keyframes cover-in { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+
+  .cover-video .cover-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 20px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(241, 245, 249, 0.12);
+  }
+  .cover-video .cover-org {
+    font-size: 13.5px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: rgba(241, 245, 249, 0.85);
+  }
+  .cover-video .cover-tag {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--c-primary);
+    white-space: nowrap;
+  }
+  .cover-video .cover-main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 0;
+  }
+  .cover-video .cover-badge {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border-radius: 999px;
+    padding: 6px 16px;
+    margin-bottom: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 1.8px;
+    text-transform: uppercase;
+    color: var(--c-primary);
+    background: rgba(15, 23, 42, 0.65);
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    backdrop-filter: blur(20px);
+  }
+  .cover-video .cover-badge::before { content: "◆"; font-size: 9px; }
+  .cover-video .cover-main h1 {
+    border: none;
+    margin: 0;
+    padding: 0;
+    text-align: left;
+  }
+  .cover-video .cover-main h1 .l1 {
+    display: block;
+    font-size: 32px;
+    font-weight: 500;
+    line-height: 1.2;
+    color: rgba(241, 245, 249, 0.92);
+  }
+  .cover-video .cover-main h1 .l2 {
+    display: block;
+    width: fit-content;
+    font-size: 58px;
+    font-weight: 700;
+    line-height: 1.08;
+    letter-spacing: -1px;
+    margin-top: 4px;
+    background: linear-gradient(90deg, #e0f2fe, #38bdf8 50%, #818cf8);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 0 24px rgba(56, 189, 248, 0.35));
+  }
+  .cover-video .cover-rule {
+    width: 110px;
+    height: 3px;
+    border-radius: 3px;
+    margin: 18px 0 16px;
+    background: linear-gradient(90deg, #38bdf8, #818cf8);
+  }
+  .cover-video .cover-sub {
+    max-width: 760px;
+    font-size: 18px;
+    line-height: 1.5;
+    color: var(--c-muted);
+    text-align: left;
+    margin: 0;
+  }
+  .cover-video .cover-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
+    max-width: 900px;
+    margin-top: 32px;
+    border-radius: 12px;
+    overflow: hidden;
+    background: rgba(56, 189, 248, 0.18);
+    border: 1px solid rgba(56, 189, 248, 0.20);
+    box-shadow: 0 20px 50px -20px rgba(0, 0, 0, 0.7);
+  }
+  .cover-video .cover-stats > div {
+    padding: 12px 18px 14px;
+    background: rgba(15, 23, 42, 0.65);
+    backdrop-filter: blur(20px);
+  }
+  .cover-video .cover-stats b {
+    display: block;
+    width: fit-content;
+    font-size: 21px;
+    font-weight: 700;
+    line-height: 1.15;
+    color: #bae6fd;
+    background: linear-gradient(135deg, #e0f2fe, #38bdf8 65%, #818cf8);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .cover-video .cover-stats span {
+    display: block;
+    margin-top: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: rgba(148, 163, 184, 0.9);
+  }
+  .cover-video .cover-bottom {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 20px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(241, 245, 249, 0.12);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: rgba(148, 163, 184, 0.85);
+  }
+  .cover-video .cover-bottom .dom {
+    color: var(--c-primary);
+    text-transform: none;
+    letter-spacing: 1px;
+    font-size: 13.5px;
+  }
+  .cover-video .cover-dots { display: inline-flex; gap: 6px; }
+  .cover-video .cover-dots i { width: 5px; height: 5px; border-radius: 50%; background: rgba(56, 189, 248, 0.5); }
+  .cover-video .cover-dots i:nth-child(2) { background: rgba(56, 189, 248, 0.85); }
+  .cover-video .cover-dots i:nth-child(3) { background: rgba(129, 140, 248, 0.8); }
+
+  /* Điều khiển HUD */
+  #hud {
+    position: fixed;
+    right: 18px;
+    bottom: 14px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    color: #9fb3cc;
+    font-size: 14px;
+    z-index: 100;
+    user-select: none;
+  }
+  #hud button {
+    background: #1e293b;
+    color: #f1f5f9;
+    border: 1px solid #334155;
+    border-radius: 20px;
+    padding: 6px 14px;
+    font-size: 14px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.2s;
+  }
+  #hud button:hover {
+    background: var(--blue);
+    border-color: var(--blue);
+  }
+  #progress {
+    position: fixed;
+    left: 0;
+    bottom: 0;
+    height: 4px;
+    background: var(--accent);
+    width: 0;
+    z-index: 100;
+    transition: width .25s;
+  }
+  #toast {
+    position: fixed;
+    left: 50%;
+    bottom: 26px;
+    transform: translateX(-50%);
+    background: rgba(15, 23, 42, 0.92);
+    color: #f1f5f9;
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    backdrop-filter: blur(20px);
+    border-radius: 999px;
+    padding: 8px 22px;
+    font-size: 14px;
+    z-index: 200;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .3s;
+  }
+  #toast.on { opacity: 1; }
+
+  /* Chế độ phông nền (Backdrop) */
+  body.backdrop #hud, body.backdrop #progress { display: none; }
+
+  /* Lightbox phóng to ảnh */
+  #lightbox {
+    position: fixed;
+    inset: 0;
+    background: rgba(7, 13, 30, 0.92);
+    backdrop-filter: blur(8px);
+    z-index: 1000;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    cursor: zoom-out;
+  }
+  #lightbox.active { display: flex; }
+  #lightbox img {
+    max-width: 90vw;
+    max-height: 90vh;
+    border-radius: 8px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.6);
+    border: 1px solid rgba(255,255,255,0.2);
+  }
+
+  @media print {
+    html, body { overflow: visible; background: #fff; }
+    #viewport { position: static; display: block; }
+    #stage { width: auto; height: auto; transform: none !important; }
+    .slide {
+      display: flex;
+      position: relative;
+      page-break-after: always;
+      width: 1280px;
+      height: 720px;
+      margin: 0 auto;
+      border-radius: 0;
+    }
+    #hud, #progress, #toast, #lightbox { display: none; }
+    .cover-video > .cover-grid, .cover-video > .cover-orb { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="viewport"><div id="stage">
+
+<!-- ================= SLIDE 1 — BÌA ================= -->
+<section class="slide cover cover-video active">
+  <div class="cover-overlay"></div>
+  <div class="cover-grid" aria-hidden="true"></div>
+  <div class="cover-orb cover-orb-a" aria-hidden="true"></div>
+  <div class="cover-orb cover-orb-b" aria-hidden="true"></div>
+
+  <div class="cover-content">
+    <div class="cover-top">
+      <span class="cover-org">Tỉnh Lạng Sơn · Hệ thống Điều hành Công việc &amp; Quản trị Hiệu suất</span>
+      <span class="cover-tag">Tài liệu Vận hành · 2026</span>
+    </div>
+
+    <div class="cover-main">
+      <div class="cover-badge">Hệ sinh thái eWork &amp; eWork Assistant Extension</div>
+
+      <h1>
+        <span class="l1">Hướng dẫn Sử dụng</span>
+        <span class="l2">Hệ sinh thái eWork &amp; Extension</span>
+      </h1>
+
+      <div class="cover-rule"></div>
+
+      <p class="cover-sub">Giải pháp số hóa quy trình xử lý văn bản, giám sát tiến độ thực thi công vụ và tự động hóa đánh giá chỉ số hiệu suất (KPI) cơ quan.</p>
+
+      <div class="cover-stats">
+        <div><b>100% Liên thông</b><span>Đồng bộ với iOffice Lạng Sơn</span></div>
+        <div><b>02 Vai trò</b><span>Lãnh đạo &amp; Chuyên viên</span></div>
+        <div><b>Tự động hóa</b><span>Chấm điểm &amp; đếm lần sửa</span></div>
+        <div><b>1 Click Excel</b><span>Báo cáo thi đua &amp; Quá hạn</span></div>
+      </div>
+    </div>
+
+    <div class="cover-bottom">
+      <span class="dom">ework.expsolution.io</span>
+      <span class="cover-dots"><i></i><i></i><i></i></span>
+      <span>Hệ thống Quản lý eWork</span>
+    </div>
+  </div>
+</section>
+
+<!-- ================= SLIDE 2 — BÀI TOÁN & GIẢI PHÁP ================= -->
+<section class="slide">
+  <div class="titlebar"></div>
+  <h1><span class="kicker">Slide 2/14</span>Bài toán thực tế &amp; Lợi ích mang lại</h1>
+  <div class="body">
+    <div class="cols">
+      <div class="panel">
+        <h3>Những khó khăn trong quản lý truyền thống</h3>
+        <ul class="points small">
+          <li><b>Khó kiểm soát tiến độ:</b> Khối lượng văn bản trên iOffice lớn, khó nắm bắt chuyên viên đang xử lý đến khâu nào.</li>
+          <li><b>Chấm thi đua định tính:</b> Cuối tháng/quý phải tổng hợp sổ sách thủ công, tốn thời gian và dễ nảy sinh ý kiến trái chiều.</li>
+          <li><b>Bỏ quên việc phát sinh ngoài:</b> Các công việc thực tế (đi họp đột xuất, trực ban, kiểm tra cơ sở) không có trên iOffice nên không được tính điểm.</li>
+          <li><b>Dễ bị chậm, trễ hạn:</b> Thiếu danh sách cảnh báo văn bản sắp đến hạn và quá hạn để lãnh đạo đôn đốc kịp thời.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3>Giải pháp eWork &amp; Tiện ích Extension mang lại</h3>
+        <ul class="points small">
+          <li><b>Không nhập liệu 2 lần:</b> Tiện ích Extension trên Chrome tự động ghi nhận điểm và thời hạn ngay khi cán bộ chuyển văn bản trên iOffice.</li>
+          <li><b>Đánh giá công bằng, minh bạch:</b> Điểm thi đua (KPI) được hệ thống tự tính toán dựa trên sản phẩm hoàn thành và số lần sửa đổi.</li>
+          <li><b>Quản lý việc toàn diện:</b> Ghi nhận đầy đủ cả văn bản trong hệ thống và mọi nhiệm vụ thực tế phát sinh ngoài hệ thống.</li>
+          <li><b>Báo cáo tức thời:</b> Lãnh đạo nắm trọn tình hình cơ quan trên điện thoại, máy tính; xuất file Excel báo cáo chỉ với 1 click.</li>
+        </ul>
+      </div>
+    </div>
+    <ul class="points" style="margin-top:2px">
+      <li>Cán bộ thao tác xử lý văn bản bình thường trên <b>is.langson.gov.vn</b> — eWork tự động đồng bộ kết quả về <b>ework.expsolution.io</b>.</li>
+    </ul>
+    <div class="evidence">
+      <a href="https://is.langson.gov.vn" target="_blank">Cổng iOffice Lạng Sơn</a>
+      <a href="https://ework.expsolution.io" target="_blank">Cổng thông tin eWork</a>
+    </div>
+    <div class="punch">Đơn giản hóa quản lý — Đánh giá công vụ chính xác, minh bạch và không bỏ sót bất kỳ đầu việc nào.</div>
+  </div>
+  <div class="footer"><span>Hệ sinh thái eWork &amp; Extension — Hướng dẫn vận hành</span><span>2 / 14</span></div>
+</section>
+
+<!-- ================= SLIDE 3 — CÀI ĐẶT EXTENSION ================= -->
+<section class="slide">
+  <div class="titlebar"></div>
+  <h1><span class="kicker">Slide 3/14</span>Cài đặt Tiện ích eWork Assistant trên Chrome</h1>
+  <div class="body">
+    <div class="cols" style="gap:24px">
+      <div style="flex:1.15">
+        <div class="panel" style="margin-bottom:10px">
+          <h3>Các bước cài đặt cực kỳ đơn giản (dưới 1 phút)</h3>
+          <ul class="points small">
+            <li><b>Điều kiện sử dụng:</b> Tài khoản Google cá nhân được ban quản trị <b>thêm vào danh sách</b> cấp quyền sử dụng tiện ích.</li>
+            <li><b>Bước 1:</b> Mở trình duyệt Chrome, truy cập liên kết chính thức:
+              <br><a href="https://chromewebstore.google.com/detail/ework-assistant/afddjphmlgojfoimgahdgbplgafnbnha" target="_blank" style="color:var(--blue);font-weight:600;font-size:14px">chromewebstore.google.com/.../ework-assistant</a>
+            </li>
+            <li><b>Bước 2:</b> Bấm vào nút màu xanh <span class="badge" style="background:#2563eb">Thêm vào Chrome</span> (Add to Chrome).</li>
+            <li><b>Bước 3:</b> Xác nhận popup <i>"Thêm tiện ích eWork Assistant"</i>.</li>
+          </ul>
+        </div>
+        <div class="panel" style="background:var(--accent-light);border-color:#fde68a">
+          <div style="font-size:14px;line-height:1.45">
+            <b>💡 Mẹo nhỏ:</b> Sau khi cài đặt, bấm vào biểu tượng <b>Mảnh ghép</b> ở góc trên bên phải Chrome và chọn <b>Ghim (Pin)</b> icon eWork để dễ theo dõi trạng thái hoạt động.
+          </div>
+        </div>
+      </div>
+      <div class="figure" style="flex:1.25">
+        <a href="images/image27.png" target="_blank" onclick="openLightbox(event, 'images/image27.png')" title="Bấm để phóng to ảnh">
+          <img src="images/image27.png" alt="Giao diện cài đặt eWork Assistant trên Chrome Web Store">
+        </a>
+        <div class="cap">Giao diện cài đặt tiện ích trên Cửa hàng Chrome (Bấm vào ảnh để phóng to)</div>
+      </div>
+    </div>
+    <div class="evidence">
+      <a href="https://chromewebstore.google.com/detail/ework-assistant/afddjphmlgojfoimgahdgbplgafnbnha" target="_blank">Mở trang cài đặt tiện ích</a>
+    </div>
+    <div class="punch">Cài đặt 1 lần duy nhất trong 30 giây — Tiện ích tự động đồng hành cùng cán bộ trên iOffice.</div>
+  </div>
+  <div class="footer"><span>Hệ sinh thái eWork &amp; Extension — Hướng dẫn vận hành</span><span>3 / 14</span></div>
+</section>
+
+<!-- ================= SLIDE 4 — EXTENSION: VĂN BẢN ĐẾN ================= -->
+<section class="slide">
+  <div class="titlebar"></div>
+  <h1><span class="kicker">Slide 4/14 · TRÊN iOFFICE</span>Chuyển Văn bản đến — Giao việc rõ hạn, rõ điểm</h1>
+  <div class="body">
+    <div class="cols" style="gap:22px">
+      <div style="flex:1.2">
+        <div class="panel" style="margin-bottom:8px">
+          <h3>Hai trường hợp khi chuyển văn bản đến</h3>
+          <ul class="points small">
+            <li>
+              <b>1. Văn bản chỉ xem (không yêu cầu xử lý):</b>
+              <br>Gạt công tắc sang <span class="switch-demo"><span class="switch-toggle on"></span> Chỉ xem</span>
+              <br><small style="color:var(--muted)">Hệ thống cho phép chuyển tiếp ngay như bình thường, không yêu cầu điền điểm.</small>
+            </li>
+            <li style="margin-top:8px">
+              <b>2. Văn bản giao chuyên viên thực hiện:</b>
+              <br>Cán bộ lãnh đạo chỉ cần điền thêm 2 thông tin:
+              <br>• <b>Hạn xử lý:</b> Thời hạn chuyên viên phải hoàn thành nhiệm vụ.
+              <br>• <b>Số điểm (KPI):</b> Điểm đánh giá trọng số của công việc.
+            </li>
+          </ul>
+        </div>
+        <div class="panel" style="background:#fee2e2;border-color:#fca5a5">
+          <div style="font-size:13.5px;color:#991b1b;line-height:1.4">
+            <b>⚠️ Tự động nhắc nhở:</b> Nếu là văn bản cần xử lý mà <b>quên chưa điền hạn hoặc số điểm</b>, tiện ích sẽ tạm thời khóa nút Chuyển và nhắc cán bộ điền đủ để đảm bảo giao việc rõ ràng.
+          </div>
+        </div>
+      </div>
+      <div class="figure" style="flex:1.3">
+        <a href="images/image32.png" target="_blank" onclick="openLightbox(event, 'images/image32.png')" title="Bấm để phóng to ảnh">
+          <img src="images/image32.png" alt="Form chuyển văn bản đến có chèn giao diện Extension eWork">
+        </a>
+        <div class="cap">Giao diện chuyển tiếp Văn bản đến: Công tắc "Chỉ xem", ô Hạn xử lý &amp; Số điểm</div>
+      </div>
+    </div>
+    <div class="punch">Đảm bảo 100% công việc giao cho chuyên viên đều có thời hạn hoàn thành và điểm số cụ thể.</div>
+  </div>
+  <div class="footer"><span>Hệ sinh thái eWork &amp; Extension — Hướng dẫn vận hành</span><span>4 / 14</span></div>
+</section>
+
+<!-- ================= SLIDE 5 — EXTENSION: VĂN BẢN ĐI & C2 ================= -->
+<section class="slide">
+  <div class="titlebar"></div>
+  <h1><span class="kicker">Slide 5/14 · TRÊN iOFFICE</span>Xử lý Văn bản đi &amp; Ghi nhận Kết quả công việc</h1>
+  <div class="body">
+    <div class="cols" style="gap:20px">
+      <div style="flex:1.15">
+        <div class="panel" style="margin-bottom:8px">
+          <h3>Ghi nhận kết quả thực hiện văn bản đi</h3>
+          <ul class="points small">
+            <li>
+              <b>1. Văn bản hành chính thông thường (không tính KPI):</b>
+              <br>Bật công tắc <span class="switch-demo"><span class="switch-toggle on"></span> Bỏ qua</span> rồi chuyển tiếp bình thường.
+            </li>
+            <li style="margin-top:6px">
+              <b>2. Văn bản là Sản phẩm hoàn thành:</b>
+              <br>Lãnh đạo khi duyệt phát hành văn bản sẽ cho điểm:
+              <br>• <b>Điểm:</b> Điểm đánh giá chất lượng văn bản soạn thảo.
+              <br>• <b>Lần làm lại:</b> Mặc định là <code>0</code> (nếu chuyên viên bị trả lại yêu cầu sửa đổi, điền số lần sửa).
+            </li>
+            <li style="margin-top:6px">
+              <b>Dự thảo Văn bản đi C2:</b> Thao tác hoàn toàn tương tự đối với chuyên viên cấp 2.
+            </li>
+          </ul>
+        </div>
+        <div class="panel" style="background:#e0f2fe;border-color:#bae6fd">
+          <div style="font-size:13px;line-height:1.4">
+            <b>💡 Tự động hóa:</b> Cán bộ không cần mở phần mềm khác, tiện ích tự động lưu điểm và chuyển số liệu về eWork để tính thi đua cho chuyên viên.
+          </div>
+        </div>
+      </div>
+      <div class="cols" style="flex:1.35;gap:10px">
+        <div class="figure">
+          <a href="images/image14.png" target="_blank" onclick="openLightbox(event, 'images/image14.png')" title="Bấm để phóng to ảnh">
+            <img src="images/image14.png" alt="Xử lý văn bản đi">
+          </a>
+          <div class="cap">Xử lý Văn bản đi: Nhập Điểm &amp; Lần sửa</div>
+        </div>
+        <div class="figure">
+          <a href="images/image4.png" target="_blank" onclick="openLightbox(event, 'images/image4.png')" title="Bấm để phóng to ảnh">
+            <img src="images/image4.png" alt="Dự thảo văn bản đi C2">
+          </a>
+          <div class="cap">Dự thảo Văn bản đi C2</div>
+        </div>
+      </div>
+    </div>
+    <div class="punch">Mỗi văn bản đi phát hành được ghi nhận thành tích công việc tức thì, chuẩn xác và công bằng.</div>
+  </div>
+  <div class="footer"><span>Hệ sinh thái eWork &amp; Extension — Hướng dẫn vận hành</span><span>5 / 14</span></div>
+</section>
+
+<!-- ================= SLIDE 6 — EWORK: PHÂN QUYỀN & TRUY CẬP ================= -->
+<section class="slide">
+  <div class="titlebar"></div>
+  <h1><span class="kicker">Slide 6/14 · TRÊN eWORK</span>Truy cập eWork &amp; Phân quyền theo Vai trò</h1>
+  <div class="body">
+    <div class="cols" style="gap:24px">
+      <div style="flex:1.15">
+        <div class="panel" style="margin-bottom:8px">
+          <h3>Thông tin đăng nhập rất tiện lợi</h3>
+          <ul class="points small">
+            <li><b>Địa chỉ truy cập:</b> <a href="https://ework.expsolution.io" target="_blank" style="color:var(--blue);font-weight:700">https://ework.expsolution.io</a></li>
+            <li><b>Tên đăng nhập:</b> Dùng chung tài khoản với hệ thống iOffice Lạng Sơn (<a href="https://is.langson.gov.vn" target="_blank">is.langson.gov.vn</a>).</li>
+            <li><b>Mật khẩu ban đầu:</b> Nhập số <code>0</code> (sau khi vào hệ thống, cán bộ tự đổi mật khẩu theo ý mình tại mục Cài đặt).</li>
+          </ul>
+        </div>
+        <table>
+          <tr><th style="width:38%">Vai trò</th><th>Chức năng chính</th></tr>
+          <tr>
+            <td><b>Nhóm Lãnh đạo<br>(TP / CVP / LDX)</b></td>
+            <td>Theo dõi tiến độ toàn cơ quan · Xem văn bản &amp; sản phẩm các phòng ban · Quản lý bảng KPI đơn vị · Phê duyệt việc ngoài hệ thống · Duyệt khiếu nại.</td>
+          </tr>
+          <tr>
+            <td><b>Nhóm Chuyên viên<br>(CV)</b></td>
+            <td>Quản lý công việc và sản phẩm cá nhân · Tự kiểm tra bảng điểm KPI của mình · Khai báo công việc ngoài hệ thống · Gửi khiếu nại nếu điểm chưa thỏa đáng.</td>
+          </tr>
+        </table>
+      </div>
+      <div class="figure" style="flex:1.25">
+        <a href="images/image9.png" target="_blank" onclick="openLightbox(event, 'images/image9.png')" title="Bấm để phóng to ảnh">
+          <img src="images/image9.png" alt="Giao diện đăng nhập hệ thống eWork">
+        </a>
+        <div class="cap">Giao diện đăng nhập hệ thống eWork tại ework.expsolution.io</div>
+      </div>
+    </div>
+    <div class="punch">Sử dụng chung tài khoản iOffice quen thuộc — Giao diện thân thiện, dễ dùng cho mọi cán bộ.</div>
+  </div>
+  <div class="footer"><span>Hệ sinh thái eWork &amp; Extension — Hướng dẫn vận hành</span><span>6 / 14</span></div>
+</section>
+
+<!-- ================= SLIDE 7 — LÃNH ĐẠO: TỔNG QUAN & VĂN BẢN ================= -->
+<section class="slide">
+  <div class="titlebar"></div>
+  <h1><span class="kicker">Slide 7/14 · DÀNH CHO LÃNH ĐẠO</span>Bàn làm việc Lãnh đạo — Giám sát Công việc &amp; Sản phẩm</h1>
+  <div class="body">
+    <div class="cols-3" style="gap:14px">
+      <div class="panel">
+        <h3>1. Bàn làm việc Tổng quan</h3>
+        <div class="figure" style="margin:6px 0">
+          <a href="images/image5.png" target="_blank" onclick="openLightbox(event, 'images/image5.png')">
+            <img src="images/image5.png" alt="Trang tổng quan lãnh đạo" style="max-height:175px">
+          </a>
+        </div>
+        <ul class="points tiny">
+          <li>Xem nhanh toàn bộ công việc hiện tại của cả cơ quan theo thời gian thực.</li>
+          <li>Nắm bắt số lượng văn bản mới, nhiệm vụ quá hạn và các việc chờ duyệt.</li>
+        </ul>
+      </div>
+
+      <div class="panel">
+        <h3>2. Theo dõi Văn bản</h3>
+        <div class="figure" style="margin:6px 0">
+          <a href="images/image16.png" target="_blank" onclick="openLightbox(event, 'images/image16.png')">
+            <img src="images/image16.png" alt="Trang văn bản cơ quan" style="max-height:175px">
+          </a>
+        </div>
+        <ul class="points tiny">
+          <li>Theo dõi danh sách các văn bản đang thực hiện của từng phòng ban.</li>
+          <li>Bấm vào văn bản bất kỳ để xem chi tiết từng bước chuyên viên xử lý.</li>
+        </ul>
+      </div>
+
+      <div class="panel">
+        <h3>3. Kho Sản phẩm hoàn thành</h3>
+        <div class="figure" style="margin:6px 0">
+          <a href="images/image23.png" target="_blank" onclick="openLightbox(event, 'images/image23.png')">
+            <img src="images/image23.png" alt="Sản phẩm văn bản đi" style="max-height:175px">
+          </a>
+        </div>
+        <ul class="points tiny">
+          <li>Tổng hợp các văn bản đi do chuyên viên thực hiện đã hoàn thành.</li>
+          <li>Được Chánh văn phòng hoặc Lãnh đạo phê duyệt ban hành chính thức.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="punch">Lãnh đạo nắm trọn tình hình cơ quan mọi lúc, mọi nơi mà không cần chờ báo cáo giấy.</div>
+  </div>
+  <div class="footer"><span>Hệ sinh thái eWork &amp; Extension — Hướng dẫn vận hành</span><span>7 / 14</span></div>
+</section>
+
+<!-- ================= SLIDE 8 — LÃNH ĐẠO: HIỆU SUẤT KPI ================= -->
+<section class="slide">
+  <div class="titlebar"></div>
+  <h1><span class="kicker">Slide 8/14 · DÀNH CHO LÃNH ĐẠO</span>Đánh giá Hiệu suất (KPI) &amp; Xuất Báo cáo Excel</h1>
+  <div class="body">
+    <div class="cols" style="gap:22px">
+      <div style="flex:1.15">
+        <div class="panel" style="margin-bottom:8px">
+          <h3>Bảng theo dõi Hiệu suất làm việc (KPI)</h3>
+          <ul class="points small">
+            <li><b>Xếp hạng thi đua rõ ràng:</b> Hiển thị điểm số hiệu suất làm việc của từng chuyên viên, trưởng phòng trong cơ quan.</li>
+            <li><b>Chấm điểm tự động:</b> Tổng hợp từ văn bản hoàn thành (có trừ điểm nếu bị trả lại sửa nhiều lần) và các việc ngoài hệ thống đã duyệt.</li>
+            <li><b>Lọc theo thời gian:</b> Dễ dàng xem theo tuần, tháng, quý hoặc khoảng thời gian tùy chọn.</li>
+            <li><b>Xuất báo cáo Excel 1 click:</b> Tải về file Excel bảng tổng hợp KPI hoàn chỉnh phục vụ họp đánh giá cán bộ cuối kỳ.</li>
+          </ul>
+        </div>
+        <div class="figure">
+          <a href="images/image1.png" target="_blank" onclick="openLightbox(event, 'images/image1.png')" title="Bấm để phóng to ảnh">
+            <img src="images/image1.png" alt="Báo cáo Excel KPI tổng hợp" style="max-height:165px">
+          </a>
+          <div class="cap">Mẫu bảng Excel tổng hợp KPI tải về từ hệ thống</div>
+        </div>
+      </div>
+      <div class="figure" style="flex:1.35">
+        <a href="images/image30.png" target="_blank" onclick="openLightbox(event, 'images/image30.png')" title="Bấm để phóng to ảnh">
+          <img src="images/image30.png" alt="Giao diện bảng hiệu suất KPI toàn cơ quan">
+        </a>
+        <div class="cap">Giao diện Bảng Hiệu suất (KPI) cơ quan tại trang eWork</div>
+      </div>
+    </div>
+    <div class="punch">Đánh giá thi đua công bằng, chính xác dựa trên số liệu thực tế — Xóa bỏ hoàn toàn cảm tính.</div>
+  </div>
+  <div class="footer"><span>Hệ sinh thái eWork &amp; Extension — Hướng dẫn vận hành</span><span>8 / 14</span></div>
+</section>
+
+<!-- ================= SLIDE 9 — LỊCH CÔNG VIỆC NGOÀI HỆ THỐNG ================= -->
+<section class="slide">
+  <div class="titlebar"></div>
+  <h1><span class="kicker">Slide 9/14</span>Quản lý Công việc ngoài hệ thống (Lịch việc)</h1>
+  <div class="body">
+    <div class="flow">
+      <div class="step">
+        <b>1. Bấm Khai báo việc</b>
+        <small>Tại trang Lịch công việc<br>(ảnh 12, 15, 29)</small>
+      </div>
+      <div class="arrow">→</div>
+      <div class="step">
+        <b>2. Nhập thông tin việc</b>
+        <small>Cửa sổ trượt hiển thị:<br>tên việc, thời gian, mô tả</small>
+      </div>
+      <div class="arrow">→</div>
+      <div class="step">
+        <b>3. Gửi yêu cầu duyệt</b>
+        <small>Chuyên viên gửi cấp trên<br>(Lãnh đạo tự tạo nhanh)</small>
+      </div>
+      <div class="arrow">→</div>
+      <div class="step">
+        <b>4. Lãnh đạo Duyệt</b>
+        <small>Xem xét nội dung việc,<br>bấm Duyệt task (ảnh 24, 7)</small>
+      </div>
+    </div>
+
+    <div class="cols" style="gap:16px;margin-top:6px">
+      <div class="figure">
+        <a href="images/image12.png" target="_blank" onclick="openLightbox(event, 'images/image12.png')">
+          <img src="images/image12.png" alt="Trang Lịch công việc" style="max-height:210px">
+        </a>
+        <div class="cap">Giao diện Lịch công việc ngoài hệ thống</div>
+      </div>
+      <div class="figure">
+        <a href="images/image18.png" target="_blank" onclick="openLightbox(event, 'images/image18.png')">
+          <img src="images/image18.png" alt="Cửa sổ khai báo việc" style="max-height:210px">
+        </a>
+        <div class="cap">Cửa sổ nhập thông tin khai báo công việc</div>
+      </div>
+      <div class="figure">
+        <a href="images/image7.png" target="_blank" onclick="openLightbox(event, 'images/image7.png')">
+          <img src="images/image7.png" alt="Duyệt task của lãnh đạo" style="max-height:210px">
+        </a>
+        <div class="cap">Lãnh đạo xem xét và Duyệt task</div>
+      </div>
+    </div>
+    <div class="punch">Ghi nhận đầy đủ mọi nỗ lực thực tế của cán bộ — Đi họp, trực ban, kiểm tra cơ sở đều được tính điểm.</div>
+  </div>
+  <div class="footer"><span>Hệ sinh thái eWork &amp; Extension — Hướng dẫn vận hành</span><span>9 / 14</span></div>
+</section>
+
+<!-- ================= SLIDE 10 — KHIẾU NẠI & PHÊ DUYỆT ĐIỂM ================= -->
+<section class="slide">
+  <div class="titlebar"></div>
+  <h1><span class="kicker">Slide 10/14</span>Cơ chế Khiếu nại &amp; Xem xét lại Điểm đánh giá</h1>
+  <div class="body">
+    <div class="cols" style="gap:20px">
+      <div class="panel" style="flex:1">
+        <h3>1. Chuyên viên gửi khiếu nại</h3>
+        <ul class="points small">
+          <li>Áp dụng khi sản phẩm làm ra chưa được mức điểm như kỳ vọng hoặc số lần làm lại chưa chính xác.</li>
+          <li>Bấm nút <b>"Khiếu nại sản phẩm"</b> tại danh sách.</li>
+          <li>Nhập <b>Điểm đề xuất</b> hoặc <b>Lần sửa đề xuất</b> kèm theo <b>Lý do giải trình cụ thể</b>, sau đó gửi duyệt.</li>
+        </ul>
+        <div class="figure" style="margin-top:8px">
+          <a href="images/image17.png" target="_blank" onclick="openLightbox(event, 'images/image17.png')">
+            <img src="images/image17.png" alt="Form gửi khiếu nại của chuyên viên" style="max-height:180px">
+          </a>
+          <div class="cap">Form chuyên viên gửi đề xuất và lý do khiếu nại</div>
+        </div>
+      </div>
+
+      <div class="panel" style="flex:1">
+        <h3>2. Lãnh đạo xem xét &amp; Quyết định</h3>
+        <ul class="points small">
+          <li>Lãnh đạo nhận được thông báo chuông tức thì khi có chuyên viên khiếu nại về điểm sản phẩm.</li>
+          <li>Xem xét đối chiếu lại hồ sơ văn bản và ý kiến giải trình.</li>
+          <li>Xác nhận <b>Mức điểm cuối cùng</b> và <b>Ý kiến phản hồi</b>.</li>
+          <li>Tiến hành bấm <b>Duyệt</b> hoặc <b>Từ chối khiếu nại</b>.</li>
+        </ul>
+        <div class="figure" style="margin-top:8px">
+          <a href="images/image8.png" target="_blank" onclick="openLightbox(event, 'images/image8.png')">
+            <img src="images/image8.png" alt="Form lãnh đạo duyệt hoặc từ chối khiếu nại" style="max-height:180px">
+          </a>
+          <div class="cap">Form Lãnh đạo chốt điểm và Duyệt/Từ chối</div>
+        </div>
+      </div>
+    </div>
+    <div class="punch">Lắng nghe và phản hồi hai chiều — Bảo vệ quyền lợi chính đáng của cán bộ, xây dựng môi trường dân chủ.</div>
+  </div>
+  <div class="footer"><span>Hệ sinh thái eWork &amp; Extension — Hướng dẫn vận hành</span><span>10 / 14</span></div>
+</section>
+
+<!-- ================= SLIDE 11 — CHUYÊN VIÊN: QUẢN LÝ CÔNG VIỆC & KPI ================= -->
+<section class="slide">
+  <div class="titlebar"></div>
+  <h1><span class="kicker">Slide 11/14 · DÀNH CHO CHUYÊN VIÊN</span>Bàn làm việc Chuyên viên — Nắm bắt Việc &amp; Điểm cá nhân</h1>
+  <div class="body">
+    <div class="cols-3" style="gap:14px">
+      <div class="panel">
+        <h3>1. Việc cần làm của tôi</h3>
+        <div class="figure" style="margin:6px 0">
+          <a href="images/image19.png" target="_blank" onclick="openLightbox(event, 'images/image19.png')">
+            <img src="images/image19.png" alt="Tổng quan cá nhân chuyên viên" style="max-height:175px">
+          </a>
+        </div>
+        <ul class="points tiny">
+          <li>Xem toàn bộ danh sách nhiệm vụ cá nhân được phân công.</li>
+          <li>Biết ngay việc nào cần ưu tiên, văn bản nào sắp đến hạn xử lý.</li>
+        </ul>
+      </div>
+
+      <div class="panel">
+        <h3>2. Văn bản &amp; Sản phẩm</h3>
+        <div class="figure" style="margin:6px 0">
+          <a href="images/image22.png" target="_blank" onclick="openLightbox(event, 'images/image22.png')">
+            <img src="images/image22.png" alt="Trang văn bản chuyên viên" style="max-height:175px">
+          </a>
+        </div>
+        <ul class="points tiny">
+          <li>Theo dõi tiến độ các văn bản mình đang trực tiếp giải quyết.</li>
+          <li>Quản lý danh sách các văn bản đi đã hoàn thành và được duyệt.</li>
+        </ul>
+      </div>
+
+      <div class="panel">
+        <h3>3. Điểm KPI cá nhân</h3>
+        <div class="figure" style="margin:6px 0">
+          <a href="images/image10.png" target="_blank" onclick="openLightbox(event, 'images/image10.png')">
+            <img src="images/image10.png" alt="Hiệu suất KPI chuyên viên" style="max-height:175px">
+          </a>
+        </div>
+        <ul class="points tiny">
+          <li>Tự xem chi tiết mình được bao nhiêu điểm, bị trừ ở đâu.</li>
+          <li>Tải file Excel bảng tổng hợp điểm của bản thân về máy đối soát.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="punch">Chuyên viên chủ động sắp xếp công việc, tự theo dõi và phấn đấu nâng cao năng suất mỗi ngày.</div>
+  </div>
+  <div class="footer"><span>Hệ sinh thái eWork &amp; Extension — Hướng dẫn vận hành</span><span>11 / 14</span></div>
+</section>
+
+<!-- ================= SLIDE 12 — BÁO CÁO QUÁ HẠN & CẢNH BÁO ================= -->
+<section class="slide">
+  <div class="titlebar"></div>
+  <h1><span class="kicker">Slide 12/14</span>Theo dõi Quá hạn &amp; Nhắc việc Thông minh</h1>
+  <div class="body">
+    <div class="cols" style="gap:22px">
+      <div style="flex:1.25">
+        <div class="panel" style="margin-bottom:10px">
+          <h3>Trang Báo cáo Quá hạn tập trung</h3>
+          <ul class="points small">
+            <li><b>Thống kê rõ ràng:</b> Hiển thị danh sách các văn bản, nhiệm vụ đã quá hạn để lãnh đạo kịp thời đôn đốc.</li>
+            <li><b>Lọc nhanh:</b> Phân loại theo phòng ban hoặc theo từng chuyên viên phụ trách chính.</li>
+            <li><b>Xuất file Excel:</b> Tải danh sách văn bản chậm muộn để chỉ đạo, đôn đốc trong các cuộc họp giao ban đầu tuần.</li>
+          </ul>
+        </div>
+        <div class="figure">
+          <a href="images/image33.png" target="_blank" onclick="openLightbox(event, 'images/image33.png')" title="Bấm để phóng to ảnh">
+            <img src="images/image33.png" alt="Giao diện trang báo cáo quá hạn" style="max-height:220px">
+          </a>
+          <div class="cap">Giao diện Báo cáo quá hạn &amp; Nút tải file Excel</div>
+        </div>
+      </div>
+
+      <div style="flex:1">
+        <div class="panel" style="margin-bottom:10px">
+          <h3>Nhắc việc &amp; Đổi mật khẩu</h3>
+          <ul class="points small">
+            <li><b>Chuông thông báo:</b> Tự động nhắc nhở khi có việc mới được giao, việc được duyệt hoặc khi sắp đến hạn.</li>
+            <li><b>Bảo mật tài khoản:</b> Cán bộ chủ động vào phần Cài đặt để <b>đổi mật khẩu</b> dễ dàng.</li>
+          </ul>
+        </div>
+        <div class="cols" style="gap:10px">
+          <div class="figure">
+            <a href="images/image31.png" target="_blank" onclick="openLightbox(event, 'images/image31.png')">
+              <img src="images/image31.png" alt="Thông báo hệ thống" style="max-height:160px">
+            </a>
+            <div class="cap">Chuông thông báo</div>
+          </div>
+          <div class="figure">
+            <a href="images/image21.png" target="_blank" onclick="openLightbox(event, 'images/image21.png')">
+              <img src="images/image21.png" alt="Cài đặt đổi mật khẩu" style="max-height:160px">
+            </a>
+            <div class="cap">Đổi mật khẩu tài khoản</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="punch">Chuyển từ đôn đốc thủ công sang nhắc việc tự động — Không để văn bản bị tồn đọng, chậm muộn.</div>
+  </div>
+  <div class="footer"><span>Hệ sinh thái eWork &amp; Extension — Hướng dẫn vận hành</span><span>12 / 14</span></div>
+</section>
+
+<!-- ================= SLIDE 13 — BẢNG ĐỐI CHIẾU & GIÁ TRỊ ================= -->
+<section class="slide">
+  <div class="titlebar"></div>
+  <h1><span class="kicker">Slide 13/14</span>Tổng hợp Phân quyền &amp; 4 Lợi ích Cốt lõi</h1>
+  <div class="body">
+    <table>
+      <tr>
+        <th style="width:24%">Nghiệp vụ</th>
+        <th style="width:31%">Lãnh đạo (TP / CVP / LDX)</th>
+        <th style="width:27%">Chuyên viên (CV)</th>
+        <th style="width:18%">eWork Extension</th>
+      </tr>
+      <tr>
+        <td><b>Đăng nhập</b></td>
+        <td>Tài khoản iOffice, MK ban đầu: <code>0</code></td>
+        <td>Tài khoản iOffice, MK ban đầu: <code>0</code></td>
+        <td>Tự động nhận diện tài khoản</td>
+      </tr>
+      <tr>
+        <td><b>Xử lý Văn bản đến</b></td>
+        <td>Giao việc cho phòng ban / chuyên viên</td>
+        <td>Nhận và phối hợp xử lý</td>
+        <td>Công tắc "Chỉ xem" / Nhắc hạn &amp; điểm</td>
+      </tr>
+      <tr>
+        <td><b>Xử lý Văn bản đi / C2</b></td>
+        <td>Đánh giá chất lượng &amp; cho điểm</td>
+        <td>Soạn thảo văn bản, trình ký</td>
+        <td>Công tắc "Bỏ qua" / Ghi nhận điểm &amp; lần sửa</td>
+      </tr>
+      <tr>
+        <td><b>Hiệu suất (KPI)</b></td>
+        <td>Quản lý toàn cơ quan, xuất Excel</td>
+        <td>Tự theo dõi cá nhân, xuất Excel</td>
+        <td>Tự động thu thập dữ liệu</td>
+      </tr>
+      <tr>
+        <td><b>Việc ngoài hệ thống</b></td>
+        <td>Xem xét và Phê duyệt việc</td>
+        <td>Khai báo việc, gửi yêu cầu duyệt</td>
+        <td>—</td>
+      </tr>
+      <tr>
+        <td><b>Khiếu nại điểm</b></td>
+        <td>Thẩm định và chốt lại điểm</td>
+        <td>Gửi đề xuất điểm &amp; lý do</td>
+        <td>—</td>
+      </tr>
+    </table>
+
+    <div class="cols-4" style="margin-top:6px">
+      <div class="panel" style="padding:8px 12px">
+        <h3 style="font-size:14.5px;margin-bottom:3px">1. Dễ sử dụng</h3>
+        <div style="font-size:12px;line-height:1.35;color:var(--muted)">Làm việc quen thuộc trên iOffice, không mất thời gian học phần mềm mới.</div>
+      </div>
+      <div class="panel" style="padding:8px 12px">
+        <h3 style="font-size:14.5px;margin-bottom:3px">2. Tự động 100%</h3>
+        <div style="font-size:12px;line-height:1.35;color:var(--muted)">Số liệu điểm và thời hạn được lưu tự động, không nhập liệu 2 lần.</div>
+      </div>
+      <div class="panel" style="padding:8px 12px">
+        <h3 style="font-size:14.5px;margin-bottom:3px">3. Không sót việc</h3>
+        <div style="font-size:12px;line-height:1.35;color:var(--muted)">Ghi nhận đầy đủ mọi nhiệm vụ thực tế ngoài văn bản giấy tờ.</div>
+      </div>
+      <div class="panel" style="padding:8px 12px">
+        <h3 style="font-size:14.5px;margin-bottom:3px">4. Minh bạch thi đua</h3>
+        <div style="font-size:12px;line-height:1.35;color:var(--muted)">Đánh giá cán bộ bằng kết quả định lượng thực tế, có phản biện 2 chiều.</div>
+      </div>
+    </div>
+    <div class="punch">eWork và Extension: Bộ công cụ đắc lực nâng cao kỷ luật, kỷ cương và hiệu quả công vụ.</div>
+  </div>
+  <div class="footer"><span>Hệ sinh thái eWork &amp; Extension — Hướng dẫn vận hành</span><span>13 / 14</span></div>
+</section>
+
+<!-- ================= SLIDE 14 — CẢM ƠN & KẾT THÚC ================= -->
+<section class="slide cover cover-video">
+  <div class="cover-overlay"></div>
+  <div class="cover-grid" aria-hidden="true"></div>
+  <div class="cover-orb cover-orb-a" aria-hidden="true"></div>
+  <div class="cover-orb cover-orb-b" aria-hidden="true"></div>
+
+  <div class="cover-content">
+    <div class="cover-top">
+      <span class="cover-org">Tỉnh Lạng Sơn · Hệ thống Điều hành Công việc &amp; Quản trị Hiệu suất</span>
+      <span class="cover-tag">Tài liệu Vận hành · 2026</span>
+    </div>
+
+    <div class="cover-main">
+      <div class="cover-badge">Kết thúc phần trình bày</div>
+
+      <h1>
+        <span class="l1">Trân trọng cảm ơn</span>
+        <span class="l2">Quý Lãnh đạo &amp; Cán bộ cơ quan</span>
+      </h1>
+
+      <div class="cover-rule"></div>
+
+      <p class="cover-sub">Kính chúc các đồng chí sức khỏe và vận hành hiệu quả hệ thống. Toàn bộ tài liệu hướng dẫn và phần mềm được truy cập tại các cổng dịch vụ bên dưới.</p>
+
+      <div class="cover-stats">
+        <div><b>ework.expsolution.io</b><span>Cổng quản lý eWork</span></div>
+        <div><b>is.langson.gov.vn</b><span>eOffice Lạng Sơn</span></div>
+        <div><b>eWork Assistant</b><span>Tiện ích mở rộng Chrome</span></div>
+        <div><b>Tự động hóa KPI</b><span>Hỗ trợ kỹ thuật 24/7</span></div>
+      </div>
+    </div>
+
+    <div class="cover-bottom">
+      <span class="dom">ework.expsolution.io</span>
+      <span class="cover-dots"><i></i><i></i><i></i></span>
+      <span>Hệ thống Quản lý eWork &amp; Extension</span>
+    </div>
+  </div>
+</section>
+
+</div></div>
+
+<!-- ================= ĐIỀU KHIỂN & THANH TIẾN TRÌNH ================= -->
+<div id="hud">
+  <button onclick="nav(-1)" title="Slide trước (← / PageUp)">‹</button>
+  <span id="counter" style="font-weight:600;min-width:55px;text-align:center">1 / 14</span>
+  <button onclick="nav(1)" title="Slide sau (→ / Space / PageDown)">›</button>
+  <button onclick="toggleBackdrop()" title="Chế độ phông nền sự kiện (B) — ẩn điều khiển">▣</button>
+  <button onclick="toggleFS()" title="Toàn màn hình (F)">⛶</button>
+</div>
+<div id="progress"></div>
+<div id="toast"></div>
+
+<!-- Lightbox Modal -->
+<div id="lightbox" onclick="closeLightbox()">
+  <img id="lightbox-img" src="" alt="Ảnh phóng to">
+</div>
+
+<script>
+  const slides = Array.from(document.querySelectorAll('.slide'));
+  let cur = Math.min(Math.max((parseInt(location.hash.slice(1)) || 1) - 1, 0), slides.length - 1);
+
+  function show(i) {
+    cur = Math.min(Math.max(i, 0), slides.length - 1);
+    slides.forEach((s, k) => {
+      s.classList.toggle('active', k === cur);
+    });
+    document.getElementById('counter').textContent = (cur + 1) + ' / ' + slides.length;
+    document.getElementById('progress').style.width = ((cur + 1) / slides.length * 100) + '%';
+    history.replaceState(null, '', '#' + (cur + 1));
+  }
+  function nav(d) { show(cur + d); }
+
+  let toastT;
+  function toast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('on');
+    clearTimeout(toastT);
+    toastT = setTimeout(() => t.classList.remove('on'), 2600);
+  }
+
+  function toggleBackdrop() {
+    const on = document.body.classList.toggle('backdrop');
+    toast(on ? 'Chế độ phông nền: bấm chuột không chuyển slide — nhấn B để thoát' : 'Đã thoát chế độ phông nền');
+  }
+
+  function toggleFS() {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen();
+  }
+
+  function fit() {
+    const s = Math.min(innerWidth / 1300, innerHeight / 740);
+    document.getElementById('stage').style.transform = 'scale(' + s + ')';
+  }
+
+  // Lightbox view
+  function openLightbox(e, src) {
+    e.preventDefault();
+    e.stopPropagation();
+    const lb = document.getElementById('lightbox');
+    const img = document.getElementById('lightbox-img');
+    img.src = src;
+    lb.classList.add('active');
+  }
+  function closeLightbox() {
+    document.getElementById('lightbox').classList.remove('active');
+  }
+
+  addEventListener('resize', fit);
+  addEventListener('keydown', (e) => {
+    if (document.getElementById('lightbox').classList.contains('active')) {
+      if (e.key === 'Escape') closeLightbox();
+      return;
+    }
+    if (['ArrowRight', 'PageDown', ' '].includes(e.key)) { e.preventDefault(); nav(1); }
+    else if (['ArrowLeft', 'PageUp'].includes(e.key)) { e.preventDefault(); nav(-1); }
+    else if (e.key === 'Home') show(0);
+    else if (e.key === 'End') show(slides.length - 1);
+    else if (e.key.toLowerCase() === 'f') toggleFS();
+    else if (e.key.toLowerCase() === 'b') toggleBackdrop();
+    else if (/^[0-9]$/.test(e.key)) show((e.key === '0' ? 10 : parseInt(e.key)) - 1);
+  });
+
+  addEventListener('click', (e) => {
+    if (e.target.closest('#hud') || e.target.closest('#lightbox') || e.target.closest('a')) return;
+    if (document.body.classList.contains('backdrop')) return;
+    nav(e.clientX > innerWidth / 2 ? 1 : -1);
+  });
+
+  addEventListener('hashchange', () => {
+    const n = parseInt(location.hash.slice(1));
+    if (n >= 1 && n <= slides.length) show(n - 1);
+  });
+
+  // Tự động kiểm tra và co chữ chống tràn khung 1280x720
+  const BLOCK = new Set(['block', 'flex', 'grid', 'list-item', 'table', 'flow-root']);
+  function overflowOf(sl) {
+    const footer = sl.querySelector('.footer');
+    const limit = (footer ? footer.getBoundingClientRect().top : sl.getBoundingClientRect().bottom) - 4;
+    let worst = 0;
+    sl.querySelectorAll('.body, .body *').forEach((el) => {
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || !BLOCK.has(cs.display)) return;
+      const r = el.getBoundingClientRect();
+      if (r.height > 0 && r.bottom - limit > worst) worst = r.bottom - limit;
+    });
+    sl.querySelectorAll('.cols > div, .panel, .figure').forEach((box) => {
+      if (getComputedStyle(box).overflow !== 'visible') return;
+      const rb = box.getBoundingClientRect();
+      if (rb.height === 0) return;
+      let deep = rb.bottom;
+      box.querySelectorAll('*').forEach((el) => {
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || !BLOCK.has(cs.display)) return;
+        const r = el.getBoundingClientRect();
+        if (r.height > 0 && r.bottom > deep) deep = r.bottom;
+      });
+      if (deep - rb.bottom - 2 > worst) worst = deep - rb.bottom - 2;
+    });
+    return worst;
+  }
+
+  function fitSlide(sl) {
+    const body = sl.querySelector('.body');
+    if (!body) return 1;
+    const wasActive = sl.classList.contains('active');
+    if (!wasActive) sl.classList.add('active');
+    body.style.zoom = '';
+    let z = 1;
+    for (let i = 0; i < 8 && overflowOf(sl) > 0; i++) {
+      z = Math.round((z - 0.02) * 100) / 100;
+      if (z < 0.84) break;
+      body.style.zoom = z;
+    }
+    if (!wasActive) sl.classList.remove('active');
+    return z;
+  }
+  function fitAll() { slides.forEach(fitSlide); }
+
+  fit();
+  show(cur);
+  fitAll();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitAll);
+</script>
+</body>
+</html>

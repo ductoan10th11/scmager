@@ -35,3 +35,10 @@ export const deleteUser = async (req: Request, res: Response, next: NextFunction
     res.status(204).send();
   } catch (err) { next(err); }
 };
+
+export const changePassword = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const result = await userService.changePassword((req as any).currentUser, req.params.id, req.body);
+    res.status(200).json(result);
+  } catch (err) { next(err); }
+};

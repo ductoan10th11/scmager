@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import {
+  changePassword,
   createUser,
   deleteUser,
   getUserById,
@@ -11,6 +12,8 @@ import { requireAuth } from '../middlewares/auth.middleware';
 const router = Router();
 
 router.use(requireAuth);
+
+router.put('/:id/password', changePassword);
 
 router.route('/')
   .get(listUsers)

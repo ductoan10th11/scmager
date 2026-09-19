@@ -20,10 +20,17 @@ export const duplicateConflict = (err: unknown) => {
   return { message: "Giá trị đã tồn tại.", details: undefined };
 };
 
+app.set("etag", false);
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(correlationMiddleware);
+app.use((req, res, next) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+  next();
+});
 
 app.get("/", (req, res) => {
   res.json({ message: "eWork Backend API is running!" });

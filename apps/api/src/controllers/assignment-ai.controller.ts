@@ -1,6 +1,6 @@
 import { NextFunction, Request, Response } from 'express';
 import { streamAssignmentAiChat } from '../services/assignment-ai.service';
-import { getChatSessionHistory } from '../services/chat-session.service';
+import { clearChatSessionHistory, getChatSessionHistory } from '../services/chat-session.service';
 
 const writeEvent = (res: Response, event: string, data: unknown) => {
   if (res.writableEnded) return;
@@ -28,15 +28,14 @@ export const chatAssignmentAi = async (req: Request, res: Response, next: NextFu
     writeEvent(res, 'done', {});
     res.end();
   } catch (error: any) {
+    console.error('[AssignmentAI] Chat stream error:', error?.message || error);
     if (!res.headersSent) {
       next(error);
       return;
     }
     writeEvent(res, 'error', {
       code: error?.code || 'AI_CHAT_ERROR',
-      message: error?.statusCode && error.statusCode < 500
-        ? error.message
-        : 'Trợ lý AI hiện không phản hồi. Vui lòng thử lại.',
+      message: error?.message || 'Trợ lý AI hiện không phản hồi. Vui lòng thử lại.',
     });
     res.end();
   }
@@ -50,3 +49,13 @@ export const getAssignmentAiSession = async (req: Request, res: Response, next: 
     next(error);
   }
 };
+
+export const clearAssignmentAiSession = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const result = await clearChatSessionHistory((req as any).currentUser.id);
+    res.json({ data: result, message: 'Đã làm mới đoạn hội thoại thành công.' });
+  } catch (error) {
+    next(error);
+  }
+};
+

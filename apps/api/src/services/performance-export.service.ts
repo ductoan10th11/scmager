@@ -3,6 +3,7 @@ import { access } from 'node:fs/promises';
 import { isValidObjectId } from 'mongoose';
 import path from 'node:path';
 import type { AuthUser } from '../types/auth';
+import { LeadershipAssessmentModel } from '../models';
 import { badRequest, forbidden } from '../utils/http-error';
 import { performanceOverviewService } from './performance.service';
 
@@ -125,6 +126,17 @@ const applyTableBorders = (sheet: ExcelJS.Worksheet, fromRow: number, toRow: num
   }
 };
 
+/**
+ * The template's data rows carry shared formulas: one master cell plus clones
+ * that point back at it. Splicing rows away can delete the master while a clone
+ * survives, and ExcelJS then refuses to write the workbook ("Shared Formula
+ * master must exist..."). Dropping every formula in the data band up front
+ * leaves plain cells to reshape, and every formula is written back afterwards.
+ */
+const clearTemplateFormulas = (sheet: ExcelJS.Worksheet) => {
+  for (let row = FIRST_DATA_ROW; row < TEMPLATE_FOOTER_ROW; row += 1) clearRow(sheet, row);
+};
+
 const prepareRows = (sheet: ExcelJS.Worksheet, requiredRows: number) => {
   const footerOffset = requiredRows - TEMPLATE_DATA_ROWS;
   if (!footerOffset) return { lastDataRow: TEMPLATE_FOOTER_ROW - 1, footerOffset };
@@ -143,7 +155,15 @@ const prepareRows = (sheet: ExcelJS.Worksheet, requiredRows: number) => {
   return { lastDataRow: FIRST_DATA_ROW + requiredRows - 1, footerOffset };
 };
 
-const fillFirstPl4Table = (sheet: ExcelJS.Worksheet, person: any, documents: any[], dateRange: { startDate: string; endDate: string }) => {
+const fillFirstPl4Table = (
+  sheet: ExcelJS.Worksheet,
+  person: any,
+  documents: any[],
+  dateRange: { startDate: string; endDate: string },
+  leadership: { fieldResultScore: number | null; executionScore: number | null; cohesionScore: number | null } | null = null,
+  showsOwner = false,
+) => {
+  clearTemplateFormulas(sheet);
   const { lastDataRow, footerOffset } = prepareRows(sheet, documents.length);
   const totalRow = TEMPLATE_FOOTER_ROW + footerOffset;
   const rateRow = totalRow + 1;
@@ -151,7 +171,9 @@ const fillFirstPl4Table = (sheet: ExcelJS.Worksheet, person: any, documents: any
   const summaryHeaderRow = 28 + footerOffset;
   const summaryValueStartRow = 30 + footerOffset;
   sheet.getCell('A1').value = `Bảng kết quả thực hiện nhiệm vụ từ ngày ${vietnamDateLabel(dateRange.startDate)} đến ngày ${vietnamDateLabel(dateRange.endDate)}`;
-  sheet.getCell('B3').value = `Họ và tên: ${person.fullName}`;
+  sheet.getCell('B3').value = showsOwner
+    ? `Họ và tên: ${person.fullName} — tổng hợp toàn ${person.department?.name || 'phòng'}`
+    : `Họ và tên: ${person.fullName}`;
   sheet.getCell('B3').font = { ...sheet.getCell('B3').font, name: 'Arial' };
 
   for (let row = FIRST_DATA_ROW; row <= lastDataRow; row += 1) clearRow(sheet, row);
@@ -160,7 +182,7 @@ const fillFirstPl4Table = (sheet: ExcelJS.Worksheet, person: any, documents: any
     const coefficient = Math.max(0, Number(document.point ?? 0) || 0);
     sheet.getRow(rowNumber).values = [
       index + 1,
-      `${document.soKyHieu || document.documentId || 'Văn bản'}${document.trichYeu ? `\n${document.trichYeu}` : ''}`,
+      `${document.soKyHieu || document.documentId || 'Văn bản'}${document.trichYeu ? `\n${document.trichYeu}` : ''}${showsOwner && document.owner?.fullName ? `\n[Người làm: ${document.owner.fullName}]` : ''}`,
       toVietnamDateCell(document.deadline),
       document.product || 'Văn bản đến',
       coefficient,
@@ -196,7 +218,10 @@ const fillFirstPl4Table = (sheet: ExcelJS.Worksheet, person: any, documents: any
   for (const column of ['I', 'L', 'N']) sheet.getCell(`${column}${rateRow}`).numFmt = '0.00%';
   sheet.getCell(`A${noteRow}`).value = 'Lưu ý: Hệ số quy đổi là điểm giao của văn bản; mỗi văn bản là 01 sản phẩm và số lượng giao là 01. Số ngày chậm tiến độ là ngày làm việc theo chính sách eWork. Cột 12 và 14 tính theo công thức PL4.';
 
-  // Preserve the lower assessment table from the example while avoiding fake leadership criteria.
+  // Lower assessment table: rows a/b/c are derived from the table above, while
+  // d/đ/e are the leadership criteria a higher-level leader rates by hand. They
+  // stay blank (and so does the 6-criteria average) until someone actually
+  // rates them, so the sheet never shows invented leadership scores.
   sheet.getCell(`I${summaryValueStartRow}`).value = { formula: `I${rateRow}` };
   sheet.getCell(`I${summaryValueStartRow + 1}`).value = { formula: `N${rateRow}` };
   sheet.getCell(`I${summaryValueStartRow + 2}`).value = { formula: `L${rateRow}` };
@@ -205,8 +230,22 @@ const fillFirstPl4Table = (sheet: ExcelJS.Worksheet, person: any, documents: any
     sheet.getCell(`I${row}`).numFmt = '0.00%';
   }
   sheet.getCell(`K${summaryValueStartRow}`).numFmt = '0.00%';
-  for (let row = summaryValueStartRow + 3; row <= summaryValueStartRow + 5; row += 1) sheet.getCell(`I${row}`).value = null;
-  sheet.getCell(`M${summaryValueStartRow}`).value = null;
+
+  const leadershipScores = [
+    leadership?.fieldResultScore ?? null,
+    leadership?.executionScore ?? null,
+    leadership?.cohesionScore ?? null,
+  ];
+  const hasLeadershipScores = leadershipScores.some((score) => score !== null);
+  leadershipScores.forEach((score, index) => {
+    const row = summaryValueStartRow + 3 + index;
+    sheet.getCell(`I${row}`).value = score;
+    if (score !== null) sheet.getCell(`I${row}`).numFmt = '0.00%';
+  });
+  sheet.getCell(`M${summaryValueStartRow}`).value = hasLeadershipScores
+    ? { formula: `IFERROR(SUM(I${summaryValueStartRow}:I${summaryValueStartRow + 5})/6,0)` }
+    : null;
+  if (hasLeadershipScores) sheet.getCell(`M${summaryValueStartRow}`).numFmt = '0.00%';
   sheet.getCell(`A${summaryHeaderRow}`).value = 'TT';
   sheet.getColumn(10).width = 12;
   applyTableBorders(sheet, FIRST_DATA_ROW, rateRow);
@@ -235,8 +274,36 @@ export const buildPerformanceWorkbook = async (actor: AuthUser, query: Record<st
   const workbook = new ExcelJS.Workbook();
   const usedNames = new Set<string>();
   const sheet = cloneSheet(workbook, template.worksheets[0], safeSheetName(assignee.user.fullName, usedNames));
-  const assigneeDocuments = documents.filter((document: any) => document.owner?.id === assignee.user.id);
-  fillFirstPl4Table(sheet, assignee.user, assigneeDocuments, { startDate: start.raw, endDate: end.raw });
+  // A department leader is measured on the department's whole output, so their
+  // sheet lists every task of the department — their own plus each specialist's —
+  // matching the totals shown on the performance page.
+  const departmentId = assignee.user.department?.id ?? '';
+  const departmentOwnerIds = assignee.user.role?.code === 'DEPARTMENT_LEADER' && departmentId
+    ? new Set(
+      assignees
+        .filter((row: any) => row.user.department?.id === departmentId)
+        .map((row: any) => row.user.id),
+    )
+    : new Set([assignee.user.id]);
+  const assigneeDocuments = documents.filter((document: any) => departmentOwnerIds.has(document.owner?.id));
+  // Leadership criteria are rated per calendar month; an export spanning a
+  // custom range takes the rating of the month its deadline range ends in.
+  const leadership = assignee.user.role?.code === 'DEPARTMENT_LEADER'
+    ? await LeadershipAssessmentModel.findOne({
+      user: assignee.user.id,
+      period: end.raw.slice(0, 7),
+      ...(actor.organization ? { organization: actor.organization } : {}),
+    }).lean()
+    : null;
+  const isDepartmentSheet = departmentOwnerIds.size > 1;
+  fillFirstPl4Table(
+    sheet,
+    assignee.user,
+    assigneeDocuments,
+    { startDate: start.raw, endDate: end.raw },
+    leadership as any,
+    isDepartmentSheet,
+  );
 
   const content = await workbook.xlsx.writeBuffer();
   return {

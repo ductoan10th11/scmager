@@ -148,3 +148,22 @@ export const cancelPendingTaskProposals = async (sessionId: string, token?: stri
   if (token) filter['metadata.proposal.confirmationToken'] = token;
   await ChatContentModel.updateMany(filter, { $set: { 'metadata.proposal.status': 'CANCELLED' } });
 };
+
+export const clearChatSessionHistory = async (userId: string) => {
+  const session = await getOrCreatePrimaryChatSession(userId);
+  await ChatContentModel.deleteMany({ session: session._id });
+  await ChatSessionModel.updateOne(
+    { _id: session._id },
+    { $set: { messageCount: 0, lastMessageAt: new Date() } },
+  );
+  return {
+    session: {
+      _id: idOf(session),
+      title: null,
+      messageCount: 0,
+      lastMessageAt: new Date(),
+    },
+    contents: [],
+  };
+};
+

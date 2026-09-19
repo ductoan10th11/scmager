@@ -69,17 +69,31 @@ export const effectiveOfficeDocumentCompletion = (context: any) => {
   };
 };
 
-export const effectiveOfficeDocumentPoint = (context: any) => {
+// Returns null when no source has supplied a point at all, which
+// effectiveOfficeDocumentPoint deliberately flattens to 0 for display and KPI
+// maths. Callers that must tell "not scored yet" from "scored zero" use this.
+export const rawOfficeDocumentPoint = (context: any): number | null => {
   const business = context?.management?.businessCompletion ?? {};
   const point = business.completed === true && business.point !== null
     ? business.point
     : context?.management?.manualScore
       ?? context?.management?.overrides?.point
       ?? context?.observation?.point
-      ?? 0;
+      ?? null;
+  if (point === null || point === undefined || point === "") return null;
   const numeric = Number(point);
-  return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0;
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
 };
+
+export const effectiveOfficeDocumentPoint = (context: any) => rawOfficeDocumentPoint(context) ?? 0;
+
+/**
+ * A document is "awaiting a score" once it is finished but nobody has put a
+ * point on it — the list leaders need in order to fill the gaps.
+ */
+export const isOfficeDocumentAwaitingScore = (context: any) =>
+  effectiveOfficeDocumentCompletion(context).completed === true
+  && rawOfficeDocumentPoint(context) === null;
 
 export const effectiveOfficeProductPoint = (
   context: any,
@@ -145,6 +159,68 @@ export const applyOfficeDocumentBusinessCompletion = async (
     .session(session ?? null)
     .lean();
   return existing ?? null;
+};
+
+// Free-text note shared across purposes on the document, so decisions are
+// appended (timestamped) rather than overwriting whatever manager note is
+// already there.
+export const appendOfficeDocumentManagementNote = async (
+  input: { contextId: string; organizationId: string; entry: string },
+  session: ClientSession | null = null,
+) => {
+  const existing = await OfficeDocumentContextModel.findOne(
+    { _id: input.contextId, organizationId: input.organizationId },
+    { "management.note": 1 },
+  )
+    .session(session ?? null)
+    .lean();
+  if (!existing) return null;
+  const stampedEntry = `[${new Date().toISOString()}] ${input.entry}`;
+  const nextNote = (existing as any).management?.note
+    ? `${(existing as any).management.note}\n${stampedEntry}`
+    : stampedEntry;
+  return OfficeDocumentContextModel.findByIdAndUpdate(
+    input.contextId,
+    { $set: { "management.note": nextNote } },
+    { new: true, runValidators: true, session: session ?? undefined },
+  ).lean();
+};
+
+// applyOfficeDocumentBusinessCompletion only writes on first completion
+// (its filter requires completed !== true). A complaint decided after the
+// document is already completed needs to revise the recorded point/rework
+// count in place instead, without disturbing the field that wasn't disputed.
+export const updateOfficeDocumentBusinessCompletionValues = async (
+  input: {
+    incomingDocumentId: string;
+    organizationId: string;
+    evidenceType: "WORK_DECLARATION";
+    evidenceId: string;
+    point?: number | null;
+    reworkCount?: number | null;
+  },
+  session: ClientSession | null = null,
+) => {
+  const set: Record<string, unknown> = {};
+  if (input.point !== undefined && input.point !== null) {
+    set["management.businessCompletion.point"] = Math.max(0, Number(input.point) || 0);
+  }
+  if (input.reworkCount !== undefined && input.reworkCount !== null) {
+    set["management.businessCompletion.reworkCount"] = Math.max(0, Math.trunc(Number(input.reworkCount) || 0));
+  }
+  if (Object.keys(set).length === 0) return null;
+  return OfficeDocumentContextModel.findOneAndUpdate(
+    {
+      _id: input.incomingDocumentId,
+      organizationId: input.organizationId,
+      pageType: "incoming",
+      "management.businessCompletion.completed": true,
+      "management.businessCompletion.evidenceType": input.evidenceType,
+      "management.businessCompletion.evidenceId": input.evidenceId,
+    },
+    { $set: set },
+    { new: true, runValidators: true, session: session ?? undefined },
+  ).lean();
 };
 
 export const clearOfficeDocumentBusinessCompletion = async (

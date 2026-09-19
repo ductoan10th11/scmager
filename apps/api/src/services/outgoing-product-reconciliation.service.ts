@@ -133,17 +133,37 @@ const timelineFrom = (trackLogs: TrackLogItem[]) => trackLogs.map((item) => ({
   "Thời gian": item.completedAt || item.processingAt || item.receivedAt || "",
 }));
 
-const reworkCountFrom = (trackLogs: TrackLogItem[]) => {
-  for (const item of [...trackLogs].sort(
+
+// eOffice prefixes the routing remark with a scoring header
+// ("Điểm: 0.9, Làm lại: 1"). The extension already strips it before sending, so
+// the same is done here to keep both paths writing the identical note.
+const withoutScoreHeader = (text: string) => text
+  .replace(/^\s*(?:điểm|diem)\s*:\s*[-\d.,]+\s*(?:[,;]\s*)?/iu, '')
+  .replace(/^\s*(?:làm\s*lại|lam\s*lai)\s*:\s*\d+\s*(?:[,;]\s*)?/iu, '')
+  .trim();
+
+/**
+ * Whoever routes a document on eOffice types their remarks into one free-text
+ * box — the rework count lives inside that same text. Both the count and the
+ * text itself are read off the newest entry that carries them, so the note the
+ * clerk actually wrote shows up in scmager instead of being dropped.
+ */
+const routingSignalFrom = (trackLogs: TrackLogItem[]) => {
+  const latest = [...trackLogs].sort(
     (left, right) => Number(right.sequence ?? 0) - Number(left.sequence ?? 0),
-  )) {
-    const match = `${item.comment ?? ""} ${item.content ?? ""}`.match(
-      /(?:làm\s*lại|lam\s*lai)\s*:\s*(\d+)/iu,
-    );
-    if (match) return Number(match[1]);
+  );
+  let note = "";
+  for (const item of latest) {
+    const text = `${item.comment ?? ""} ${item.content ?? ""}`.trim();
+    if (!text) continue;
+    if (!note) note = withoutScoreHeader(text);
+    const match = text.match(/(?:làm\s*lại|lam\s*lai)\s*:\s*(\d+)/iu);
+    if (match) return { reworkCount: Number(match[1]), note: withoutScoreHeader(text) };
   }
-  return 0;
+  return { reworkCount: 0, note };
 };
+
+const reworkCountFrom = (trackLogs: TrackLogItem[]) => routingSignalFrom(trackLogs).reworkCount;
 
 const sourceActorAssignment = async (
   organizationId: string,
@@ -218,73 +238,9 @@ const upsertIncomingSource = async (
     }
     return existing;
   }
-
-  const [detail, trackLogs] = await Promise.all([
-    getDocDetail(externalDocumentId, csrfToken),
-    getTrackLog(externalDocumentId, ORG_PREFIX, csrfToken),
-  ]);
-  const point = getLatestTrackLogPoint(trackLogs)?.point ?? null;
-  const latestRecipient = [...trackLogs]
-    .sort((left, right) => Number(right.sequence ?? 0) - Number(left.sequence ?? 0))
-    .flatMap((item) => item.recipients?.length ? item.recipients : [item.receiver])
-    .find((person) => person.username || person.fullName);
-  const result = await upsertOfficeDocumentContext({
-    available: true,
-    modalOpen: false,
-    pageType: "incoming",
-    title: "Văn bản đến",
-    documentId: externalDocumentId,
-    subject: detail.trichYeu,
-    soKyHieu: detail.soKyHieu,
-    receivedDate: detail.ngayDen,
-    dueDate: "",
-    documentForm: detail.hinhThuc,
-    priority: detail.doKhan,
-    createdDate: detail.ngayVanBan,
-    draftingUnit: detail.donViBanHanh,
-    draftingUnitId: "",
-    draftingUser: detail.nguoiSoan,
-    draftingUserId: "",
-    senderUser: "",
-    senderUserId: "",
-    senderDepartment: "",
-    sender: { userId: "", fullName: "", department: "" },
-    relatedIncomingSoKyHieu: "",
-    comment: "",
-    point,
-    reworkCount: reworkCountFrom(trackLogs),
-    note: "",
-    recipients: latestRecipient ? [{
-      userId: latestRecipient.username,
-      fullName: latestRecipient.fullName,
-      department: "",
-      role: "main",
-      entityType: "person",
-    }] : [],
-    timeline: timelineFrom(trackLogs),
-    url: `${SOURCE_ORIGIN}/qlvbdh_lsn/main?documentId=${encodeURIComponent(externalDocumentId)}`,
-  });
-  const context: any = await OfficeDocumentContextModel.findById(result.data.id).lean();
-  if (!context) throw new Error(`Incoming source ${externalDocumentId} was not persisted`);
-  if (!context.organizationId) {
-    const assignment = await resolveContextManagementAssignment(context, organizationId);
-    await OfficeDocumentContextModel.updateOne(
-      { _id: context._id, organizationId: null },
-      {
-        $set: {
-          organizationId,
-          tenantResolution: "DRAFTING_USER",
-          ...(assignment ? {
-            "management.assignment.departmentId": assignment.departmentId,
-            "management.assignment.departmentName": assignment.departmentName,
-            "management.assignment.userId": assignment.userId,
-            "management.assignment.fullName": assignment.fullName,
-          } : {}),
-        },
-      },
-    );
-  }
-  return OfficeDocumentContextModel.findById(context._id).lean();
+  // Scheduled Langson synchronization only reconciles records observed by
+  // the extension. Missing incoming documents must not be created here.
+  return null;
 };
 
 const autoLinkOfficialRelation = async (
@@ -456,6 +412,7 @@ export type OutgoingProductSyncSummary = {
   unresolved: number;
   approvedPoints: number;
   skipped: number;
+  skippedMissing: number;
   failed: number;
   errors: string[];
 };
@@ -612,18 +569,29 @@ const persistPublishedProduct = async (
   item: OutgoingDocumentListItem,
   csrfToken: string,
 ) => {
+  const sourceHost = new URL(SOURCE_ORIGIN).host.toLowerCase();
+  const existing: any = await OfficeDocumentContextModel.findOne({
+    sourceHost,
+    pageType: { $in: ["outgoing", "outgoing_c2"] },
+    externalDocumentId: item.documentId,
+  })
+    .select("_id pageType management.product")
+    .lean();
+  if (!existing) return { created: false, outcome: "missing" as const };
+
   const [detail, trackLogs] = await Promise.all([
     getOutgoingDocumentDetail(item.documentId, csrfToken),
     getTrackLog(item.documentId, ORG_PREFIX, csrfToken),
   ]);
   const pointInfo = getLatestTrackLogPoint(trackLogs);
+  const routingSignal = routingSignalFrom(trackLogs);
   const fingerprint = sourceFingerprint({ item, detail, trackLogs });
   const previous: any = await OfficeDocumentContextModel.findOne({
-    sourceHost: new URL(SOURCE_ORIGIN).host.toLowerCase(),
-    pageType: "outgoing",
+    sourceHost,
+    pageType: existing.pageType,
     externalDocumentId: item.documentId,
   })
-    .select("management.product")
+    .select("management.product observation")
     .lean();
   if (
     previous?.management?.product?.sourceFingerprint === fingerprint
@@ -634,7 +602,7 @@ const persistPublishedProduct = async (
   const result = await upsertOfficeDocumentContext({
     available: true,
     modalOpen: false,
-    pageType: "outgoing",
+    pageType: existing.pageType,
     title: "Văn bản đi",
     documentId: item.documentId,
     subject: item.trichYeu,
@@ -648,19 +616,23 @@ const persistPublishedProduct = async (
     draftingUnitId: "",
     draftingUser: detail.drafter.fullName ?? "",
     draftingUserId: detail.drafter.username ?? "",
-    senderUser: "",
-    senderUserId: "",
-    senderDepartment: "",
-    sender: { userId: "", fullName: "", department: "" },
+    senderUser: previous?.observation?.senderUser ?? "",
+    senderUserId: previous?.observation?.senderUserId ?? "",
+    senderDepartment: previous?.observation?.senderDepartment ?? "",
+    sender: previous?.observation?.sender ?? { userId: "", fullName: "", department: "" },
     relatedIncomingSoKyHieu: "",
-    comment: pointInfo?.comment ?? "",
-    point: pointInfo?.point ?? null,
-    reworkCount: reworkCountFrom(trackLogs),
-    note: "",
+    // The extension is the source of truth for these four fields. Reconciliation
+    // only fills them in when the extension has not supplied a value, so a sync
+    // never overwrites what the extension (or a person) already recorded.
+    comment: previous?.observation?.comment || pointInfo?.comment || "",
+    point: previous?.observation?.point ?? pointInfo?.point ?? null,
+    reworkCount: previous?.observation?.reworkCount || routingSignal.reworkCount,
+    note: previous?.observation?.note || routingSignal.note || "",
     recipients: [],
     timeline: timelineFrom(trackLogs),
     url: `${SOURCE_ORIGIN}/qlvbdh_lsn/main?documentId=${encodeURIComponent(item.documentId)}`,
-  });
+  }, { createIfMissing: false });
+  if (!result.data) return { created: false, outcome: "missing" as const };
   const context: any = await OfficeDocumentContextModel.findById(result.data.id).lean();
   if (!context) throw new Error(`Outgoing product ${item.documentId} was not persisted`);
   const outcome = await reconcileProduct(context, {
@@ -720,6 +692,7 @@ export async function syncCurrentYearOutgoingProducts(options: {
     unresolved: 0,
     approvedPoints: 0,
     skipped: 0,
+    skippedMissing: 0,
     failed: 0,
     errors: [],
   };
@@ -733,12 +706,12 @@ export async function syncCurrentYearOutgoingProducts(options: {
   if (options.dryRun) {
     const existing: any[] = await OfficeDocumentContextModel.find({
       sourceHost: new URL(SOURCE_ORIGIN).host.toLowerCase(),
-      pageType: "outgoing",
+      pageType: { $in: ["outgoing", "outgoing_c2"] },
       externalDocumentId: { $in: items.map((item) => item.documentId) },
     }).select("externalDocumentId").lean();
     const existingIds = new Set(existing.map((item) => String(item.externalDocumentId)));
-    summary.created = items.filter((item) => !existingIds.has(item.documentId)).length;
-    summary.updated = items.length - summary.created;
+    summary.skippedMissing = items.filter((item) => !existingIds.has(item.documentId)).length;
+    summary.updated = items.length - summary.skippedMissing;
     return summary;
   }
 
@@ -747,6 +720,8 @@ export async function syncCurrentYearOutgoingProducts(options: {
       const result = await persistPublishedProduct(item, csrfToken);
       if (result.outcome === "skipped") {
         summary.skipped += 1;
+      } else if (result.outcome === "missing") {
+        summary.skippedMissing += 1;
       } else {
         summary[result.created ? "created" : "updated"] += 1;
         summary[result.outcome] += 1;
@@ -761,7 +736,7 @@ export async function syncCurrentYearOutgoingProducts(options: {
 
   const publishedContexts: any[] = await OfficeDocumentContextModel.find({
     sourceHost: new URL(SOURCE_ORIGIN).host.toLowerCase(),
-    pageType: "outgoing",
+    pageType: { $in: ["outgoing", "outgoing_c2"] },
     externalDocumentId: { $in: items.map((item) => item.documentId) },
   }).select("organizationId").lean();
   const organizationIds = [...new Set(

@@ -6,6 +6,7 @@ import {
   cancelWorkDeclarationPointAdjustmentService,
   confirmWorkDeclarationCompletionService,
   createWorkDeclarationService,
+  createWorkDeclarationsBatchService,
   forwardWorkDeclarationService,
   forwardWorkDeclarationPointAdjustmentService,
   getWorkDeclarationService,
@@ -34,6 +35,9 @@ export const getWorkDeclaration = async (req: Request, res: Response, next: Next
 };
 export const createWorkDeclaration = async (req: Request, res: Response, next: NextFunction) => {
   try { res.status(201).json(await createWorkDeclarationService(currentUser(req), req.body)); } catch (error) { next(error); }
+};
+export const createWorkDeclarationsBatch = async (req: Request, res: Response, next: NextFunction) => {
+  try { res.status(201).json(await createWorkDeclarationsBatchService(currentUser(req), req.body)); } catch (error) { next(error); }
 };
 export const updateWorkDeclaration = async (req: Request, res: Response, next: NextFunction) => {
   try { res.status(200).json(await updateWorkDeclarationService(currentUser(req), req.params.id, req.body)); } catch (error) { next(error); }

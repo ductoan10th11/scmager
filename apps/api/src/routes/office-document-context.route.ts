@@ -8,6 +8,9 @@ import {
   listOfficeDocumentContext,
   receiveOfficeDocumentContext,
   updateManagedOfficeDocumentContext,
+  requestOfficeDocumentComplaint,
+  decideOfficeDocumentComplaint,
+  cancelOfficeDocumentComplaint,
 } from "../controllers/office-document-context.controller";
 import { publicExtensionVersion } from "../controllers/config.controller";
 import { requireAuth } from "../middlewares/auth.middleware";
@@ -37,6 +40,21 @@ officeDocumentContextRoutes.post(
   "/ingest-incoming",
   requireAuth,
   ingestIncomingBySymbol,
+);
+officeDocumentContextRoutes.post(
+  "/:id/complaint/request",
+  requireAuth,
+  requestOfficeDocumentComplaint,
+);
+officeDocumentContextRoutes.post(
+  "/:id/complaint/decide",
+  requireAuth,
+  decideOfficeDocumentComplaint,
+);
+officeDocumentContextRoutes.post(
+  "/:id/complaint/cancel",
+  requireAuth,
+  cancelOfficeDocumentComplaint,
 );
 officeDocumentContextRoutes.get("/:id", requireAuth, getOfficeDocumentContext);
 officeDocumentContextRoutes.patch(

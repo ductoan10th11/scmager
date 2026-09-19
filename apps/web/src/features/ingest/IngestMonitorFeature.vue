@@ -8,7 +8,6 @@ import {
   Clock,
   Loader2,
   Power,
-  RefreshCw,
   Trash2,
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
@@ -20,7 +19,7 @@ const socketConnected = ref(false)
 const error = ref(null)
 const INITIAL_LOG_LIMIT = 10
 const DISPLAY_LOG_LIMIT = 50
-const SYNC_INTERVAL_MS = 15_000
+const SYNC_INTERVAL_MS = 6_000
 const status = ref({
   enabled: false,
   running: false,
@@ -265,9 +264,6 @@ onUnmounted(() => {
           <p class="mt-1 text-sm text-zinc-500">Cron, trạng thái worker và log realtime</p>
         </div>
         <div class="flex flex-wrap gap-2">
-          <Button variant="outline" :disabled="loading" @click="fetchSnapshot">
-            <RefreshCw class="mr-2 h-4 w-4" /> Tải lại
-          </Button>
           <div class="flex h-10 items-center gap-3 rounded-full border border-zinc-200 bg-white px-4 shadow-sm">
             <Loader2 v-if="actionLoading" class="h-4 w-4 animate-spin text-zinc-400" />
             <span v-else class="h-2.5 w-2.5 rounded-full" :class="status.enabled ? 'bg-emerald-500' : 'bg-zinc-300'"></span>

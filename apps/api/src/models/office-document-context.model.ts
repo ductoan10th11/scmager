@@ -187,9 +187,59 @@ const productReconciliationSchema = new Schema(
   { _id: false },
 );
 
+/**
+ * A specialist disputing the point or the rework count recorded against a
+ * document. Only a leader decides it; the decision and its reason are also
+ * appended to management.note so anyone reading the document sees them.
+ */
+const scoreComplaintSchema = new Schema(
+  {
+    status: {
+      type: String,
+      enum: ["NONE", "PENDING", "APPROVED", "REJECTED", "CANCELLED"],
+      default: "NONE",
+      index: true,
+    },
+    requestedPoint: { type: Number, min: 0, default: null },
+    requestedReworkCount: { type: Number, min: 0, default: null },
+    approvedPoint: { type: Number, min: 0, default: null },
+    approvedReworkCount: { type: Number, min: 0, default: null },
+    reason: { type: String, trim: true, default: "" },
+    decisionNote: { type: String, trim: true, default: "" },
+    requestedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    requestedAt: { type: Date, default: null },
+    decidedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    decidedAt: { type: Date, default: null },
+    history: {
+      type: [
+        new Schema(
+          {
+            action: {
+              type: String,
+              enum: ["REQUESTED", "APPROVED", "REJECTED", "CANCELLED"],
+              required: true,
+            },
+            actor: { type: Schema.Types.ObjectId, ref: "User", default: null },
+            requestedPoint: { type: Number, min: 0, default: null },
+            requestedReworkCount: { type: Number, min: 0, default: null },
+            approvedPoint: { type: Number, min: 0, default: null },
+            approvedReworkCount: { type: Number, min: 0, default: null },
+            note: { type: String, trim: true, default: "" },
+            actedAt: { type: Date, default: Date.now },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
+  },
+  { _id: false },
+);
+
 const managementSchema = new Schema(
   {
     overrides: { type: Schema.Types.Mixed, default: () => ({}) },
+    scoreComplaint: { type: scoreComplaintSchema, default: () => ({}) },
     assignment: { type: managementAssignmentSchema, default: () => ({}) },
     kpiImport: { type: kpiImportSchema, default: () => ({}) },
     businessCompletion: {

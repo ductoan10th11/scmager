@@ -1,3 +1,19 @@
+import path from 'path';
+import fs from 'fs';
+import { config as dotenvConfig } from 'dotenv';
+
+function findEnv(start: string): string | undefined {
+  let dir = start;
+  for (let i = 0; i < 6; i++) {
+    const candidate = path.join(dir, '.env');
+    if (fs.existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return undefined;
+}
+dotenvConfig({ path: findEnv(__dirname) });
 import { randomUUID } from 'crypto';
 import AiTaskDraftModel from '../models/ai-task-draft.model';
 import { OfficeDocumentContextModel, UserModel, WorkDeclarationModel } from '../models';
@@ -40,8 +56,22 @@ type StreamHandlers = {
   cancelled: (result: Record<string, unknown>) => void;
 };
 
-const MODEL_URL = process.env.ASSIGNMENT_AI_URL || 'http://100.94.148.68:8000/v1/chat/completions';
-const MODEL_NAME = process.env.ASSIGNMENT_AI_MODEL || 'qwen3.6-27b';
+const getModelUrl = () => {
+  const baseUrl = process.env.BASE_URL?.trim();
+  if (baseUrl) {
+    const cleaned = baseUrl.replace(/\/+$/, '');
+    return cleaned.endsWith('/chat/completions') ? cleaned : `${cleaned}/chat/completions`;
+  }
+  return process.env.ASSIGNMENT_AI_URL || 'http://100.94.148.68:8000/v1/chat/completions';
+};
+
+const getModelName = () => {
+  return process.env.MODEL?.trim() || process.env.ASSIGNMENT_AI_MODEL?.trim() || 'qwen3.8-27b';
+};
+
+const getApiKey = () => {
+  return process.env.API_KEY?.trim() || process.env.ASSIGNMENT_AI_API_KEY?.trim() || '';
+};
 const REQUIRED_FIELDS = ['title', 'date', 'startTime', 'endTime', 'point'] as const;
 const CONFIRMATIONS = new Set([
   'xac nhan', 'ok', 'okay', 'dong y', 'trien', 'trien khai', 'tao viec', 'gui di', 'chot',
@@ -196,6 +226,7 @@ Phần reply là câu trả lời cuối cùng hiển thị trực tiếp cho ng
 Phần task là JSON máy đọc. intent là QUESTION hoặc TASK. date dùng YYYY-MM-DD; thời gian dùng HH:mm; durationMinutes và point là số. missingFields chứa đúng các trường bắt buộc còn thiếu. Với QUESTION, đặt toàn bộ trường công việc là null/rỗng và missingFields là [].
 Ví dụ câu "8h sáng mai tôi phải tiếp dân tầm 2 tiếng, được 2 điểm" phải cho title "Tiếp dân", startTime "08:00", endTime "10:00", durationMinutes 120 và point 2.
 
+Tuyệt đối không suy nghĩ nội tâm, không phân tích câu nói của người dùng, không viết "Thinking Process". Bắt đầu ngay lập tức bằng thẻ <reply> và kết thúc bằng thẻ </task>.
 Luôn trả đúng hai thẻ sau và không thêm bất kỳ nội dung nào ngoài chúng:
 <reply>Nội dung trả lời hoàn chỉnh cho người dùng</reply>
 <task>{"intent":"QUESTION","title":null,"description":"","date":null,"startTime":null,"endTime":null,"durationMinutes":null,"point":null,"assigneeUsername":null,"missingFields":[]}</task>`;
@@ -225,75 +256,183 @@ const sanitizeCurrentDraft = (value: unknown): TaskExtraction => {
 };
 
 class TaggedOutputParser {
+  private rawAccumulated = '';
+  private emittedReply = '';
+  private insideThink = false;
+  private insideReply = false;
+  private insideTask = false;
+  private replyFinished = false;
+  private isDone = false;
   private buffer = '';
-  private stage: 'prefix' | 'reply' | 'between' | 'task' | 'done' = 'prefix';
-  private taskText = '';
-  private readonly replyOpen = '<reply>';
-  private readonly replyClose = '</reply>';
-  private readonly taskOpen = '<task>';
-  private readonly taskClose = '</task>';
 
   constructor(private readonly onReplyDelta: (text: string) => void) { }
 
   push(chunk: string) {
+    if (this.isDone || !chunk) return;
+    this.rawAccumulated += chunk;
     this.buffer += chunk;
-    this.consume(false);
+    this.processBuffer(false);
   }
 
-  finish() {
-    this.consume(true);
-    const match = this.taskText.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error('AI response did not include task data.');
-    return JSON.parse(match[0]) as TaskExtraction;
-  }
+  finish(): { raw: TaskExtraction; reply: string } {
+    this.processBuffer(true);
+    this.isDone = true;
 
-  private consume(final: boolean) {
-    while (this.buffer) {
-      if (this.stage === 'prefix') {
-        const index = this.buffer.indexOf(this.replyOpen);
-        if (index < 0) {
-          if (final) throw new Error('AI response did not include reply data.');
-          this.buffer = this.buffer.slice(-this.replyOpen.length);
-          return;
-        }
-        this.buffer = this.buffer.slice(index + this.replyOpen.length);
-        this.stage = 'reply';
-      } else if (this.stage === 'reply') {
-        const index = this.buffer.indexOf(this.replyClose);
-        if (index >= 0) {
-          this.onReplyDelta(this.buffer.slice(0, index));
-          this.buffer = this.buffer.slice(index + this.replyClose.length);
-          this.stage = 'between';
-        } else {
-          const safeLength = final ? this.buffer.length : Math.max(0, this.buffer.length - this.replyClose.length);
-          if (safeLength) this.onReplyDelta(this.buffer.slice(0, safeLength));
-          this.buffer = this.buffer.slice(safeLength);
-          return;
-        }
-      } else if (this.stage === 'between') {
-        const index = this.buffer.indexOf(this.taskOpen);
-        if (index < 0) {
-          if (final) throw new Error('AI response did not include task data.');
-          this.buffer = this.buffer.slice(-this.taskOpen.length);
-          return;
-        }
-        this.buffer = this.buffer.slice(index + this.taskOpen.length);
-        this.stage = 'task';
-      } else if (this.stage === 'task') {
-        const index = this.buffer.indexOf(this.taskClose);
-        if (index >= 0) {
-          this.taskText += this.buffer.slice(0, index);
-          this.buffer = this.buffer.slice(index + this.taskClose.length);
-          this.stage = 'done';
-        } else {
-          const safeLength = final ? this.buffer.length : Math.max(0, this.buffer.length - this.taskClose.length);
-          this.taskText += this.buffer.slice(0, safeLength);
-          this.buffer = this.buffer.slice(safeLength);
-          return;
-        }
+    // 1. Resolve Reply Text
+    let finalReply = this.emittedReply.trim();
+    if (!finalReply) {
+      let cleaned = this.rawAccumulated
+        .replace(/<think>[\s\S]*?<\/think>/gi, '')
+        .replace(/<task>[\s\S]*?<\/task>/gi, '')
+        .replace(/```json[\s\S]*?```/gi, '')
+        .trim();
+
+      const replyMatch = this.rawAccumulated.match(/<reply>([\s\S]*?)<\/reply>/i);
+      if (replyMatch && replyMatch[1]?.trim()) {
+        finalReply = replyMatch[1].trim();
+      } else if (cleaned) {
+        finalReply = cleaned.replace(/<\/?reply>/gi, '').trim();
       } else {
-        this.buffer = '';
+        finalReply = 'Tôi có thể hỗ trợ gì cho bạn?';
       }
+
+      if (!this.emittedReply) {
+        this.onReplyDelta(finalReply);
+      }
+    }
+
+    // 2. Resolve Task JSON
+    let taskJson: TaskExtraction = { intent: 'QUESTION' };
+    const taskMatch = this.rawAccumulated.match(/<task>([\s\S]*?)<\/task>/i);
+    if (taskMatch && taskMatch[1]) {
+      try {
+        const jsonCandidate = taskMatch[1].match(/\{[\s\S]*\}/);
+        if (jsonCandidate) {
+          taskJson = JSON.parse(jsonCandidate[0]);
+        }
+      } catch (err) {
+        console.warn('[AssignmentAI] Failed to parse <task> JSON:', err);
+      }
+    } else {
+      const jsonBlockMatch = this.rawAccumulated.match(/```json\s*(\{[\s\S]*?\})\s*```/i)
+        || this.rawAccumulated.match(/(\{[\s\S]*?"intent"[\s\S]*?\})/i);
+      if (jsonBlockMatch && jsonBlockMatch[1]) {
+        try {
+          taskJson = JSON.parse(jsonBlockMatch[1]);
+        } catch (_) { }
+      }
+    }
+
+    return { raw: taskJson, reply: finalReply };
+  }
+
+  private processBuffer(isFinal: boolean) {
+    while (this.buffer.length > 0) {
+      // Handle <think>
+      if (!this.insideThink && !this.insideReply && !this.insideTask) {
+        const thinkIndex = this.buffer.toLowerCase().indexOf('<think>');
+        if (thinkIndex === 0) {
+          this.insideThink = true;
+          this.buffer = this.buffer.slice('<think>'.length);
+          continue;
+        }
+      }
+
+      if (this.insideThink) {
+        const endThinkIndex = this.buffer.toLowerCase().indexOf('</think>');
+        if (endThinkIndex >= 0) {
+          this.insideThink = false;
+          this.buffer = this.buffer.slice(endThinkIndex + '</think>'.length);
+          continue;
+        } else {
+          this.buffer = '';
+          return;
+        }
+      }
+
+      // Handle <reply>
+      if (!this.insideReply && !this.insideTask && !this.replyFinished) {
+        const replyIndex = this.buffer.toLowerCase().indexOf('<reply>');
+        if (replyIndex >= 0) {
+          this.insideReply = true;
+          this.buffer = this.buffer.slice(replyIndex + '<reply>'.length);
+          continue;
+        }
+      }
+
+      if (this.insideReply) {
+        const endReplyIndex = this.buffer.toLowerCase().indexOf('</reply>');
+        if (endReplyIndex >= 0) {
+          const delta = this.buffer.slice(0, endReplyIndex);
+          if (delta) {
+            this.emittedReply += delta;
+            this.onReplyDelta(delta);
+          }
+          this.insideReply = false;
+          this.replyFinished = true;
+          this.buffer = this.buffer.slice(endReplyIndex + '</reply>'.length);
+          continue;
+        } else {
+          const safeLen = isFinal ? this.buffer.length : Math.max(0, this.buffer.length - '</reply>'.length);
+          if (safeLen > 0) {
+            const delta = this.buffer.slice(0, safeLen);
+            this.emittedReply += delta;
+            this.onReplyDelta(delta);
+            this.buffer = this.buffer.slice(safeLen);
+          }
+          return;
+        }
+      }
+
+      // Handle insideTask
+      if (this.insideTask) {
+        const endTaskIndex = this.buffer.toLowerCase().indexOf('</task>');
+        if (endTaskIndex >= 0) {
+          this.insideTask = false;
+          this.buffer = this.buffer.slice(endTaskIndex + '</task>'.length);
+          continue;
+        } else {
+          this.buffer = '';
+          return;
+        }
+      }
+
+      // Handle <task>
+      const taskIndex = this.buffer.toLowerCase().indexOf('<task>');
+      if (taskIndex >= 0) {
+        this.insideTask = true;
+        this.buffer = this.buffer.slice(taskIndex + '<task>'.length);
+        continue;
+      }
+
+      // If reply is finished, ignore any stray text between </reply> and <task>
+      if (this.replyFinished) {
+        const nextTaskIdx = this.buffer.toLowerCase().indexOf('<task>');
+        if (nextTaskIdx >= 0) {
+          this.buffer = this.buffer.slice(nextTaskIdx);
+          continue;
+        } else {
+          this.buffer = '';
+          return;
+        }
+      }
+
+      // If reply hasn't started and we have potential tags ahead
+      const tagIndex = this.buffer.indexOf('<');
+      if (tagIndex >= 0) {
+        if (tagIndex > 0) {
+          this.buffer = this.buffer.slice(tagIndex);
+          continue;
+        }
+        if (!isFinal) return;
+      }
+
+      if (isFinal) {
+        this.buffer = '';
+        return;
+      }
+
+      return;
     }
   }
 }
@@ -310,24 +449,42 @@ const readModelStream = async (
   const abort = () => timeout.abort();
   handlers.signal?.addEventListener('abort', abort, { once: true });
 
+  const modelUrl = getModelUrl();
+  const modelName = getModelName();
+  const apiKey = getApiKey();
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (apiKey) {
+    headers['Authorization'] = `Bearer ${apiKey}`;
+  }
+
   try {
-    const response = await fetch(MODEL_URL, {
+    const response = await fetch(modelUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({
-        model: MODEL_NAME,
+        model: modelName,
         messages: [
           { role: 'system', content: systemPrompt(actor, currentDraft, workspaceContext) },
           ...messages,
         ],
         temperature: 0,
-        max_tokens: 1024,
+        max_tokens: 2048,
         stream: true,
+        reasoning_effort: 'none',
         chat_template_kwargs: { enable_thinking: false },
+        extra_body: {
+          chat_template_kwargs: { enable_thinking: false },
+        },
       }),
       signal: timeout.signal,
     });
-    if (!response.ok || !response.body) throw new Error('AI model is unavailable.');
+    if (!response.ok || !response.body) {
+      const errDetail = await response.text().catch(() => '');
+      throw new Error(`AI model is unavailable (${response.status}): ${errDetail || response.statusText}`);
+    }
 
     let reply = '';
     const parser = new TaggedOutputParser((text) => {
@@ -352,7 +509,8 @@ const readModelStream = async (
       }
       if (done) break;
     }
-    return { raw: parser.finish(), reply };
+    const result = parser.finish();
+    return { raw: result.raw, reply: result.reply || reply };
   } finally {
     clearTimeout(timer);
     handlers.signal?.removeEventListener('abort', abort);
@@ -508,12 +666,16 @@ const confirmDraft = async (actor: AuthUser, token: unknown) => {
       declaredPoint: (draft as any).payload.declaredPoint,
       assigneeId: (draft as any).payload.assigneeId ?? actor.id,
     });
-    declarationId = String((created as any).data?._id ?? '');
+    const declarationData = (created as any).data;
+    declarationId = String(declarationData?._id ?? '');
+    const declarationRevision = Number(declarationData?.revision ?? 1);
     let result: any = created;
     let submissionError: string | null = null;
     if (actor.role.code === 'SPECIALIST') {
       try {
-        result = await submitWorkDeclarationService(actor, declarationId, {});
+        result = await submitWorkDeclarationService(actor, declarationId, {
+          revision: declarationRevision,
+        });
       } catch (error: any) {
         submissionError = error?.message || 'Task was created but could not be submitted for approval.';
       }

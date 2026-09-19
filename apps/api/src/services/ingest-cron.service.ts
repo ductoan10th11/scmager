@@ -1,5 +1,6 @@
 import type { AuthUser } from '../types/auth';
 import { forbidden } from '../utils/http-error';
+import { notifyDocumentsAwaitingScore } from './awaiting-score-notice.service';
 import {
   emitIngestCronEvent,
   setIngestSocketConnectionHandler,
@@ -29,6 +30,7 @@ export type IngestCronLogEvent =
   | 'TICK_FAILED'
   | 'DOC_SYNCED'
   | 'DOC_SYNC_DEFERRED'
+  | 'AWAITING_SCORE'
   | 'RUN_REQUESTED';
 
 export interface IngestCronLog {
@@ -248,6 +250,17 @@ async function executeSprint(scheduleAfter: boolean): Promise<void> {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       statusSummary.errors.push(`Outgoing products: ${message}`);
+    }
+    // Reminds leaders about finished documents nobody has scored. It only
+    // reads local data, so a failure here must not fail the ingest sprint.
+    try {
+      const awaitingScore = await notifyDocumentsAwaitingScore();
+      if (awaitingScore.awaiting) {
+        pushLog('INFO', 'AWAITING_SCORE', `${awaitingScore.awaiting} văn bản đã xong nhưng chưa có điểm.`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      statusSummary.errors.push(`Awaiting score notice: ${message}`);
     }
     const summary: IngestSprintSummary = { ...statusSummary, outgoing };
     lastSummary = summary;

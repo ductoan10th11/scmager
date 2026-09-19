@@ -2,7 +2,6 @@ import OfficeDocumentContextModel from '../models/office-document-context.model'
 import {
   getCsrfToken,
   getLatestTrackLog,
-  getLatestTrackLogPoint,
   getTrackLog,
   isCompletedDocumentTrackLog,
   LANGSON_COMPLETED_RULE,
@@ -80,30 +79,6 @@ const responseCreated = (log: TrackLogItem | null) => String(log?.action ?? '')
   .replace(/\s+/g, ' ')
   .trim()
   .toLowerCase() === 'đã tạo phúc đáp';
-
-const withoutCoProcessors = (value: unknown) => String(value ?? '')
-  .replace(/(?:^|\s)đồng\s*xử\s*lý\s*:\s*.*?(?=\s*(?:thao\s*tác|chuyển\s*tới|trả\s*lại)\s*:|$)/giu, ' ')
-  .replace(/\s+/g, ' ')
-  .trim();
-
-const peopleLabel = (people: Array<{ fullName?: string; username?: string }>) => people
-  .map((person) => [person.fullName, person.username ? `(${person.username})` : ''].filter(Boolean).join(' '))
-  .filter(Boolean)
-  .join(', ');
-
-const trackLogsForObservation = (trackLogs: TrackLogItem[]) => trackLogs.map((trackLog) => ({
-  'Mã nhật ký': trackLog.id ?? '',
-  TT: trackLog.sequence ? String(trackLog.sequence) : '',
-  'Người gửi': [trackLog.sender.fullName, trackLog.sender.username ? `(${trackLog.sender.username})` : ''].filter(Boolean).join(' '),
-  'Người nhận': peopleLabel(trackLog.recipients?.length ? trackLog.recipients : [trackLog.receiver]),
-  'Chưa xử lý': trackLog.receivedAt ?? '',
-  'Đang xử lý': trackLog.processingAt ?? '',
-  'Đã xử lý': trackLog.completedAt ?? '',
-  'Thời gian': trackLog.completedAt ?? trackLog.processingAt ?? trackLog.receivedAt ?? '',
-  'Thao tác': trackLog.action ?? '',
-  'Nội dung': withoutCoProcessors(trackLog.comment) || withoutCoProcessors(trackLog.content) || trackLog.action || '',
-  'File văn bản': '',
-}));
 
 const statusFrom = (trackLogs: TrackLogItem[], completed: boolean, workflow: { status?: string }) => {
   if (completed) return 'COMPLETED' as const;
@@ -184,9 +159,11 @@ export async function runExtensionStatusOnlyIngest(
       // The authoritative terminal event is the latest eOffice track log:
       // the office clerk has created the response.
       const completed = isCompletedDocumentTrackLog(trackLogs);
-      const latestPoint = getLatestTrackLogPoint(trackLogs);
       const processing = await dependencies.resolveDocumentWorkflow(trackLogs, completed);
       const status = statusFrom(trackLogs, completed, processing);
+      // Status sync writes statusSync only. The extension is the source of
+      // truth for the document's own fields (note, comment, point, rework
+      // count, timeline), so this job must never overwrite any of them.
       const updated = await OfficeDocumentContextModel.updateOne(
         { _id: context._id, 'statusSync.completed': { $ne: true } },
         { $set: {
@@ -195,10 +172,6 @@ export async function runExtensionStatusOnlyIngest(
           'statusSync.completedRule': completed ? LANGSON_COMPLETED_RULE : '',
           'statusSync.completedAt': completed ? now : null,
           'statusSync.trackLogs': trackLogs,
-          'observation.point': latestPoint?.point ?? context.observation?.point ?? null,
-          // Keep the detail timeline current with the full eOffice track log,
-          // excluding only co-processor routing information.
-          'observation.timeline': trackLogsForObservation(trackLogs),
           'statusSync.processing': processing,
           'statusSync.lastSyncedAt': now,
           'statusSync.lastAttemptAt': now,

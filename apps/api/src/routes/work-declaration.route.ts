@@ -7,6 +7,7 @@ import {
   cancelWorkDeclarationPointAdjustment,
   confirmWorkDeclarationCompletion,
   createWorkDeclaration,
+  createWorkDeclarationsBatch,
   forwardWorkDeclaration,
   forwardWorkDeclarationPointAdjustment,
   getWorkDeclaration,
@@ -26,6 +27,7 @@ const router = Router();
 router.use(requireAuth);
 
 router.route('/').get(listWorkDeclarations).post(createWorkDeclaration);
+router.post('/batch', createWorkDeclarationsBatch);
 router.get('/participants', listAssignmentParticipants);
 router.route('/:id').get(getWorkDeclaration).patch(updateWorkDeclaration);
 router.patch('/:id/schedule', rescheduleWorkDeclaration);

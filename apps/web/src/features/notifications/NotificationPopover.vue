@@ -27,6 +27,8 @@ const typeLabels = {
   WORK_DECLARATION_FORWARDED: 'Công việc chuyển duyệt',
   WORK_DECLARATION_APPROVED: 'Công việc đã duyệt',
   WORK_DECLARATION_RETURNED: 'Công việc cần bổ sung',
+  WORK_DECLARATION_RESCHEDULED: 'Đổi thời gian công việc',
+  DOCUMENTS_AWAITING_SCORE: 'Văn bản chờ chấm điểm',
   DOCUMENT_RESULT_SUBMITTED: 'Sản phẩm chờ duyệt',
   DOCUMENT_RESULT_FORWARDED: 'Sản phẩm chuyển duyệt',
   DOCUMENT_RESULT_APPROVED: 'Sản phẩm đã duyệt',
@@ -45,6 +47,8 @@ const typeMeta = {
   WORK_DECLARATION_FORWARDED: { icon: Forward, class: 'bg-indigo-50 text-indigo-700' },
   WORK_DECLARATION_APPROVED: { icon: CheckCircle2, class: 'bg-emerald-50 text-emerald-700' },
   WORK_DECLARATION_RETURNED: { icon: RotateCcw, class: 'bg-amber-50 text-amber-700' },
+  WORK_DECLARATION_RESCHEDULED: { icon: Clock3, class: 'bg-sky-50 text-sky-700' },
+  DOCUMENTS_AWAITING_SCORE: { icon: AlertTriangle, class: 'bg-amber-50 text-amber-700' },
   DOCUMENT_RESULT_SUBMITTED: { icon: Send, class: 'bg-sky-50 text-sky-700' },
   DOCUMENT_RESULT_FORWARDED: { icon: Forward, class: 'bg-indigo-50 text-indigo-700' },
   DOCUMENT_RESULT_APPROVED: { icon: CheckCircle2, class: 'bg-emerald-50 text-emerald-700' },
@@ -60,18 +64,22 @@ const fetchUnreadCount = async () => {
   }
 }
 
-const fetchNotifications = async () => {
-  loading.value = true
+const fetchNotifications = async (isBackground = false) => {
+  if (!isBackground) {
+    loading.value = true
+  }
   try {
     const result = await http('/api/notifications?page=1&limit=50')
     items.value = result.data ?? []
   } finally {
-    loading.value = false
+    if (!isBackground) {
+      loading.value = false
+    }
   }
 }
 
-const refresh = async () => {
-  await Promise.all([fetchUnreadCount(), fetchNotifications()])
+const refresh = async (isBackground = false) => {
+  await Promise.all([fetchUnreadCount(), fetchNotifications(isBackground)])
 }
 
 const markRead = async (item) => {
@@ -91,22 +99,33 @@ const markAllRead = async () => {
 const openNotification = async (item) => {
   await markRead(item)
   open.value = false
+  // Carry the record id so the destination page opens that exact item instead
+  // of dropping the user on a long list to hunt for it.
+  const focus = item.relatedId ? { focus: String(item.relatedId?._id ?? item.relatedId) } : {}
   if (['IncomingDocument', 'DocumentResultLink'].includes(item.relatedModel)) {
-    router.push('/office-documents')
-  } else if (item.relatedModel === 'WorkDeclaration') {
-    router.push('/assignments')
-  } else if (item.relatedModel === 'Task') {
-    router.push('/assignments')
+    router.push({ path: '/office-documents', query: focus })
+  } else if (['WorkDeclaration', 'Task'].includes(item.relatedModel)) {
+    router.push({ path: '/assignments', query: focus })
   }
 }
 
 const formatDateTime = (value) => value ? new Date(value).toLocaleString('vi-VN') : '—'
 
+let pollTimer = null
+
 onMounted(() => {
   refresh()
+
+  // Polling 10 RPM (mỗi 6 giây) tự động làm mới thông báo ngầm khi tab đang mở
+  pollTimer = setInterval(() => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      refresh(true)
+    }
+  }, 6000)
+
   socket = io('/', { path: '/api/socket.io', withCredentials: true, transports: ['websocket', 'polling'] })
   const refreshNotifications = async () => {
-    await refresh()
+    await refresh(true)
     window.dispatchEvent(new CustomEvent('notification:changed'))
   }
   socket.on('notification:new', refreshNotifications)
@@ -117,6 +136,10 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
   socket?.disconnect()
   socket = null
 })

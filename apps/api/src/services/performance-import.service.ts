@@ -319,16 +319,57 @@ const upsertImportedIncomingDocument = async ({
   return update.upsertedCount > 0 ? 'created' : 'updated';
 };
 
-export const importPerformanceWorkbook = async (actor: AuthUser, file: Express.Multer.File | undefined) => {
-  if (!file?.buffer?.length) throw badRequest('Chọn một file PL4 .xlsx để nhập.');
-  const parsed = await parseWorkbook(file.buffer);
-  const targets = await UserModel.find({ fullName: parsed.fullName, status: 'ACTIVE' })
+/**
+ * Resolves the name in cell B3 to exactly one active account, and refuses in
+ * every other case. An import that names the wrong person silently rewrites
+ * someone's KPI, so a near miss is reported with the exact reason rather than
+ * being guessed at.
+ */
+const resolveImportTarget = async (rawName: string) => {
+  const fullName = rawName.trim().replace(/\s+/gu, ' ');
+  if (/^<.*>$/u.test(fullName) || /nh[aâ]p h[oọ] t[eê]n/iu.test(fullName)) {
+    throw badRequest('Ô B3 vẫn còn chữ mẫu. Hãy thay bằng đúng họ tên cán bộ, ví dụ "Họ và tên: Nguyễn Văn A".');
+  }
+  if (fullName.length < 3) throw badRequest(`Họ tên "${fullName}" quá ngắn, không hợp lệ.`);
+
+  // Matching ignores capitalisation and repeated spaces — those are typing
+  // noise, not a different person. Vietnamese diacritics are kept significant,
+  // since dropping them can merge genuinely different names.
+  const escaped = fullName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const matches = await UserModel.find({
+    fullName: { $regex: `^${escaped}$`, $options: 'i' },
+    status: 'ACTIVE',
+  })
     .select('_id username fullName organization department')
     .populate('department', '_id name')
-    .limit(2)
+    .limit(5)
     .lean();
-  if (targets.length !== 1 || !isValidObjectId(targets[0]._id)) throw badRequest(`Không tìm thấy đúng một nhân sự hoạt động tên "${parsed.fullName}".`);
-  const [target] = targets;
+
+  if (matches.length === 1 && isValidObjectId(matches[0]._id)) return matches[0];
+  if (matches.length > 1) {
+    const accounts = matches.map((user: any) => user.username).filter(Boolean).join(', ');
+    throw badRequest(
+      `Có ${matches.length} tài khoản đang hoạt động cùng tên "${fullName}" (${accounts}). `
+      + 'Không xác định được người nhận KPI — hãy đổi tên hiển thị cho khác nhau rồi nhập lại.',
+    );
+  }
+  throw badRequest(
+    `Không tìm thấy nhân sự đang hoạt động tên "${fullName}". `
+    + 'Kiểm tra lại chính tả và dấu tiếng Việt, hoặc tài khoản đã bị khóa.',
+  );
+};
+
+export const importPerformanceWorkbook = async (
+  actor: AuthUser,
+  file: Express.Multer.File | undefined,
+  options: { dryRun?: boolean } = {},
+) => {
+  if (!file?.buffer?.length) throw badRequest('Chọn một file PL4 .xlsx để nhập.');
+  const parsed = await parseWorkbook(file.buffer);
+  if (!parsed.rows.length) {
+    throw badRequest('File không có dòng nhiệm vụ nào để nhập. Điền ít nhất một dòng phía trên dòng "Tổng cộng".');
+  }
+  const target = await resolveImportTarget(parsed.fullName);
   await requireImportPermission(actor, target);
 
   const organizationId = String(target.organization ?? '');
@@ -341,10 +382,65 @@ export const importPerformanceWorkbook = async (actor: AuthUser, file: Express.M
   let updatedDocuments = 0;
   let createdDocuments = 0;
 
+  if (options.dryRun) {
+    // Everything above has already validated the file, the name and the
+    // permission. Report what would happen so the user can confirm first.
+    const preview = parsed.rows.map((row) => {
+      const matched = documentForRow(row, contexts);
+      return {
+        order: row.order,
+        content: row.content,
+        deadline: row.deadline
+          ? new Intl.DateTimeFormat('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }).format(new Date(row.deadline))
+          : '',
+        product: row.product,
+        point: row.point * row.assignedQuantity,
+        reworkCount: row.reworkCount,
+        completed: row.completedQuantity >= row.assignedQuantity,
+        action: matched ? ('update' as const) : ('create' as const),
+        matchedSoKyHieu: matched
+          ? String(matched.management?.overrides?.soKyHieu ?? matched.observation?.soKyHieu ?? '')
+          : '',
+      };
+    });
+    return {
+      data: {
+        dryRun: true,
+        user: {
+          id: String(target._id),
+          fullName: target.fullName,
+          username: target.username,
+          departmentName: typeof target.department === 'object' ? String((target.department as any)?.name ?? '') : '',
+        },
+        importedRows: parsed.rows.length,
+        createdDocuments: preview.filter((row) => row.action === 'create').length,
+        updatedDocuments: preview.filter((row) => row.action === 'update').length,
+        rows: preview,
+      },
+    };
+  }
+
+  // Every row is written or none is. A half-applied import leaves some tasks
+  // reassigned and others not, which is worse than a clean refusal — the user
+  // cannot tell what actually landed.
+  const written: Array<{ id: any; previous: any | null }> = [];
+  const rollback = async () => {
+    for (const entry of [...written].reverse()) {
+      if (entry.previous) {
+        await OfficeDocumentContextModel.replaceOne({ _id: entry.id }, entry.previous);
+      } else {
+        await OfficeDocumentContextModel.deleteOne({ _id: entry.id });
+      }
+    }
+  };
+
+  try {
   for (const row of parsed.rows) {
     const importKey = importKeyFor(String(target._id), row);
     const matchedDocument = documentForRow(row, contexts);
     if (matchedDocument) {
+      const snapshot = await OfficeDocumentContextModel.findById(matchedDocument._id).lean();
+      written.push({ id: matchedDocument._id, previous: snapshot });
       await OfficeDocumentContextModel.updateOne(
         { _id: matchedDocument._id },
         {
@@ -372,6 +468,8 @@ export const importPerformanceWorkbook = async (actor: AuthUser, file: Express.M
       continue;
     }
 
+    const externalDocumentId = importedDocumentId(importKey);
+    const before = await OfficeDocumentContextModel.findOne({ externalDocumentId }).lean();
     const result = await upsertImportedIncomingDocument({
       target,
       row,
@@ -380,8 +478,14 @@ export const importPerformanceWorkbook = async (actor: AuthUser, file: Express.M
       importedBy: actor.id,
       now,
     });
+    const after = await OfficeDocumentContextModel.findOne({ externalDocumentId }).select('_id').lean();
+    if (after?._id) written.push({ id: after._id, previous: before });
     if (result === 'created') createdDocuments += 1;
     else updatedDocuments += 1;
+  }
+  } catch (error) {
+    await rollback();
+    throw error;
   }
 
   return { data: { user: { id: String(target._id), fullName: target.fullName }, importedRows: parsed.rows.length, createdDocuments, updatedDocuments } };

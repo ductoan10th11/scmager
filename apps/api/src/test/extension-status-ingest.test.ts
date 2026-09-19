@@ -38,7 +38,7 @@ test('status-only ingest selects unfinished extension incoming contexts and upda
         action: 'Đã tạo phúc đáp', content: '', comment: 'Điểm: 3.2. Đồng xử lý: Người không hiển thị. Thao tác: Đã tạo phúc đáp',
         receivedAt: null, processingAt: null, completedAt: '23/07/2026 09:00',
       }],
-      resolveDocumentWorkflow: async () => ({ status: 'COMPLETED', currentAssignee: null, assignees: [] }),
+      resolveDocumentWorkflow: (async () => ({ status: 'COMPLETED', currentAssignee: null, primaryAssignee: null, assignees: [] })) as any,
       disposeSession: async () => {},
     });
     assert.deepEqual(result, { selected: 1, synced: 1, completed: 1, failed: 0, sessionHealed: 0, errors: [] });
@@ -51,10 +51,15 @@ test('status-only ingest selects unfinished extension incoming contexts and upda
     assert.equal(updates[0].update.$set['statusSync.status'], 'COMPLETED');
     assert.equal(updates[0].update.$set['statusSync.completed'], true);
     assert.equal(updates[0].update.$set['statusSync.trackLogs'].length, 1);
-    assert.equal(updates[0].update.$set['observation.timeline'][0]['Người gửi'], 'Văn thư xã Thiện Tân (vanthu-xathientan)');
-    assert.equal(updates[0].update.$set['observation.timeline'][0]['Người nhận'], 'Trần Văn Hưng (tvhung-04)');
-    assert.equal(updates[0].update.$set['observation.timeline'][0]['Nội dung'], 'Điểm: 3.2. Thao tác: Đã tạo phúc đáp');
-    assert.equal(updates[0].update.$set['observation.point'], 3.2);
+    // The extension owns the document's own fields; this job writes statusSync
+    // only, so a sync must never overwrite note, comment, point, rework count
+    // or timeline that the extension supplied.
+    const written = Object.keys(updates[0].update.$set);
+    assert.equal(
+      written.some((key) => key.startsWith('observation.')),
+      false,
+      `status sync must not touch observation fields, got: ${written.join(', ')}`,
+    );
   } finally {
     OfficeDocumentContextModel.find = originalFind;
     OfficeDocumentContextModel.updateOne = originalUpdateOne;
@@ -93,7 +98,7 @@ test('a final clerk-created response is completed even before the outgoing docum
         action: 'Đã tạo phúc đáp', content: '', comment: '',
         receivedAt: null, processingAt: null, completedAt: '23/07/2026 09:00',
       }],
-      resolveDocumentWorkflow: async () => ({ status: 'COMPLETED', currentAssignee: null, assignees: [] }),
+      resolveDocumentWorkflow: (async () => ({ status: 'COMPLETED', currentAssignee: null, primaryAssignee: null, assignees: [] })) as any,
       disposeSession: async () => {},
     });
 

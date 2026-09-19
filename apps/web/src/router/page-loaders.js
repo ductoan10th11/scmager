@@ -23,6 +23,7 @@ export const SettingsPage = lazyPage(() => import('../pages/SettingsPage.vue'))
 export const MyDepartmentPage = lazyPage(() => import('../pages/MyDepartmentPage.vue'))
 export const PrivacyPolicyPage = lazyPage(() => import('../pages/PrivacyPolicyPage.vue'))
 export const ExtensionWebViewPage = lazyPage(() => import('../pages/ExtensionWebViewPage.vue'))
+export const OverdueReportPage = lazyPage(() => import('../pages/OverdueReportPage.vue'))
 
 const preloadableRouteComponents = {
   '/users': UsersPage,
@@ -36,6 +37,7 @@ const preloadableRouteComponents = {
   '/ingest-monitor': IngestMonitorPage,
   '/connectors': ConnectorsPage,
   '/settings': SettingsPage,
+  '/reports': OverdueReportPage,
 }
 
 export const preloadRouteComponent = (path) => {

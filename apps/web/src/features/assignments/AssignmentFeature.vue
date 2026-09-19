@@ -1,11 +1,11 @@
 <script setup>
 import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Calendar } from '@/components/ui/calendar'
 import { CalendarDate } from '@internationalized/date'
 import { AssignmentService } from '@/features/assignments/services/assignment.service'
-import { Users, UserCheck, UserMinus, UserX, ChevronLeft, ChevronRight, Filter, Sparkles, Calendar as CalendarIcon, X, Plus, Paperclip, Mic, Send, Bot, CheckCircle, ClipboardCheck } from 'lucide-vue-next'
+import { Users, UserCheck, UserMinus, UserX, ChevronLeft, ChevronRight, Filter, Sparkles, Calendar as CalendarIcon, X, Plus, Paperclip, Mic, Send, CheckCircle, ClipboardCheck, Trash2, Loader2 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -50,7 +50,7 @@ const calendarDateVal = computed({
   },
 })
 
-const idOf = (value) => value?._id ?? value ?? null
+const idOf = (value) => value?._id ?? value?.id ?? (typeof value === 'string' ? value : null)
 const vietnamParts = (value) =>
   Object.fromEntries(
     new Intl.DateTimeFormat('en-CA', {
@@ -86,12 +86,16 @@ const timelineDateLabel = computed(() => {
   })
 })
 
-const refreshResources = async () => {
+let pollTimer = null
+
+const refreshResources = async (isBackground = false) => {
   const [nextResources, pendingResult] = await Promise.all([AssignmentService.listAssignees(departmentId.value, timelineDate.value), canApprove.value ? AssignmentService.listPendingApprovals().catch(() => ({ data: [] })) : Promise.resolve({ data: [] })])
   resources.value = nextResources
   pendingApprovals.value = pendingResult?.data ?? []
   pendingApprovalCount.value = Number(pendingResult?.summary?.pendingApproval ?? pendingApprovals.value.length)
-  scrollToTimeStick()
+  if (!isBackground) {
+    scrollToTimeStick()
+  }
 }
 
 const staleMessage = async (error) => {
@@ -175,7 +179,22 @@ const changeTimelineDay = async (days) => {
 
 onMounted(async () => {
   window.addEventListener('work-declaration:changed', handleDeclarationChange)
-  await Promise.all([refreshResources(), loadAiChatHistory()])
+  await refreshResources()
+
+  // Polling 10 RPM (mỗi 6 giây) tự động làm mới ngầm nếu không mở form, không đang kéo thả và tab đang active
+  pollTimer = setInterval(() => {
+    if (
+      typeof document !== 'undefined' &&
+      document.visibilityState === 'visible' &&
+      !isFormOpen.value &&
+      !isApprovalOpen.value &&
+      !timelineDrag.value &&
+      !timelineCreate.value
+    ) {
+      refreshResources(true)
+    }
+  }, 6000)
+
   if (!route.query.sourceDocument) return
   try {
     const result = await http(`/api/office-document-contexts/${route.query.sourceDocument}`)
@@ -602,7 +621,9 @@ function cancelTaskPointer() {
 
 const handleTaskClick = (task, assignee) => {
   if (suppressedTaskClickId.value === task.id) return
-  if (!task.editable) return
+  // The dialog stays reachable for finished work too: it is where a specialist
+  // files a complaint and where a leader corrects a late declaration. Each
+  // section inside gates itself; only drag/resize still requires `editable`.
   openTaskTime(task, assignee)
 }
 
@@ -631,15 +652,13 @@ const startCreatePointer = (event, assignee) => {
     pointerId: event.pointerId,
     anchor,
     start,
-    end: start + MIN_TASK_MINS,
+    end: Math.min(start + 60, TOTAL_MINS.value),
     moved: false,
   }
-  track.setPointerCapture?.(event.pointerId)
   window.addEventListener('pointermove', handleCreatePointerMove, {
     passive: false,
   })
   window.addEventListener('pointerup', finishCreatePointer, { once: true })
-  window.addEventListener('pointercancel', cancelCreatePointer, { once: true })
 }
 
 function handleCreatePointerMove(event) {
@@ -647,10 +666,10 @@ function handleCreatePointerMove(event) {
   if (!selection || event.pointerId !== selection.pointerId) return
   event.preventDefault()
   const current = snapTimelineMinute(event.clientX, selection.trackRect)
-  if (current === selection.anchor) return
+  if (current === selection.anchor && !selection.moved) return
 
   selection.moved = true
-  if (current > selection.anchor) {
+  if (current >= selection.anchor) {
     selection.start = Math.min(selection.anchor, TOTAL_MINS.value - MIN_TASK_MINS)
     selection.end = Math.max(current, selection.start + MIN_TASK_MINS)
   } else {
@@ -660,9 +679,6 @@ function handleCreatePointerMove(event) {
 }
 
 const releaseCreatePointer = (selection) => {
-  if (selection?.track?.hasPointerCapture?.(selection.pointerId)) {
-    selection.track.releasePointerCapture(selection.pointerId)
-  }
   removeTimelineListeners()
   timelineCreate.value = null
 }
@@ -673,13 +689,18 @@ function cancelCreatePointer() {
 
 function finishCreatePointer() {
   const selection = timelineCreate.value
+  if (!selection) return
   releaseCreatePointer(selection)
-  if (!selection?.moved) return
+
+  const startMinute = selection.start
+  const endMinute = selection.moved
+    ? selection.end
+    : Math.min(selection.start + 60, TOTAL_MINS.value)
 
   const overlaps = selection.assignee.tasks.some((task) => {
     const taskStart = timeToTimelineMinutes(task.start)
     const taskEnd = timeToTimelineMinutes(task.end)
-    return selection.start < taskEnd && selection.end > taskStart
+    return startMinute < taskEnd && endMinute > taskStart
   })
   if (overlaps) {
     timelineError.value = 'Khoảng thời gian đã chọn đang trùng với một công việc khác.'
@@ -688,8 +709,8 @@ function finishCreatePointer() {
 
   resetForm()
   formDate.value = vietnamDateKey(timelineDate.value)
-  formStartTime.value = timelineMinutesToTime(selection.start)
-  formEndTime.value = timelineMinutesToTime(selection.end)
+  formStartTime.value = timelineMinutesToTime(startMinute)
+  formEndTime.value = timelineMinutesToTime(endMinute)
   closeAiModal()
   openForm(selection.assignee.id, true)
 }
@@ -698,17 +719,8 @@ function finishCreatePointer() {
 // Màn hình lớn (>= 1536px, tương đương FullHD 24"): panel hiển thị sẵn bên phải.
 // Màn hình nhỏ hơn (laptop 13", tablet, mobile): ẩn mặc định, mở dạng overlay khi bấm nút.
 const DESKTOP_QUERY = '(min-width: 1536px)'
-const isDesktop = typeof window !== 'undefined' && window.matchMedia(DESKTOP_QUERY).matches
 const isFormOpen = ref(false)
-const isAiModalOpen = ref(isDesktop)
-
-if (typeof window !== 'undefined') {
-  // Tự đồng bộ khi người dùng resize qua lại mốc desktop
-  window.matchMedia(DESKTOP_QUERY).addEventListener('change', (e) => {
-    isAiModalOpen.value = e.matches
-    isFormOpen.value = false
-  })
-}
+const isAiModalOpen = ref(false)
 
 const formPoint = ref('0')
 const formSourceDocument = ref('')
@@ -716,12 +728,28 @@ const formSaving = ref(false)
 const formError = ref('')
 const isSpecialist = computed(() => currentUser.value?.role?.code === 'SPECIALIST')
 
-const canCreateForAssignee = (assignee) => {
-  const actorId = String(idOf(currentUser.value) ?? '')
-  const assigneeId = String(assignee?.id ?? '')
+function canCreateForAssignee(assignee) {
+  const actor = currentUser.value
+  if (!actor) return false
+  const actorId = String(idOf(actor) ?? '')
+  const assigneeId = String(idOf(assignee) ?? '')
   if (!actorId || !assigneeId) return false
-  if (actorId === assigneeId) return Boolean(idOf(currentUser.value?.organization))
-  return Number(currentUser.value?.role?.level) < Number(assignee?.roleLevel)
+
+  const actorRoleCode = actor.role?.code
+  const actorLevel = Number(actor.role?.level ?? 99)
+  const isSystemAdmin = actor.isSystemAdmin || actorRoleCode === 'ADMIN' || actorLevel === 0
+
+  // Quản trị viên hệ thống và lãnh đạo cơ quan (Chánh văn phòng, Lãnh đạo xã) được giao việc cho mọi cán bộ
+  if (isSystemAdmin || ['OFFICE_CHIEF', 'COMMUNE_LEADER'].includes(actorRoleCode) || actorLevel <= 1) {
+    return true
+  }
+
+  // Nhân sự luôn được phép tự kê khai / giao việc cho chính mình
+  if (actorId === assigneeId) return true
+
+  // Cấp trên giao việc cho cấp dưới (level số nhỏ hơn level số lớn)
+  const assigneeLevel = Number(assignee?.roleLevel ?? assignee?.role?.level ?? 99)
+  return actorLevel < assigneeLevel
 }
 
 const openForm = (assigneeId = idOf(currentUser.value), lockedAssignee = false) => {
@@ -763,7 +791,23 @@ const formSelectedUser = computed(() => {
 })
 
 const formSelectedUsers = computed(() => formAssigneeIds.value
-  .map((id) => resources.value.find((resource) => String(resource.id) === String(id)))
+  .map((id) => {
+    const found = resources.value.find((resource) => String(resource.id) === String(id))
+    if (found) return found
+    if (String(id) === String(idOf(currentUser.value))) {
+      return {
+        id: idOf(currentUser.value),
+        name: currentUser.value?.fullName,
+        role: currentUser.value?.position || currentUser.value?.role?.name,
+        roleCode: currentUser.value?.role?.code ?? null,
+        roleLevel: Number(currentUser.value?.role?.level ?? 99),
+        avatar: currentUser.value?.avatarUrl,
+        totalHours: 0,
+        status: 'free',
+      }
+    }
+    return null
+  })
   .filter(Boolean))
 
 const assignableResources = computed(() => resources.value.filter((resource) => canCreateForAssignee(resource)))
@@ -844,7 +888,7 @@ const resetForm = () => {
 
 const isTaskTimeOpen = ref(false)
 const taskTimeTarget = ref(null)
-const taskTimeForm = ref({ start: '', end: '' })
+const taskTimeForm = ref({ date: '', start: '', end: '' })
 const updatingTaskTime = ref(false)
 const completionResult = ref('')
 const completionNote = ref('')
@@ -853,12 +897,13 @@ const isPointAdjustmentOpen = ref(false)
 const pointAdjustmentMode = ref('request')
 const pointAdjustmentSaving = ref(false)
 const pointAdjustmentError = ref('')
-const pointAdjustmentForm = ref({ requestedPoint: '', reason: '', approvedPoint: '', note: '', forwardApproverId: '' })
+const pointAdjustmentForm = ref({ requestedPoint: '', requestedReworkCount: '', reason: '', approvedPoint: '', approvedReworkCount: '', note: '', forwardApproverId: '' })
 
 const openTaskTime = (task, assignee) => {
   if (!task.id) return
   taskTimeTarget.value = { task, assignee }
   taskTimeForm.value = {
+    date: vietnamDateKey(task.scheduledStartAt),
     start: task.start,
     end: task.end,
   }
@@ -870,7 +915,7 @@ const openTaskTime = (task, assignee) => {
 const submitTaskTime = async () => {
   const task = taskTimeTarget.value?.task
   if (!task?.id || !taskTimeForm.value.start || !taskTimeForm.value.end) return
-  const date = vietnamDateKey(task.scheduledStartAt)
+  const date = taskTimeForm.value.date || vietnamDateKey(task.scheduledStartAt)
   const startAt = vietnamDateTime(date, taskTimeForm.value.start)
   const endAt = vietnamDateTime(date, taskTimeForm.value.end)
   if (endAt <= startAt) {
@@ -893,6 +938,15 @@ const submitTaskTime = async () => {
   }
 }
 
+// Work past the completion stage keeps settled KPI, so only a leader may fix
+// its schedule — the common case is work done on time but declared late.
+const isLateDeclarationFix = computed(() => ['PENDING_COMPLETION', 'COMPLETED'].includes(taskTimeTarget.value?.task?.rawStatus))
+const canRescheduleTask = computed(() => {
+  const task = taskTimeTarget.value?.task
+  if (!task) return false
+  if (isLateDeclarationFix.value) return !isSpecialist.value
+  return Boolean(task.editable)
+})
 const canSubmitCompletion = computed(() => {
   const task = taskTimeTarget.value?.task
   return task?.rawStatus === 'APPROVED' && String(idOf(task.createdBy)) === String(idOf(currentUser.value))
@@ -904,10 +958,8 @@ const canConfirmCompletion = computed(() => {
 const pointAdjustment = computed(() => taskTimeTarget.value?.task?.pointAdjustment ?? null)
 const canRequestPointAdjustment = computed(() => {
   const task = taskTimeTarget.value?.task
-  return task?.rawStatus === 'APPROVED'
-    && task?.workSource === 'MANAGER_ASSIGNED'
+  return ['APPROVED', 'COMPLETED'].includes(task?.rawStatus)
     && String(idOf(task.createdBy)) === String(idOf(currentUser.value))
-    && Boolean(idOf(task.assignedBy))
     && pointAdjustment.value?.status !== 'PENDING'
 })
 const canManagePointAdjustment = computed(() => pointAdjustment.value?.status === 'PENDING'
@@ -924,9 +976,11 @@ const openPointAdjustmentDialog = (mode) => {
   pointAdjustmentMode.value = mode
   pointAdjustmentError.value = ''
   pointAdjustmentForm.value = {
-    requestedPoint: adjustment?.requestedPoint ?? taskTimeTarget.value?.task?.declaredPoint ?? 0,
+    requestedPoint: adjustment?.requestedPoint ?? '',
+    requestedReworkCount: adjustment?.requestedReworkCount ?? '',
     reason: adjustment?.reason ?? '',
-    approvedPoint: adjustment?.requestedPoint ?? taskTimeTarget.value?.task?.declaredPoint ?? 0,
+    approvedPoint: adjustment?.requestedPoint ?? '',
+    approvedReworkCount: adjustment?.requestedReworkCount ?? '',
     note: adjustment?.decisionNote ?? '',
     forwardApproverId: '',
   }
@@ -940,12 +994,14 @@ const submitPointAdjustment = async (action) => {
   try {
     if (action === 'request') {
       await AssignmentService.requestPointAdjustment(task.id, {
-        requestedPoint: Number(pointAdjustmentForm.value.requestedPoint),
+        ...(pointAdjustmentForm.value.requestedPoint !== '' ? { requestedPoint: Number(pointAdjustmentForm.value.requestedPoint) } : {}),
+        ...(pointAdjustmentForm.value.requestedReworkCount !== '' ? { requestedReworkCount: Number(pointAdjustmentForm.value.requestedReworkCount) } : {}),
         reason: pointAdjustmentForm.value.reason.trim(), revision: task.revision,
       })
     } else if (action === 'approve') {
       await AssignmentService.approvePointAdjustment(task.id, {
-        approvedPoint: Number(pointAdjustmentForm.value.approvedPoint),
+        ...(pointAdjustmentForm.value.approvedPoint !== '' ? { approvedPoint: Number(pointAdjustmentForm.value.approvedPoint) } : {}),
+        ...(pointAdjustmentForm.value.approvedReworkCount !== '' ? { approvedReworkCount: Number(pointAdjustmentForm.value.approvedReworkCount) } : {}),
         note: pointAdjustmentForm.value.note.trim() || undefined, revision: task.revision,
       })
     } else if (action === 'reject') {
@@ -995,6 +1051,93 @@ const confirmCompletion = async (returned = false) => {
   } finally { completionSaving.value = false }
 }
 
+const canCancelTask = computed(() => {
+  const task = taskTimeTarget.value?.task
+  if (!task) return false
+  const unapprovedStatuses = ['DRAFT', 'RETURNED', 'PENDING_APPROVAL']
+  const isUnapproved = unapprovedStatuses.includes(task.rawStatus || task.status)
+  const currentUserId = String(idOf(currentUser.value) ?? '')
+  const isOwner = String(idOf(task.createdBy)) === currentUserId ||
+                  String(idOf(task.assignedTo)) === currentUserId ||
+                  String(idOf(task.assignedBy)) === currentUserId ||
+                  Number(currentUser.value?.role?.level) <= 2
+  return isUnapproved && isOwner
+})
+
+const isCancelTaskConfirmOpen = ref(false)
+const isCancellingTask = ref(false)
+
+const handleCancelTask = async () => {
+  const task = taskTimeTarget.value?.task
+  if (!task?.id || isCancellingTask.value) return
+  isCancellingTask.value = true
+  try {
+    await AssignmentService.cancelTask(task.id, { revision: task.revision })
+    isCancelTaskConfirmOpen.value = false
+    isTaskTimeOpen.value = false
+    await refreshResources()
+  } catch (error) {
+    timelineError.value = (await staleMessage(error)) || error?.message || 'Không thể xóa công việc.'
+  } finally {
+    isCancellingTask.value = false
+  }
+}
+
+// Bulk entry: one row per work item so a leader can type a whole department's
+// work in a single pass, unlike the main form which copies one item to many.
+const isBatchOpen = ref(false)
+const batchSaving = ref(false)
+const batchError = ref('')
+const emptyBatchRow = () => ({
+  title: '',
+  assigneeId: '',
+  date: vietnamDateKey(new Date()),
+  start: '08:00',
+  end: '10:00',
+  point: 1,
+})
+const batchRows = ref([emptyBatchRow()])
+
+const openBatchDialog = () => {
+  batchError.value = ''
+  batchRows.value = [emptyBatchRow()]
+  isBatchOpen.value = true
+}
+const addBatchRow = () => {
+  const last = batchRows.value[batchRows.value.length - 1]
+  batchRows.value.push({ ...emptyBatchRow(), date: last?.date ?? vietnamDateKey(new Date()) })
+}
+const removeBatchRow = (index) => {
+  batchRows.value.splice(index, 1)
+  if (!batchRows.value.length) batchRows.value.push(emptyBatchRow())
+}
+const validBatchRows = computed(() => batchRows.value.filter((row) => (
+  row.title.trim() && row.assigneeId && row.date && row.start && row.end && row.end > row.start
+)))
+
+const submitBatch = async () => {
+  if (!validBatchRows.value.length) return
+  batchSaving.value = true
+  batchError.value = ''
+  try {
+    const items = validBatchRows.value.map((row) => ({
+      title: row.title.trim(),
+      description: '',
+      workStartAt: vietnamDateTime(row.date, row.start).toISOString(),
+      workEndAt: vietnamDateTime(row.date, row.end).toISOString(),
+      declaredPoint: Number(row.point) || 0,
+      assigneeId: row.assigneeId,
+    }))
+    await AssignmentService.createBatch(items)
+    isBatchOpen.value = false
+    await refreshResources()
+  } catch (error) {
+    batchError.value = error.message || 'Không thể nhập việc hàng loạt.'
+  } finally {
+    batchSaving.value = false
+  }
+}
+
 const submitAssignment = async () => {
   if (!isFormValid.value) return
   formSaving.value = true
@@ -1017,7 +1160,7 @@ const submitAssignment = async () => {
     timelineDate.value = startAt
     await refreshResources()
     resetForm()
-    if (!isDesktop) closeForm()
+    closeForm()
   } catch (e) {
     formError.value = e.message || 'Không thể khai báo công việc.'
   } finally {
@@ -1210,6 +1353,43 @@ const aiChatScroll = ref(null)
 let aiAbortController = null
 let aiScrollFrame = null
 let aiHistoryPromise = null
+const isClearAiConfirmOpen = ref(false)
+const isClearingAiHistory = ref(false)
+
+const canClearAiChat = computed(() =>
+  !isClearingAiHistory.value &&
+  (aiMessages.value.length > 1 || (aiMessages.value.length === 1 && aiMessages.value[0]?.id !== 'welcome'))
+)
+
+const isAiSubmitDisabled = computed(() => {
+  if (isAiTyping.value) return true
+  if (isRecordingVoice.value) return false
+  return !String(aiInputText.value || '').trim()
+})
+
+const handleClearAiConversation = async () => {
+  if (isClearingAiHistory.value) return
+  if (aiAbortController) {
+    aiAbortController.abort()
+    aiAbortController = null
+  }
+  isAiTyping.value = false
+  isClearingAiHistory.value = true
+  try {
+    await AssignmentService.clearAiChatSession()
+    aiMessages.value = [initialAiMessage()]
+    aiCurrentDraft.value = null
+    activeAiConfirmationToken.value = ''
+    isClearAiConfirmOpen.value = false
+    scrollAiChatToBottom()
+  } catch (err) {
+    aiMessages.value = [initialAiMessage()]
+    isClearAiConfirmOpen.value = false
+  } finally {
+    isClearingAiHistory.value = false
+  }
+}
+
 const initialAiMessage = () => ({
   id: 'welcome',
   role: 'ai',
@@ -1418,6 +1598,9 @@ const sendAiMessage = async (text, confirmationToken = '') => {
           scrollAiChatToBottom()
         } else if (event === 'error') {
           streamError = new Error(data.message || 'Trợ lý AI gặp lỗi.')
+        } else if (event === 'done') {
+          assistantMessage.streaming = false
+          isAiTyping.value = false
         }
       },
       aiAbortController.signal,
@@ -1438,6 +1621,7 @@ const sendAiMessage = async (text, confirmationToken = '') => {
 }
 
 const handleAiSubmit = () => {
+  if (isAiTyping.value) return
   const content = aiInputText.value.trim() || (isRecordingVoice.value ? 'Ghi âm yêu cầu' : '')
   if (!content) return
   aiInputText.value = ''
@@ -1456,6 +1640,10 @@ const confirmAiProposal = (message) => {
 }
 
 onBeforeUnmount(() => {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
   aiAbortController?.abort()
   if (aiScrollFrame) window.cancelAnimationFrame(aiScrollFrame)
 })
@@ -1473,6 +1661,11 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="ml-auto flex shrink-0 items-center justify-end gap-3">
+          <Button v-if="!isSpecialist" variant="outline" @click="openBatchDialog" class="h-9 rounded-full gap-2 border-zinc-200 bg-white px-4 text-xs font-bold text-zinc-700 hover:bg-zinc-50 shrink-0">
+            <ClipboardCheck class="h-4 w-4 text-indigo-600" />
+            Nhập hàng loạt
+          </Button>
+
           <Button v-if="canApprove" variant="outline" @click="openApprovalPanel" class="relative h-9 rounded-full gap-2 border-zinc-200 bg-white px-4 text-xs font-bold text-zinc-700 hover:bg-zinc-50 shrink-0">
             <ClipboardCheck class="h-4 w-4 text-emerald-600" />
             Duyệt
@@ -1482,52 +1675,32 @@ onBeforeUnmount(() => {
           </Button>
 
           <!-- Mobile Buttons (<2xl) -->
-          <div class="flex items-center gap-3 shrink-0 2xl:hidden">
+          <div class="flex items-center gap-2.5 shrink-0 2xl:hidden">
             <Button
-              @click="closeForm(); openAiModal()"
-              class="h-9 rounded-full gap-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 text-xs font-bold px-4 whitespace-nowrap border border-indigo-200/50"
-            >
-              <Sparkles class="w-4 h-4" /> Giao việc bằng AI
-            </Button>
-            <Button
-              @click="closeAiModal(); openForm()"
-              class="h-9 rounded-full gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-4 whitespace-nowrap"
+              @click="openForm()"
+              class="h-9 rounded-full gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-4 whitespace-nowrap shadow-sm"
             >
               <Plus class="w-4 h-4" /> Khai báo việc
             </Button>
           </div>
 
-          <!-- Desktop Sliding Tabs (>=2xl) -->
-          <div class="hidden 2xl:grid relative grid-cols-2 bg-zinc-100 p-1 rounded-full isolate select-none w-[240px] shrink-0 border border-zinc-200/50">
-            <div class="absolute inset-y-1 left-1 right-1 z-0 pointer-events-none">
-              <div
-                class="w-1/2 h-full bg-white rounded-full shadow-sm transition-transform duration-300 ease-out will-change-transform"
-                :style="{
-                  transform: `translateX(${isFormOpen ? '100%' : '0%'})`,
-                }"
-              ></div>
-            </div>
-
-            <button
-              @click="openAiModal(); closeForm()"
-              class="relative rounded-full text-xs font-bold z-10 transition-colors h-8 flex items-center justify-center gap-1.5 bg-transparent border-0 outline-none cursor-pointer"
-              :class="isAiModalOpen ? 'text-indigo-600' : 'text-zinc-500 hover:text-zinc-700'"
+          <!-- Desktop Button (>=2xl) -->
+          <div class="hidden 2xl:flex items-center gap-2.5 shrink-0">
+            <Button
+              @click="openForm()"
+              class="h-9 rounded-full gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-4 whitespace-nowrap shadow-sm"
             >
-              <Sparkles class="w-3.5 h-3.5" /> AI Chat
-            </button>
-            <button
-              @click="openForm(); closeAiModal()"
-              class="relative rounded-full text-xs font-bold z-10 transition-colors h-8 flex items-center justify-center gap-1.5 bg-transparent border-0 outline-none cursor-pointer"
-              :class="isFormOpen ? 'text-zinc-900' : 'text-zinc-500 hover:text-zinc-700'"
-            >
-              <Plus class="w-3.5 h-3.5" /> Thủ công
-            </button>
+              <Plus class="w-4 h-4" /> Khai báo việc
+            </Button>
           </div>
         </div>
       </header>
 
-      <!-- Stats Cards: mỗi card có chiều cao cố định tối thiểu để icon và nhãn không bị ép/cắt. -->
-      <div class="grid grid-flow-col auto-cols-[minmax(190px,1fr)] gap-3 overflow-x-auto px-4 pb-5 hide-scrollbar sm:gap-4 sm:px-6 sm:pb-6 2xl:grid-flow-row 2xl:grid-cols-5 2xl:overflow-visible 2xl:px-8 2xl:pb-8">
+      <!-- Stats Cards: mỗi card có chiều cao cố định tối thiểu để icon và nhãn không bị ép/cắt.
+           shrink-0 là bắt buộc: trong flex-col, thiếu nó thì hàng card bị co lại khi
+           timeline bên dưới cao, và phần dưới của card tràn ra ngoài rồi bị nền
+           trắng của timeline che mất. -->
+      <div class="grid shrink-0 grid-flow-col auto-cols-[minmax(190px,1fr)] gap-3 overflow-x-auto px-4 pb-5 hide-scrollbar sm:gap-4 sm:px-6 sm:pb-6 2xl:grid-flow-row 2xl:grid-cols-5 2xl:overflow-visible 2xl:px-8 2xl:pb-8">
         <div v-for="card in statCards" :key="card.key" class="flex min-h-[72px] min-w-0 items-center gap-3 rounded-2xl border border-zinc-100 bg-white px-4 py-3 shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] 2xl:min-h-[82px] 2xl:gap-4 2xl:px-5 2xl:py-4">
           <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full 2xl:h-10 2xl:w-10" :class="card.iconClass">
             <component :is="card.icon" class="h-5 w-5" />
@@ -1672,7 +1845,7 @@ onBeforeUnmount(() => {
                   </div>
 
                   <!-- Task Blocks -->
-                  <div class="absolute inset-0" :class="isSpecialist ? 'top-6 bottom-6' : 'top-2 bottom-2'">
+                  <div class="absolute inset-0 touch-none pointer-events-none" :class="isSpecialist ? 'top-6 bottom-6' : 'top-2 bottom-2'">
                     <div v-if="timelineCreate && String(timelineCreate.assignee.id) === String(user.id)" class="absolute top-0 bottom-0 rounded-lg border border-dashed border-indigo-400 bg-indigo-100/70 pointer-events-none z-20" :style="getTaskPosition(timelineMinutesToTime(timelineCreate.start), timelineMinutesToTime(timelineCreate.end))">
                       <span class="absolute inset-0 flex items-center px-3 text-[11px] font-bold text-indigo-700 whitespace-nowrap overflow-hidden">
                         {{ timelineMinutesToTime(timelineCreate.start) }} -
@@ -1683,7 +1856,7 @@ onBeforeUnmount(() => {
                       v-for="task in user.tasks"
                       :key="task.blockId"
                       data-task-block
-                      class="group/task absolute top-0 bottom-0 rounded-lg flex items-center transition-colors select-none touch-none shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+                      class="group/task absolute top-0 bottom-0 rounded-lg flex items-center transition-colors select-none touch-none shadow-[0_1px_3px_rgba(0,0,0,0.02)] pointer-events-auto"
                       :title="`${task.name} · ${task.start} - ${task.end}`"
                       @pointerdown="startTaskPointer($event, task, user, 'move')"
                       @click="handleTaskClick(task, user)"
@@ -1741,150 +1914,26 @@ onBeforeUnmount(() => {
          >= 2xl (1536px, màn desktop FullHD): hiển thị inline cố định bên phải.
          < 2xl (laptop 13", tablet): drawer trượt từ phải, có backdrop.
          Mobile (< sm): bottom-sheet trượt từ dưới lên. -->
-    <!-- Placeholder to reserve space on desktop and prevent layout shift -->
-    <div v-if="isFormOpen || isAiModalOpen" class="hidden 2xl:block w-[380px] shrink-0 border-l border-zinc-100"></div>
-
-    <!-- Backdrop: fade in/out, chỉ hiện khi panel là overlay -->
+    <!-- Backdrop: fade in/out trên mọi màn hình khi mở form/panel -->
     <Transition name="backdrop-fade-in" type="transition">
       <div
-        v-if="isFormOpen || isAiModalOpen || isApprovalOpen"
+        v-if="isFormOpen || isApprovalOpen"
         class="fixed inset-0 bg-zinc-900/40 z-[60]"
-        :class="{ '2xl:hidden': !isApprovalOpen }"
-        @click="closeForm(); closeAiModal(); closeApprovalPanel()"
+        @click="closeForm(); closeApprovalPanel()"
       ></div>
     </Transition>
 
-    <!-- Unified Panel Shell: trượt từ dưới lên (mobile) / từ phải sang (>= sm) -->
+    <!-- Panel Shell: Popup trượt từ bên phải sang (Drawer Overlay) -->
     <Transition name="slide-in-only" :duration="350">
-      <aside v-if="isFormOpen || isAiModalOpen" class="fixed z-[70] inset-x-0 bottom-0 max-h-[88dvh] w-full rounded-t-3xl shadow-2xl sm:inset-x-auto sm:right-0 sm:top-0 sm:bottom-0 sm:max-h-none sm:w-[400px] sm:rounded-none sm:shadow-[-10px_0_30px_-15px_rgba(0,0,0,0.15)] 2xl:absolute 2xl:inset-auto 2xl:right-0 2xl:top-0 2xl:bottom-0 2xl:w-[380px] 2xl:max-h-none 2xl:rounded-none 2xl:shadow-none shrink-0 bg-white flex flex-col overflow-hidden border-l border-zinc-100">
-        <!-- Sliding Container (Carousel) -->
-        <div class="flex w-[200%] h-full transition-transform duration-300 ease-out will-change-transform" :style="{ transform: `translateX(${isFormOpen ? '-50%' : '0%'})` }">
-          <!-- ============================================== -->
-          <!-- TAB 1: AI CHAT (LEFT SIDE) -->
-          <!-- ============================================== -->
-          <div class="w-1/2 h-full flex flex-col relative border-r border-zinc-100">
-            <!-- Header -->
-            <div class="px-6 2xl:px-8 py-5 2xl:py-6 border-b border-zinc-100 flex items-center justify-between shrink-0 bg-white">
-              <div class="flex items-center gap-2">
-                <div class="w-7 h-7 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 shrink-0">
-                  <Sparkles class="w-3.5 h-3.5" />
-                </div>
-                <h2 class="text-xl font-bold text-zinc-900">Trợ lý AI</h2>
-              </div>
-              <button type="button" @click.stop="closeAiModal" aria-label="Đóng bảng AI" class="w-8 h-8 rounded-full bg-zinc-100 hover:bg-zinc-200 flex items-center justify-center text-zinc-500 transition-colors 2xl:hidden shrink-0">
-                <X class="w-4 h-4" />
-              </button>
-            </div>
-
-            <!-- Chat Area -->
-            <div ref="aiChatScroll" class="flex-1 min-h-0 overflow-y-auto hide-scrollbar p-6 bg-zinc-50/50 flex flex-col gap-6">
-              <div v-for="msg in aiMessages" :key="msg.id" class="flex flex-col gap-2">
-                <!-- User Message -->
-                <div v-if="msg.role === 'user'" class="self-end flex flex-col items-end max-w-[80%]">
-                  <div v-if="msg.type === 'text'" class="bg-indigo-600 text-white px-5 py-3 rounded-2xl rounded-tr-sm text-[13px] font-medium leading-relaxed shadow-sm">
-                    {{ msg.content }}
-                  </div>
-                  <div v-else-if="msg.type === 'file'" class="bg-white border border-zinc-200 text-zinc-800 px-5 py-3 rounded-2xl rounded-tr-sm flex items-center gap-3 shadow-sm">
-                    <div class="w-8 h-8 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-600">
-                      <Paperclip class="w-4 h-4" />
-                    </div>
-                    <div>
-                      <p class="text-[13px] font-bold">{{ msg.content }}</p>
-                      <p class="text-[10px] font-medium text-zinc-500">Đã tải lên</p>
-                    </div>
-                  </div>
-                </div>
-                <!-- AI Message -->
-                <div v-if="msg.role === 'ai'" class="self-start flex gap-3 max-w-[90%] w-full">
-                  <div class="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 shrink-0 mt-1">
-                    <Bot class="w-4 h-4" />
-                  </div>
-                  <div class="flex flex-col gap-3 w-full">
-                    <div v-if="msg.content" class="whitespace-pre-line bg-white border border-zinc-100 text-zinc-800 px-5 py-3 rounded-2xl rounded-tl-sm text-[13px] font-medium leading-relaxed shadow-sm self-start">
-                      {{ msg.content }}
-                    </div>
-                    <div v-else-if="msg.streaming" class="h-[42px] self-start rounded-2xl rounded-tl-sm border border-zinc-100 bg-white px-5 py-3.5 shadow-sm">
-                      <div class="flex items-center gap-1.5">
-                        <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-300"></span>
-                        <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-300" style="animation-delay: 0.1s"></span>
-                        <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-300" style="animation-delay: 0.2s"></span>
-                      </div>
-                    </div>
-                    <!-- Proposal Card -->
-                    <div v-if="msg.type === 'proposal'" class="flex w-full flex-col gap-4 rounded-lg border border-indigo-100 bg-white p-4 shadow-md shadow-indigo-900/5">
-                      <p class="text-[10px] font-extrabold uppercase tracking-wide text-indigo-500">Thông tin task</p>
-                      <div class="divide-y divide-zinc-100 text-xs">
-                        <div class="flex gap-3 py-2 first:pt-0">
-                          <span class="w-24 shrink-0 font-semibold text-zinc-400">Tên việc</span><strong class="text-zinc-800">{{ msg.proposal.title }}</strong>
-                        </div>
-                        <div v-if="msg.proposal.description" class="flex gap-3 py-2">
-                          <span class="w-24 shrink-0 font-semibold text-zinc-400">Mô tả</span><span class="text-zinc-700">{{ msg.proposal.description }}</span>
-                        </div>
-                        <div v-if="msg.proposal.assignee?.fullName" class="flex gap-3 py-2">
-                          <span class="w-24 shrink-0 font-semibold text-zinc-400">Người thực hiện</span><strong class="text-zinc-800">{{ msg.proposal.assignee.fullName }}</strong>
-                        </div>
-                        <div class="flex gap-3 py-2">
-                          <span class="w-24 shrink-0 font-semibold text-zinc-400">Ngày</span><strong class="text-zinc-800">{{ aiDisplayDate(msg.proposal.date) }}</strong>
-                        </div>
-                        <div class="flex gap-3 py-2">
-                          <span class="w-24 shrink-0 font-semibold text-zinc-400">Giờ bắt đầu</span><strong class="text-zinc-800">{{ msg.proposal.startTime }}</strong>
-                        </div>
-                        <div class="flex gap-3 py-2">
-                          <span class="w-24 shrink-0 font-semibold text-zinc-400">Giờ kết thúc</span><strong class="text-zinc-800">{{ msg.proposal.endTime }}</strong>
-                        </div>
-                        <div class="flex gap-3 py-2 last:pb-0">
-                          <span class="w-24 shrink-0 font-semibold text-zinc-400">Điểm</span><strong class="text-zinc-800">{{ msg.proposal.point }}</strong>
-                        </div>
-                      </div>
-                      <div class="flex items-center justify-end border-t border-zinc-100 pt-3">
-                        <Button @click="confirmAiProposal(msg)" :disabled="isAiProposalDisabled(msg)" class="h-9 rounded-full bg-indigo-600 px-4 text-[11px] font-bold text-white shadow-sm hover:bg-indigo-700 disabled:bg-zinc-300 disabled:text-zinc-500 disabled:shadow-none">
-                          <CheckCircle class="mr-1.5 h-3.5 w-3.5" />
-                          {{ aiProposalActionLabel(msg) }}
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- Input Bar (Footer) -->
-            <div class="p-4 bg-white border-t border-zinc-100 shrink-0">
-              <div :class="['rounded-full transition-all duration-300', isRecordingVoice ? 'voice-active-border shadow-lg shadow-indigo-500/20' : 'p-[1px] bg-zinc-200/60']">
-                <div class="flex items-center gap-2 bg-white rounded-full p-1.5 pl-4 focus-within:ring-2 focus-within:ring-indigo-500/20 transition-all h-[46px]">
-                  <input v-model="aiInputText" @keyup.enter="handleAiSubmit" type="text" :placeholder="isRecordingVoice ? 'Đang lắng nghe sếp nói...' : 'Nhập yêu cầu bằng văn bản...'" :disabled="isRecordingVoice || isAiTyping" class="flex-1 bg-transparent outline-none text-[13px] font-medium text-zinc-800 placeholder:text-zinc-400 min-w-0 disabled:opacity-80" />
-                  <div class="flex items-center gap-1 shrink-0">
-                    <button @click="toggleVoice" :title="isRecordingVoice ? 'Tắt thu âm' : 'Ra lệnh bằng giọng nói'" class="w-9 h-9 rounded-full flex items-center justify-center transition-colors shrink-0" :class="isRecordingVoice ? 'bg-rose-100 text-rose-600 hover:bg-rose-200' : 'text-zinc-400 hover:text-indigo-600 hover:bg-indigo-50'">
-                      <X v-if="isRecordingVoice" class="w-4 h-4" />
-                      <Mic v-else class="w-4 h-4" />
-                    </button>
-                    <button
-                      @click="handleAiSubmit"
-                      :disabled="isAiTyping"
-                      class="w-9 h-9 rounded-full bg-indigo-600 hover:bg-indigo-700 flex items-center justify-center text-white transition-colors shadow-sm ml-1 shrink-0"
-                      :class="{
-                        'opacity-50 pointer-events-none': (!aiInputText.trim() && !isRecordingVoice) || isAiTyping,
-                      }"
-                    >
-                      <Send class="w-4 h-4 -ml-0.5" />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
+      <aside v-if="isFormOpen" class="fixed z-[70] inset-y-0 right-0 max-h-none w-full sm:w-[440px] shadow-2xl shrink-0 bg-white flex flex-col overflow-hidden border-l border-zinc-100">
+        <div class="w-full h-full flex flex-col relative">
+          <!-- Header -->
+          <div class="px-6 2xl:px-8 py-5 2xl:py-6 border-b border-zinc-100 flex items-center justify-between shrink-0 bg-white">
+            <h2 class="text-xl font-bold text-zinc-900">Khai báo công việc</h2>
+            <button type="button" @click.stop="closeForm" aria-label="Đóng bảng giao việc" class="w-8 h-8 rounded-full bg-zinc-100 hover:bg-zinc-200 flex items-center justify-center text-zinc-500 transition-colors shrink-0">
+              <X class="w-4 h-4" />
+            </button>
           </div>
-
-          <!-- ============================================== -->
-          <!-- TAB 2: MANUAL FORM (RIGHT SIDE) -->
-          <!-- ============================================== -->
-          <div class="w-1/2 h-full flex flex-col relative">
-            <!-- Header -->
-            <div class="px-6 2xl:px-8 py-5 2xl:py-6 border-b border-zinc-100 flex items-center justify-between shrink-0 bg-white">
-              <h2 class="text-xl font-bold text-zinc-900">Khai báo công việc</h2>
-              <button type="button" @click.stop="closeForm" aria-label="Đóng bảng giao việc" class="w-8 h-8 rounded-full bg-zinc-100 hover:bg-zinc-200 flex items-center justify-center text-zinc-500 transition-colors 2xl:hidden shrink-0">
-                <X class="w-4 h-4" />
-              </button>
-            </div>
 
             <!-- Body -->
             <div class="p-6 2xl:p-8 pb-28 2xl:pb-28 flex flex-col gap-6 flex-1 min-h-0 overflow-y-auto hide-scrollbar">
@@ -2041,7 +2090,6 @@ onBeforeUnmount(() => {
               </Button>
             </div>
           </div>
-        </div>
       </aside>
     </Transition>
 
@@ -2264,23 +2312,38 @@ onBeforeUnmount(() => {
             </p>
           </div>
 
-          <Card v-if="taskTimeTarget?.task?.workSource === 'MANAGER_ASSIGNED'" class="mt-4 border-amber-100 bg-amber-50/50 shadow-none">
+          <Card v-if="['APPROVED', 'COMPLETED'].includes(taskTimeTarget?.task?.rawStatus) || (pointAdjustment && pointAdjustment.status !== 'NONE')" class="mt-4 border-amber-100 bg-amber-50/50 shadow-none">
             <CardHeader class="flex-row items-start justify-between gap-3 space-y-0 p-4">
-              <div><CardTitle class="text-[11px] font-bold uppercase text-amber-700">Điểm công việc</CardTitle><p class="mt-1 text-sm font-bold text-zinc-900">Điểm giao: {{ taskTimeTarget?.task?.declaredPoint ?? 0 }}</p><p v-if="pointAdjustment?.status === 'APPROVED'" class="mt-1 text-xs font-semibold text-emerald-700">Điểm hiệu lực: {{ pointAdjustment.approvedPoint ?? taskTimeTarget?.task?.declaredPoint ?? 0 }}</p></div>
-              <Button v-if="canRequestPointAdjustment" size="sm" variant="outline" class="rounded-full border-amber-300 bg-white text-amber-800 hover:bg-amber-100" @click="openPointAdjustmentDialog('request')">Kiến nghị điểm</Button>
-              <Button v-else-if="canManagePointAdjustment" size="sm" class="rounded-full bg-amber-600 text-white hover:bg-amber-700" @click="openPointAdjustmentDialog('review')">Duyệt kiến nghị</Button>
+              <div>
+                <CardTitle class="text-[11px] font-bold uppercase text-amber-700">Điểm / số lần làm lại</CardTitle>
+                <p class="mt-1 text-sm font-bold text-zinc-900">Điểm giao: {{ taskTimeTarget?.task?.declaredPoint ?? 0 }} · Làm lại: {{ taskTimeTarget?.task?.effectiveReworkCount ?? 0 }}</p>
+                <p v-if="pointAdjustment?.status === 'APPROVED'" class="mt-1 text-xs font-semibold text-emerald-700">
+                  Hiệu lực: {{ pointAdjustment.approvedPoint ?? taskTimeTarget?.task?.declaredPoint ?? 0 }} điểm · {{ pointAdjustment.approvedReworkCount ?? taskTimeTarget?.task?.effectiveReworkCount ?? 0 }} lần làm lại
+                </p>
+              </div>
+              <Button v-if="canRequestPointAdjustment" size="sm" variant="outline" class="rounded-full border-amber-300 bg-white text-amber-800 hover:bg-amber-100" @click="openPointAdjustmentDialog('request')">Khiếu nại</Button>
+              <Button v-else-if="canManagePointAdjustment" size="sm" class="rounded-full bg-amber-600 text-white hover:bg-amber-700" @click="openPointAdjustmentDialog('review')">Duyệt khiếu nại</Button>
             </CardHeader>
             <CardContent v-if="pointAdjustment && pointAdjustment.status !== 'NONE'" class="border-t border-amber-100 px-4 pb-4 pt-3 text-xs">
-              <div class="flex flex-wrap items-center gap-2"><Badge variant="outline" class="border-amber-200 bg-white font-bold text-amber-800">{{ pointAdjustmentStatusLabel(pointAdjustment.status) }}</Badge><span>Đề xuất: <strong class="text-zinc-800">{{ pointAdjustment.requestedPoint ?? 0 }} điểm</strong></span></div>
+              <div class="flex flex-wrap items-center gap-2">
+                <Badge variant="outline" class="border-amber-200 bg-white font-bold text-amber-800">{{ pointAdjustmentStatusLabel(pointAdjustment.status) }}</Badge>
+                <span v-if="pointAdjustment.requestedPoint != null">Đề xuất điểm: <strong class="text-zinc-800">{{ pointAdjustment.requestedPoint }}</strong></span>
+                <span v-if="pointAdjustment.requestedReworkCount != null">Đề xuất làm lại: <strong class="text-zinc-800">{{ pointAdjustment.requestedReworkCount }}</strong></span>
+              </div>
               <p v-if="pointAdjustment.reason" class="mt-2 whitespace-pre-wrap text-zinc-600">{{ pointAdjustment.reason }}</p><p v-if="pointAdjustment.decisionNote" class="mt-2 text-zinc-500">Phản hồi: {{ pointAdjustment.decisionNote }}</p>
-              <div v-if="pointAdjustment.history?.length" class="mt-3 space-y-2 border-t border-amber-100 pt-3"><div v-for="(history, index) in pointAdjustment.history" :key="`${history.actedAt}-${index}`" class="flex items-start justify-between gap-3"><p class="text-zinc-600"><strong class="text-zinc-800">{{ history.action === 'REQUESTED' ? 'Gửi kiến nghị' : history.action === 'FORWARDED' ? 'Chuyển duyệt' : history.action === 'APPROVED' ? 'Duyệt điểm' : history.action === 'REJECTED' ? 'Không duyệt' : 'Hủy kiến nghị' }}</strong><span v-if="history.note"> · {{ history.note }}</span></p><time class="shrink-0 text-[10px] text-zinc-400">{{ formatApprovalDateTime(history.actedAt) }}</time></div></div>
-              <Button v-if="pointAdjustment.status === 'PENDING' && String(idOf(pointAdjustment.requestedBy)) === String(idOf(currentUser))" variant="ghost" size="sm" class="mt-2 h-7 px-2 text-xs text-zinc-600" :disabled="pointAdjustmentSaving" @click="submitPointAdjustment('cancel')">Hủy kiến nghị</Button>
+              <div v-if="pointAdjustment.history?.length" class="mt-3 space-y-2 border-t border-amber-100 pt-3"><div v-for="(history, index) in pointAdjustment.history" :key="`${history.actedAt}-${index}`" class="flex items-start justify-between gap-3"><p class="text-zinc-600"><strong class="text-zinc-800">{{ history.action === 'REQUESTED' ? 'Gửi khiếu nại' : history.action === 'FORWARDED' ? 'Chuyển duyệt' : history.action === 'APPROVED' ? 'Duyệt khiếu nại' : history.action === 'REJECTED' ? 'Không duyệt' : 'Hủy khiếu nại' }}</strong><span v-if="history.approvedPoint != null"> · điểm: {{ history.approvedPoint }}</span><span v-if="history.approvedReworkCount != null"> · làm lại: {{ history.approvedReworkCount }}</span><span v-if="history.note"> · {{ history.note }}</span></p><time class="shrink-0 text-[10px] text-zinc-400">{{ formatApprovalDateTime(history.actedAt) }}</time></div></div>
+              <Button v-if="pointAdjustment.status === 'PENDING' && String(idOf(pointAdjustment.requestedBy)) === String(idOf(currentUser))" variant="ghost" size="sm" class="mt-2 h-7 px-2 text-xs text-zinc-600" :disabled="pointAdjustmentSaving" @click="submitPointAdjustment('cancel')">Hủy khiếu nại</Button>
             </CardContent>
           </Card>
 
-          <div v-if="taskTimeTarget?.task?.editable" class="mt-5 rounded-lg border border-zinc-200 p-4">
+          <div v-if="canRescheduleTask" class="mt-5 rounded-lg border border-zinc-200 p-4">
             <p class="text-[11px] font-bold uppercase text-zinc-500">Điều chỉnh thời gian</p>
-            <div class="mt-3 grid grid-cols-2 gap-3">
+            <p v-if="isLateDeclarationFix" class="mt-1 text-xs text-amber-700">Công việc đã hoàn thành — chỉnh sửa sẽ được ghi nhật ký và báo cho người thực hiện.</p>
+            <div class="mt-3 grid grid-cols-3 gap-3">
+              <div class="space-y-1.5">
+                <span class="text-xs font-bold text-zinc-500">Ngày</span>
+                <Input v-model="taskTimeForm.date" type="date" class="rounded-lg" />
+              </div>
               <div class="space-y-1.5">
                 <span class="text-xs font-bold text-zinc-500">Bắt đầu</span>
                 <Input v-model="taskTimeForm.start" type="time" step="900" class="rounded-lg" />
@@ -2317,14 +2380,91 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div class="flex justify-end gap-2 border-t border-zinc-100 bg-white px-6 py-4">
-          <Button variant="outline" class="rounded-full" @click="isTaskTimeOpen = false">Đóng</Button>
-          <Button v-if="canSubmitCompletion" class="rounded-full bg-blue-600 text-white hover:bg-blue-700" :disabled="completionSaving || !completionResult.trim()" @click="submitCompletion">Nộp kết quả</Button>
-          <template v-if="canConfirmCompletion">
-            <Button variant="outline" class="rounded-full border-rose-200 text-rose-700 hover:bg-rose-50" :disabled="completionSaving || !completionNote.trim()" @click="confirmCompletion(true)">Trả lại</Button>
-            <Button class="rounded-full bg-emerald-600 text-white hover:bg-emerald-700" :disabled="completionSaving" @click="confirmCompletion(false)">Xác nhận hoàn thành</Button>
-          </template>
-          <Button v-if="taskTimeTarget?.task?.editable" class="rounded-full bg-indigo-600 hover:bg-indigo-700 text-white" :disabled="updatingTaskTime" @click="submitTaskTime"> Lưu thời gian </Button>
+        <div class="flex items-center justify-between gap-2 border-t border-zinc-100 bg-white px-6 py-4">
+          <div>
+            <Button
+              v-if="canCancelTask"
+              variant="outline"
+              class="rounded-full border-rose-200 text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+              @click="isCancelTaskConfirmOpen = true"
+            >
+              <Trash2 class="w-4 h-4 mr-1.5" />
+              Xóa công việc
+            </Button>
+          </div>
+          <div class="flex items-center gap-2">
+            <Button variant="outline" class="rounded-full" @click="isTaskTimeOpen = false">Đóng</Button>
+            <Button v-if="canSubmitCompletion" class="rounded-full bg-blue-600 text-white hover:bg-blue-700" :disabled="completionSaving || !completionResult.trim()" @click="submitCompletion">Nộp kết quả</Button>
+            <template v-if="canConfirmCompletion">
+              <Button variant="outline" class="rounded-full border-rose-200 text-rose-700 hover:bg-rose-50" :disabled="completionSaving || !completionNote.trim()" @click="confirmCompletion(true)">Trả lại</Button>
+              <Button class="rounded-full bg-emerald-600 text-white hover:bg-emerald-700" :disabled="completionSaving" @click="confirmCompletion(false)">Xác nhận hoàn thành</Button>
+            </template>
+            <Button v-if="canRescheduleTask" class="rounded-full bg-indigo-600 hover:bg-indigo-700 text-white" :disabled="updatingTaskTime" @click="submitTaskTime"> Lưu thời gian </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog v-model:open="isCancelTaskConfirmOpen">
+      <DialogContent class="sm:max-w-[420px] rounded-2xl p-6 bg-white shadow-xl">
+        <DialogHeader class="gap-2 text-left">
+          <div class="w-10 h-10 rounded-full bg-rose-50 text-rose-600 flex items-center justify-center mb-1">
+            <Trash2 class="w-5 h-5" />
+          </div>
+          <DialogTitle class="text-lg font-bold text-zinc-900">Xóa công việc?</DialogTitle>
+          <DialogDescription class="text-sm text-zinc-500 leading-relaxed">
+            Bạn có chắc chắn muốn xóa công việc "{{ taskTimeTarget?.task?.name || taskTimeTarget?.task?.title }}"? Thao tác này không thể hoàn tác.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter class="flex flex-row justify-end gap-2.5 mt-5">
+          <Button type="button" variant="outline" class="rounded-full px-4 text-xs font-semibold" :disabled="isCancellingTask" @click="isCancelTaskConfirmOpen = false">Hủy</Button>
+          <Button type="button" variant="destructive" class="rounded-full px-4 text-xs font-bold gap-1.5" :disabled="isCancellingTask" @click="handleCancelTask">
+            <Loader2 v-if="isCancellingTask" class="w-3.5 h-3.5 animate-spin" />
+            <Trash2 v-else class="w-3.5 h-3.5" />
+            <span>{{ isCancellingTask ? 'Đang xóa...' : 'Xác nhận xóa' }}</span>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog v-model:open="isBatchOpen">
+      <DialogContent class="sm:max-w-[900px]">
+        <div class="space-y-4">
+          <div>
+            <DialogTitle class="text-lg font-bold text-zinc-900">Nhập việc hàng loạt</DialogTitle>
+            <p class="mt-1 text-sm text-zinc-500">Mỗi dòng là một công việc riêng. Việc giao cho người khác được duyệt luôn.</p>
+          </div>
+
+          <div class="max-h-[52vh] space-y-2 overflow-y-auto pr-1">
+            <div v-for="(row, index) in batchRows" :key="index" class="grid grid-cols-12 items-center gap-2">
+              <Input v-model="row.title" placeholder="Tên công việc" class="col-span-4 h-9" />
+              <Select v-model="row.assigneeId">
+                <SelectTrigger class="col-span-3 h-9"><SelectValue placeholder="Người thực hiện" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem v-for="person in assignableResources" :key="person.id" :value="String(person.id)">{{ person.name }}</SelectItem>
+                </SelectContent>
+              </Select>
+              <Input v-model="row.date" type="date" class="col-span-2 h-9" />
+              <Input v-model="row.start" type="time" step="900" class="col-span-1 h-9" />
+              <Input v-model="row.end" type="time" step="900" class="col-span-1 h-9" />
+              <Input v-model="row.point" type="number" min="0" step="0.5" class="col-span-1 h-9" title="Điểm" />
+              <button type="button" class="col-span-12 justify-self-end text-xs font-semibold text-rose-600 hover:underline sm:col-span-12" @click="removeBatchRow(index)">Xóa dòng {{ index + 1 }}</button>
+            </div>
+          </div>
+
+          <Button variant="outline" size="sm" class="rounded-full" @click="addBatchRow">+ Thêm dòng</Button>
+
+          <p v-if="batchError" class="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{{ batchError }}</p>
+
+          <div class="flex items-center justify-between gap-2 border-t border-zinc-100 pt-4">
+            <p class="text-xs text-zinc-500">{{ validBatchRows.length }}/{{ batchRows.length }} dòng hợp lệ</p>
+            <div class="flex gap-2">
+              <Button variant="outline" :disabled="batchSaving" @click="isBatchOpen = false">Hủy</Button>
+              <Button :disabled="batchSaving || !validBatchRows.length" @click="submitBatch">
+                {{ batchSaving ? 'Đang lưu' : `Tạo ${validBatchRows.length} việc` }}
+              </Button>
+            </div>
+          </div>
         </div>
       </DialogContent>
     </Dialog>
@@ -2333,25 +2473,37 @@ onBeforeUnmount(() => {
       <DialogContent class="sm:max-w-[480px]">
         <div class="space-y-5">
           <div>
-            <DialogTitle class="text-lg font-bold text-zinc-900">{{ pointAdjustmentMode === 'request' ? 'Kiến nghị điều chỉnh điểm' : 'Duyệt kiến nghị điểm' }}</DialogTitle>
+            <DialogTitle class="text-lg font-bold text-zinc-900">{{ pointAdjustmentMode === 'request' ? 'Khiếu nại điểm / số lần làm lại' : 'Duyệt khiếu nại' }}</DialogTitle>
             <p class="mt-1 text-sm text-zinc-500">{{ taskTimeTarget?.task?.name }}</p>
           </div>
-          <div class="rounded-lg bg-zinc-50 px-4 py-3 text-sm"><span class="text-zinc-500">Điểm giao ban đầu</span><strong class="ml-2 text-zinc-900">{{ taskTimeTarget?.task?.declaredPoint ?? 0 }} điểm</strong></div>
+          <div class="rounded-lg bg-zinc-50 px-4 py-3 text-sm"><span class="text-zinc-500">Hiện tại</span><strong class="ml-2 text-zinc-900">{{ taskTimeTarget?.task?.declaredPoint ?? 0 }} điểm · {{ taskTimeTarget?.task?.effectiveReworkCount ?? 0 }} lần làm lại</strong></div>
           <template v-if="pointAdjustmentMode === 'request'">
-            <label class="grid gap-2 text-sm font-semibold text-zinc-700">Điểm kiến nghị<Input v-model="pointAdjustmentForm.requestedPoint" type="number" min="0" step="0.5" class="h-10" /></label>
-            <label class="grid gap-2 text-sm font-semibold text-zinc-700">Lý do kiến nghị<Textarea v-model="pointAdjustmentForm.reason" class="min-h-24 resize-none" placeholder="Nêu phần việc và lý do cần điều chỉnh điểm..." /></label>
+            <label class="grid gap-2 text-sm font-semibold text-zinc-700">Điểm đề xuất (để trống nếu không khiếu nại điểm)<Input v-model="pointAdjustmentForm.requestedPoint" type="number" min="0" step="0.5" class="h-10" /></label>
+            <label class="grid gap-2 text-sm font-semibold text-zinc-700">Số lần làm lại đề xuất (để trống nếu không khiếu nại)<Input v-model="pointAdjustmentForm.requestedReworkCount" type="number" min="0" step="1" class="h-10" /></label>
+            <label class="grid gap-2 text-sm font-semibold text-zinc-700">Lý do khiếu nại<Textarea v-model="pointAdjustmentForm.reason" class="min-h-24 resize-none" placeholder="Nêu phần việc và lý do cần điều chỉnh..." /></label>
           </template>
           <template v-else>
-            <div class="rounded-lg border border-amber-100 bg-amber-50/50 px-4 py-3 text-sm"><p class="font-semibold text-amber-900">Người thực hiện đề xuất {{ pointAdjustment?.requestedPoint ?? 0 }} điểm</p><p class="mt-1 whitespace-pre-wrap text-amber-800">{{ pointAdjustment?.reason || 'Không có lý do.' }}</p></div>
-            <label class="grid gap-2 text-sm font-semibold text-zinc-700">Điểm chốt<Input v-model="pointAdjustmentForm.approvedPoint" type="number" min="0" step="0.5" class="h-10" /></label>
+            <div class="rounded-lg border border-amber-100 bg-amber-50/50 px-4 py-3 text-sm">
+              <p class="font-semibold text-amber-900">
+                Người thực hiện đề xuất
+                <template v-if="pointAdjustment?.requestedPoint != null">{{ pointAdjustment.requestedPoint }} điểm</template>
+                <template v-if="pointAdjustment?.requestedPoint != null && pointAdjustment?.requestedReworkCount != null"> · </template>
+                <template v-if="pointAdjustment?.requestedReworkCount != null">{{ pointAdjustment.requestedReworkCount }} lần làm lại</template>
+              </p>
+              <p class="mt-1 whitespace-pre-wrap text-amber-800">{{ pointAdjustment?.reason || 'Không có lý do.' }}</p>
+            </div>
+            <label v-if="pointAdjustment?.requestedPoint != null" class="grid gap-2 text-sm font-semibold text-zinc-700">Điểm chốt<Input v-model="pointAdjustmentForm.approvedPoint" type="number" min="0" step="0.5" class="h-10" /></label>
+            <label v-if="pointAdjustment?.requestedReworkCount != null" class="grid gap-2 text-sm font-semibold text-zinc-700">Số lần làm lại chốt<Input v-model="pointAdjustmentForm.approvedReworkCount" type="number" min="0" step="1" class="h-10" /></label>
             <label class="grid gap-2 text-sm font-semibold text-zinc-700">Phản hồi<Textarea v-model="pointAdjustmentForm.note" class="min-h-20 resize-none" placeholder="Bắt buộc khi không duyệt hoặc chuyển duyệt." /></label>
             <label class="grid gap-2 text-sm font-semibold text-zinc-700">Chuyển duyệt đến<Select v-model="pointAdjustmentForm.forwardApproverId"><SelectTrigger class="h-10"><SelectValue placeholder="Chọn cấp cao hơn" /></SelectTrigger><SelectContent><SelectItem v-for="approver in pointAdjustmentForwardOptions" :key="approver.id" :value="approver.id">{{ approver.name }} · {{ approver.role }}</SelectItem></SelectContent></Select></label>
           </template>
           <p v-if="pointAdjustmentError" class="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700">{{ pointAdjustmentError }}</p>
-          <div class="flex flex-wrap justify-end gap-2"><Button variant="outline" :disabled="pointAdjustmentSaving" @click="isPointAdjustmentOpen = false">Hủy</Button><template v-if="pointAdjustmentMode === 'request'"><Button :disabled="pointAdjustmentSaving || !pointAdjustmentForm.reason.trim()" @click="submitPointAdjustment('request')">Gửi kiến nghị</Button></template><template v-else><Button variant="outline" class="border-rose-200 text-rose-700 hover:bg-rose-50" :disabled="pointAdjustmentSaving || !pointAdjustmentForm.note.trim()" @click="submitPointAdjustment('reject')">Không duyệt</Button><Button variant="outline" :disabled="pointAdjustmentSaving || !pointAdjustmentForm.note.trim() || !pointAdjustmentForm.forwardApproverId" @click="submitPointAdjustment('forward')">Chuyển duyệt</Button><Button :disabled="pointAdjustmentSaving" @click="submitPointAdjustment('approve')">Duyệt điểm</Button></template></div>
+          <div class="flex flex-wrap justify-end gap-2"><Button variant="outline" :disabled="pointAdjustmentSaving" @click="isPointAdjustmentOpen = false">Hủy</Button><template v-if="pointAdjustmentMode === 'request'"><Button :disabled="pointAdjustmentSaving || !pointAdjustmentForm.reason.trim() || (pointAdjustmentForm.requestedPoint === '' && pointAdjustmentForm.requestedReworkCount === '')" @click="submitPointAdjustment('request')">Gửi khiếu nại</Button></template><template v-else><Button variant="outline" class="border-rose-200 text-rose-700 hover:bg-rose-50" :disabled="pointAdjustmentSaving || !pointAdjustmentForm.note.trim()" @click="submitPointAdjustment('reject')">Không duyệt</Button><Button variant="outline" :disabled="pointAdjustmentSaving || !pointAdjustmentForm.note.trim() || !pointAdjustmentForm.forwardApproverId" @click="submitPointAdjustment('forward')">Chuyển duyệt</Button><Button :disabled="pointAdjustmentSaving" @click="submitPointAdjustment('approve')">Duyệt khiếu nại</Button></template></div>
         </div>
       </DialogContent>
     </Dialog>
+
+
   </div>
 </template>
 

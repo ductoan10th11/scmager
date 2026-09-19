@@ -26,9 +26,12 @@ const declarationToTask = (declaration) => ({
   estimatedMinutes: declaration.durationMinutes,
   assignedTo: declaration.createdBy,
   declaredPoint: declaration.declaredPoint,
-  effectivePoint: declaration.pointAdjustment?.status === 'APPROVED'
+  effectivePoint: declaration.pointAdjustment?.status === 'APPROVED' && declaration.pointAdjustment.approvedPoint != null
     ? declaration.pointAdjustment.approvedPoint
     : declaration.declaredPoint,
+  effectiveReworkCount: declaration.pointAdjustment?.status === 'APPROVED' && declaration.pointAdjustment.approvedReworkCount != null
+    ? declaration.pointAdjustment.approvedReworkCount
+    : (declaration.approval?.history ?? []).filter((entry) => entry.action === 'RETURNED').length,
   pointAdjustment: declaration.pointAdjustment,
   approval: declaration.approval,
   completion: declaration.completion,
@@ -172,6 +175,10 @@ export const AssignmentService = {
     return http('/api/assignment-ai/session?limit=200')
   },
 
+  clearAiChatSession() {
+    return http('/api/assignment-ai/session', { method: 'DELETE' })
+  },
+
   async streamAiChat(payload, onEvent, signal) {
     const response = await fetch('/api/assignment-ai/chat', {
       method: 'POST',
@@ -188,6 +195,7 @@ export const AssignmentService = {
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    let isStreamFinished = false
     const consume = (block) => {
       if (!block.trim()) return
       let event = 'message'
@@ -197,8 +205,13 @@ export const AssignmentService = {
         if (line.startsWith('data:')) dataLines.push(line.slice(5).trim())
       })
       if (!dataLines.length) return
-      const data = JSON.parse(dataLines.join('\n'))
-      onEvent(event, data)
+      try {
+        const data = JSON.parse(dataLines.join('\n'))
+        onEvent(event, data)
+        if (event === 'done' || event === 'error') {
+          isStreamFinished = true
+        }
+      } catch (_) {}
     }
 
     while (true) {
@@ -207,8 +220,9 @@ export const AssignmentService = {
       const blocks = buffer.split(/\r?\n\r?\n/)
       buffer = done ? '' : blocks.pop() ?? ''
       blocks.forEach(consume)
-      if (done) {
-        consume(buffer)
+      if (done || isStreamFinished) {
+        if (buffer && !isStreamFinished) consume(buffer)
+        try { await reader.cancel() } catch (_) {}
         break
       }
     }
@@ -255,6 +269,14 @@ export const AssignmentService = {
     return result
   },
 
+  // Cancel/delete unapproved task
+  cancelTask(taskId, payload = {}) {
+    return http(`/api/work-declarations/${taskId}/cancel`, {
+      method: 'POST',
+      body: payload,
+    })
+  },
+
   async listPendingApprovals() {
     return http('/api/work-declarations?pendingForMe=true&status=PENDING_APPROVAL&limit=100')
   },
@@ -286,6 +308,10 @@ export const AssignmentService = {
 
   returnCompletion(taskId, payload) {
     return http(`/api/work-declarations/${taskId}/completion/return`, { method: 'POST', body: payload })
+  },
+
+  createBatch(items) {
+    return http('/api/work-declarations/batch', { method: 'POST', body: { items } })
   },
 
   requestPointAdjustment(taskId, payload) {

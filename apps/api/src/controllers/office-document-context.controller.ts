@@ -9,6 +9,11 @@ import {
   updateManagedOfficeDocumentContext as updateManagedOfficeDocumentContextService,
   upsertOfficeDocumentContext,
 } from "../services/office-document-context.service";
+import {
+  cancelOfficeDocumentComplaintService,
+  decideOfficeDocumentComplaintService,
+  requestOfficeDocumentComplaintService,
+} from "../services/office-document-complaint.service";
 
 export const receiveOfficeDocumentContext = async (
   req: Request,
@@ -17,7 +22,7 @@ export const receiveOfficeDocumentContext = async (
 ) => {
   try {
     const result = await upsertOfficeDocumentContext(req.body);
-    res.status(result.data.created ? 201 : 200).json(result);
+    res.status(result.data?.created ? 201 : 200).json(result);
   } catch (error) {
     next(error);
   }
@@ -123,6 +128,42 @@ export const deleteManagedOfficeDocumentContext = async (
         String(req.params.id),
       ),
     );
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const requestOfficeDocumentComplaint = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    res.status(200).json(await requestOfficeDocumentComplaintService(actor(req), req.params.id, req.body));
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const decideOfficeDocumentComplaint = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    res.status(200).json(await decideOfficeDocumentComplaintService(actor(req), req.params.id, req.body));
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const cancelOfficeDocumentComplaint = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    res.status(200).json(await cancelOfficeDocumentComplaintService(actor(req), req.params.id));
   } catch (error) {
     next(error);
   }

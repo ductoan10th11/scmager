@@ -187,3 +187,23 @@ test("existing tenantless incoming source is attached without overwriting observ
     OfficeDocumentContextModel.updateOne = originalUpdateOne;
   }
 });
+
+test("missing related incoming source is not created by reconciliation", async () => {
+  const originalFindOne = OfficeDocumentContextModel.findOne;
+  let findOneCalls = 0;
+  OfficeDocumentContextModel.findOne = (() => {
+    findOneCalls += 1;
+    return { lean: async () => null };
+  }) as unknown as typeof OfficeDocumentContextModel.findOne;
+  try {
+    const result = await outgoingProductReconciliationInternals.upsertIncomingSource(
+      "missing-incoming-2426003",
+      "64b000000000000000000022",
+      "unused-csrf",
+    );
+    assert.equal(result, null);
+    assert.equal(findOneCalls, 1);
+  } finally {
+    OfficeDocumentContextModel.findOne = originalFindOne;
+  }
+});

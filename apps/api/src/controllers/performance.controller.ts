@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from 'express';
 import { buildPerformanceWorkbook } from '../services/performance-export.service';
+import { buildPerformanceImportTemplate } from '../services/performance-import-template.service';
 import { importPerformanceWorkbook } from '../services/performance-import.service';
 import { performanceOverviewService } from '../services/performance.service';
 
@@ -22,6 +23,28 @@ export const downloadPerformanceWorkbook = async (req: Request, res: Response, n
       .setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(workbook.fileName)}`)
       .setHeader('Cache-Control', 'no-store')
       .send(workbook.content);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const downloadPerformanceImportTemplate = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const workbook = await buildPerformanceImportTemplate();
+    res
+      .status(200)
+      .setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+      .setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(workbook.fileName)}`)
+      .setHeader('Cache-Control', 'no-store')
+      .send(workbook.content);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const previewPerformanceWorkbookFile = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    res.status(200).json(await importPerformanceWorkbook(cu(req), req.file, { dryRun: true }));
   } catch (error) {
     next(error);
   }

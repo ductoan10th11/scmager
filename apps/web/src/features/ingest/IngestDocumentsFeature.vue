@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   CalendarClock,
@@ -12,7 +12,6 @@ import {
   FilePlus2,
   FileText,
   Loader2,
-  RefreshCw,
   Search,
   X,
 } from 'lucide-vue-next'
@@ -85,9 +84,13 @@ const latestTrackLog = (doc) => {
   })[0]
 }
 
-const fetchDocuments = async (page = 1, keepSelection = false) => {
-  loading.value = true
-  error.value = null
+let pollTimer = null
+
+const fetchDocuments = async (page = 1, keepSelection = false, isBackground = false) => {
+  if (!isBackground) {
+    loading.value = true
+    error.value = null
+  }
   try {
     const res = await http(`/api/ingest-documents?${queryString(page)}`)
     items.value = res.data ?? []
@@ -95,13 +98,20 @@ const fetchDocuments = async (page = 1, keepSelection = false) => {
 
     if (!keepSelection) {
       selected.value = null
+    } else if (selected.value) {
+      const found = items.value.find((item) => item._id === selected.value._id)
+      if (found) {
+        selected.value = { ...selected.value, ...found }
+      }
     }
   } catch (e) {
-    error.value = e.message
-    items.value = []
-    selected.value = null
+    if (!isBackground) {
+      error.value = e.message
+    }
   } finally {
-    loading.value = false
+    if (!isBackground) {
+      loading.value = false
+    }
   }
 }
 
@@ -222,6 +232,21 @@ watch(() => [filters.value.completed, filters.value.doKhan, filters.value.scope,
 onMounted(() => {
   if (user.value?.role?.code === 'SPECIALIST') filters.value.scope = 'mine'
   fetchDocuments(1)
+
+  // Polling 10 RPM (mỗi 6 giây) tự động làm mới ngầm khi tab đang mở
+  pollTimer = setInterval(() => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      fetchDocuments(pagination.value.page, true, true)
+    }
+  }, 6000)
+})
+
+onUnmounted(() => {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+  if (searchTimer) clearTimeout(searchTimer)
 })
 </script>
 
@@ -236,10 +261,6 @@ onMounted(() => {
           </h1>
           <p class="mt-1 text-sm text-zinc-500">{{ pageDescription }}</p>
         </div>
-        <Button class="bg-zinc-900 text-white hover:bg-zinc-700" :disabled="loading" @click="fetchDocuments(pagination.page, true)">
-          <Loader2 v-if="loading" class="mr-2 h-4 w-4 animate-spin" />
-          <RefreshCw v-else class="mr-2 h-4 w-4" /> Tải lại
-        </Button>
       </div>
     </header>
 

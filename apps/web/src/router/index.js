@@ -18,11 +18,16 @@ import {
   PerformancePage,
   UsersPage,
   PrivacyPolicyPage,
+  OverdueReportPage,
 } from './page-loaders'
 
 const routes = [
   {
     path: '/',
+    redirect: '/login',
+  },
+  {
+    path: '/landing',
     name: 'Landing',
     component: LandingPage,
     meta: { public: true },
@@ -49,6 +54,14 @@ const routes = [
     path: '/privacy',
     redirect: '/privacy-policy',
   },
+  {
+    path: '/presentations',
+    beforeEnter() {
+      window.location.replace('/presentations/' + window.location.hash)
+    },
+    meta: { public: true },
+  },
+
   {
     path: '/',
     component: MainLayout,
@@ -153,7 +166,8 @@ const routes = [
       {
         path: 'reports',
         name: 'Reports',
-        redirect: '/dashboard',
+        component: OverdueReportPage,
+        meta: { requiresAuth: true, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER'] },
       },
       {
         path: 'settings',

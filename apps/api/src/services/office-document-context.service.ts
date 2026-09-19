@@ -19,10 +19,14 @@ import {
 } from "./langson-dwr.service";
 import { resolveDocumentWorkflow } from "./document-workflow.service";
 import {
+  appendOfficeDocumentManagementNote,
   effectiveOfficeDocumentCompletion,
   effectiveOfficeDocumentPoint,
+  effectiveOfficeDocumentReworkCount,
   effectiveOfficeProductPoint,
+  isOfficeDocumentAwaitingScore,
   normalizeOfficeDocumentSymbol,
+  rawOfficeDocumentPoint,
 } from "./office-document-completion.service";
 import {
   canReadDocumentResultLink,
@@ -531,17 +535,87 @@ export const normalizeOfficeDocumentContext = (payload: unknown) => {
   };
 };
 
-export const upsertOfficeDocumentContext = async (payload: unknown) => {
+export type OfficeDocumentContextUpsertOptions = {
+  /** Keep synchronization jobs from creating a source document accidentally. */
+  createIfMissing?: boolean;
+};
+
+export const upsertOfficeDocumentContext = async (
+  payload: unknown,
+  options: OfficeDocumentContextUpsertOptions = {},
+) => {
   const normalized = normalizeOfficeDocumentContext(payload);
-  const tenant = await resolveContextTenant(normalized);
+  // A task without a due date cannot be measured for lateness, so eOffice
+  // ingest never stores one. The observation is dropped whole: an existing
+  // record keeps the due date it already has, because a single sync that
+  // failed to read the deadline must not erase it.
+  if (
+    normalized.pageType === "incoming"
+    && !normalized.observation.dueDate.trim()
+  ) {
+    return {
+      data: null,
+      created: false,
+      skipped: true,
+      reason: "NO_DEADLINE",
+      sourceHost: normalized.sourceHost,
+      pageType: normalized.pageType,
+      externalDocumentId: normalized.externalDocumentId,
+    };
+  }
   const filter = {
     sourceHost: normalized.sourceHost,
     pageType: normalized.pageType,
     externalDocumentId: normalized.externalDocumentId,
   };
   const previous = await OfficeDocumentContextModel.findOne(filter)
-    .select("management.assignment management.product management.manualScore management.updatedBy")
+    .select("management.assignment management.product management.manualScore management.overrides management.updatedBy observation.point observation.reworkCount observation.relatedIncomingSoKyHieu")
     .lean();
+
+  // ponytail: standalone products without score or rework count are dropped
+  // because they carry no evaluation and answer no task.
+  if (normalized.pageType !== "incoming") {
+    const hasRelatedIncoming = Boolean(
+      normalized.observation.relatedIncomingSoKyHieu?.trim()
+      || previous?.management?.overrides?.relatedIncomingSoKyHieu?.trim()
+      || previous?.observation?.relatedIncomingSoKyHieu?.trim(),
+    );
+    const isLinkedResult = previous?.management?.product?.classification === "LINKED_RESULT";
+    const isStandalone = !hasRelatedIncoming && !isLinkedResult;
+
+    if (isStandalone) {
+      const hasObservedPoint = normalized.observation.point !== null;
+      const hasObservedRework = (normalized.observation.reworkCount ?? 0) > 0;
+      const hasPreviousPoint = previous ? rawOfficeDocumentPoint(previous) !== null : false;
+      const hasPreviousRework = previous ? effectiveOfficeDocumentReworkCount(previous) > 0 : false;
+      const hasScoreSignal = hasObservedPoint || hasPreviousPoint;
+      const hasReworkSignal = hasObservedRework || hasPreviousRework;
+
+      if (!hasScoreSignal && !hasReworkSignal) {
+        return {
+          data: null,
+          created: false,
+          skipped: true,
+          reason: "STANDALONE_WITHOUT_SCORE_OR_REWORK",
+          sourceHost: normalized.sourceHost,
+          pageType: normalized.pageType,
+          externalDocumentId: normalized.externalDocumentId,
+        };
+      }
+    }
+  }
+
+  if (!previous && options.createIfMissing === false) {
+    return {
+      data: null,
+      created: false,
+      skipped: true,
+      sourceHost: normalized.sourceHost,
+      pageType: normalized.pageType,
+      externalDocumentId: normalized.externalDocumentId,
+    };
+  }
+  const tenant = await resolveContextTenant(normalized);
   // Any management edit, including intentionally clearing an assignment, is
   // authoritative over extension-derived ownership.
   const isManaged = Boolean(previous?.management?.updatedBy);
@@ -622,6 +696,17 @@ export const upsertOfficeDocumentContext = async (payload: unknown) => {
         pageType: normalized.pageType,
         externalDocumentId: normalized.externalDocumentId,
       },
+    };
+  }
+
+  if (options.createIfMissing === false) {
+    return {
+      data: null,
+      created: false,
+      skipped: true,
+      sourceHost: normalized.sourceHost,
+      pageType: normalized.pageType,
+      externalDocumentId: normalized.externalDocumentId,
     };
   }
 
@@ -751,6 +836,9 @@ export const listOfficeDocumentContexts = async (
     "departmentId",
     "userId",
     "deadlineStatus",
+    "scoreState",
+    "complaintState",
+    "minHoldingDays",
     "dateField",
     "dateFrom",
     "dateTo",
@@ -819,6 +907,16 @@ export const listOfficeDocumentContexts = async (
   ]);
   if (requestedDeadlineStatuses.some((value) => !deadlineStatuses.has(value)))
     throw badRequest("deadlineStatus is invalid.");
+  const scoreState = string(query.scoreState, "scoreState", 30);
+  if (scoreState && !["AWAITING_SCORE", "SCORED"].includes(scoreState))
+    throw badRequest("scoreState must be AWAITING_SCORE or SCORED.");
+  const complaintState = string(query.complaintState, "complaintState", 20);
+  if (complaintState && complaintState !== "PENDING")
+    throw badRequest("complaintState must be PENDING.");
+  const minHoldingDaysRaw = string(query.minHoldingDays, "minHoldingDays", 10);
+  const minHoldingDays = minHoldingDaysRaw === "" ? null : Number(minHoldingDaysRaw);
+  if (minHoldingDays !== null && (!Number.isSafeInteger(minHoldingDays) || minHoldingDays < 0))
+    throw badRequest("minHoldingDays must be a non-negative integer.");
   const dateField = string(query.dateField, "dateField", 30) || "observed";
   if (
     !["observed", "due", "received", "created", "synced", "completed"].includes(
@@ -856,17 +954,47 @@ export const listOfficeDocumentContexts = async (
     const parsed = new Date(raw);
     return Number.isNaN(parsed.getTime()) ? null : parsed;
   };
+
+  /**
+   * Outgoing documents carry no workflow state from eOffice — only the flat
+   * track log the reconciliation cron stores in observation.timeline. The last
+   * entry names whoever the document was handed to, so that recipient is the
+   * one still holding it, and how long ago tells us why it is not moving.
+   */
+  const holderFrom = (context: any) => {
+    const timeline = Array.isArray(context.observation?.timeline) ? context.observation.timeline : [];
+    if (!timeline.length) return null;
+    const latest = [...timeline].sort(
+      (left: any, right: any) => Number(right?.TT ?? 0) - Number(left?.TT ?? 0),
+    )[0];
+    const fullName = String(latest?.["Người nhận"] ?? "").trim();
+    if (!fullName) return null;
+    const since = parseDocumentDate(latest?.["Thời gian"]);
+    const holdingDays = since
+      ? Math.max(0, Math.floor((Date.now() - since.getTime()) / 86_400_000))
+      : null;
+    return {
+      fullName,
+      since: since ? since.toISOString() : null,
+      holdingDays,
+      lastAction: String(latest?.["Thao tác"] ?? "").trim(),
+      lastNote: String(latest?.["Nội dung"] ?? "").trim(),
+    };
+  };
   const trackingFor = (context: any) => {
     const sync = context.statusSync ?? {};
     const processing = sync.processing ?? {};
     const managedAssignment = context.management?.assignment ?? {};
-    const isOfficeClerk = (participant: any) =>
-      String(
-        participant?.externalUsername ?? participant?.username ?? "",
-      ).toLowerCase() === "vanthu-xathientan" ||
-      String(participant?.externalFullName ?? participant?.fullName ?? "")
-        .toLowerCase()
-        .includes("văn thư xã thiện tân");
+    // Any clerk account, not just this commune's: eOffice names them all with
+    // "văn thư" / "vanthu", and handing a document to one of them ends its
+    // processing.
+    const isOfficeClerk = (participant: any) => {
+      const username = String(participant?.externalUsername ?? participant?.username ?? "").toLowerCase();
+      const fullName = String(participant?.externalFullName ?? participant?.fullName ?? "")
+        .normalize("NFC")
+        .toLocaleLowerCase("vi-VN");
+      return username.includes("vanthu") || fullName.includes("văn thư");
+    };
     const processedAssignee =
       [...(processing.assignees ?? [])]
         .filter(
@@ -881,7 +1009,21 @@ export const listOfficeDocumentContexts = async (
     const workflowAssignee = processing.currentAssignee?.fullName
       ? processing.currentAssignee
       : processedAssignee;
-    const assignee = managedAssignment.fullName
+    // The first specialist in the routing chain owns the work. An extension
+    // payload only captures whoever held the document while the page was open,
+    // so the track log — which keeps the whole chain — decides instead. A
+    // manager's explicit edit still wins over both.
+    const primary: any = processing.primaryAssignee ?? null;
+    const managerEdited = Boolean(context.management?.updatedBy);
+    const assignee = (!managerEdited && primary?.userId)
+      ? {
+          source: "WORKFLOW_PRIMARY",
+          userId: String(primary.userId),
+          fullName: primary.fullName ?? "",
+          departmentId: primary.departmentId ? String(primary.departmentId) : "",
+          departmentName: managedAssignment.departmentName ?? "",
+        }
+      : managedAssignment.fullName
       ? {
           source: "MANUAL",
           userId: managedAssignment.userId
@@ -908,8 +1050,33 @@ export const listOfficeDocumentContexts = async (
       context.management?.overrides?.[field] ?? context.observation?.[field];
     const dueAt = parseDocumentDate(observed("dueDate"), true);
     const completion = effectiveOfficeDocumentCompletion(context);
-    const completedAt = completion.completedAt;
-    const completed = completion.completed;
+
+    /**
+     * Where the document sits right now, read off the newest routing entry:
+     * handed to a clerk means the processing is finished, handed back to a
+     * specialist means it is in someone's hands again — even if eOffice had
+     * marked it done earlier.
+     */
+    const clerkHandoff = (() => {
+      if (context.pageType !== "incoming") return null;
+      const logs = Array.isArray(sync.trackLogs) ? sync.trackLogs : [];
+      if (!logs.length) return null;
+      const latest = [...logs].sort(
+        (left: any, right: any) => Number(right?.sequence ?? 0) - Number(left?.sequence ?? 0),
+      )[0];
+      const receivers = latest?.recipients?.length ? latest.recipients : [latest?.receiver];
+      const named = (receivers ?? []).filter((person: any) => person?.fullName || person?.username);
+      if (!named.length) return null;
+      return {
+        toClerk: named.every((person: any) => isOfficeClerk(person)),
+        at: parseDocumentDate(latest?.completedAt ?? latest?.processingAt ?? latest?.receivedAt),
+      };
+    })();
+
+    const completed = clerkHandoff ? clerkHandoff.toClerk : completion.completed;
+    const completedAt = clerkHandoff?.toClerk
+      ? (clerkHandoff.at ?? completion.completedAt)
+      : (completed ? completion.completedAt : null);
     const now = new Date();
     const deadlineStatus = !dueAt
       ? "NO_DEADLINE"
@@ -971,8 +1138,15 @@ export const listOfficeDocumentContexts = async (
       statusLabel,
       date,
       score,
+      rawScore: rawOfficeDocumentPoint(context),
+      awaitingScore: isOfficeDocumentAwaitingScore(context),
       manualScore: context.management?.manualScore ?? null,
       completionSource: completion.source,
+      holder: context.pageType === "incoming" || completed ? null : holderFrom(context),
+      // Filled in by the list pass once both sides of the task/product pair are
+      // known, so each row can point at its counterpart.
+      relatedIncoming: null as { id: string | null; soKyHieu: string } | null,
+      relatedProduct: null as { id: string; soKyHieu: string } | null,
     };
   };
 
@@ -1058,7 +1232,10 @@ export const listOfficeDocumentContexts = async (
         normalizedSoKyHieu: { $in: relatedIncomingSymbols },
       }).lean()
     : [];
-  const incomingPoints = new Map(
+  // A product answers an incoming task, and it is that task which carries the
+  // deadline. Keeping the task's id and deadline alongside its point lets a
+  // product show whether it was late and lets the UI jump between the two.
+  const incomingByKey = new Map(
     linkedIncoming.map((context: any) => {
       const symbol = String(
         context.management?.overrides?.soKyHieu ??
@@ -1070,12 +1247,56 @@ export const listOfficeDocumentContexts = async (
         context.management?.overrides?.point ??
         context.observation?.point ??
         null;
+      const tracking = trackingFor(context);
       return [
         `${context.organizationId ?? ""}|${normalizeOfficeDocumentSymbol(symbol)}`,
-        score,
+        {
+          id: String(context._id),
+          soKyHieu: symbol,
+          score,
+          dueAt: tracking.dueAt,
+          deadlineStatus: tracking.deadlineStatus,
+        },
       ];
     }),
   );
+
+  // The reverse direction: for a list of tasks, which product answers each one.
+  const outgoingByIncomingSymbol = new Map<string, { id: string; soKyHieu: string; createdAt: Date | null }>();
+  if (String(pageType) === "incoming") {
+    const taskSymbols = allItems
+      .map((context: any) => normalizeOfficeDocumentSymbol(
+        context.management?.overrides?.soKyHieu ?? context.observation?.soKyHieu ?? "",
+      ))
+      .filter(Boolean);
+    if (taskSymbols.length) {
+      const products = await OfficeDocumentContextModel.find({
+        pageType: { $in: ["outgoing", "outgoing_c2"] },
+        ...(actor.role.code !== "ADMIN" ? { organizationId: actor.organization } : {}),
+      })
+        .select("_id organizationId observation.soKyHieu observation.relatedIncomingSoKyHieu observation.createdDate observedAt management.overrides")
+        .lean();
+      for (const product of products as any[]) {
+        const relatedSymbol = normalizeOfficeDocumentSymbol(
+          product.management?.overrides?.relatedIncomingSoKyHieu
+            ?? product.observation?.relatedIncomingSoKyHieu
+            ?? "",
+        );
+        if (!relatedSymbol) continue;
+        const key = `${product.organizationId ?? ""}|${relatedSymbol}`;
+        if (outgoingByIncomingSymbol.has(key)) continue;
+        outgoingByIncomingSymbol.set(key, {
+          id: String(product._id),
+          soKyHieu: String(
+            product.management?.overrides?.soKyHieu ?? product.observation?.soKyHieu ?? "",
+          ),
+          createdAt: parseDocumentDate(
+            product.management?.overrides?.createdDate ?? product.observation?.createdDate,
+          ) ?? (product.observedAt ? new Date(product.observedAt) : null),
+        });
+      }
+    }
+  }
   const itemsWithTracking = allItems.map((context: any) => {
     const tracking = trackingFor(context);
     if (context.pageType !== "incoming") {
@@ -1084,17 +1305,69 @@ export const listOfficeDocumentContexts = async (
           context.observation?.relatedIncomingSoKyHieu ??
           "",
       ).trim();
-      const relatedPoint = relatedSymbol
-        ? incomingPoints.get(
+      const related = relatedSymbol
+        ? incomingByKey.get(
           `${context.organizationId ?? ""}|${normalizeOfficeDocumentSymbol(relatedSymbol)}`,
         )
         : undefined;
+      const relatedPoint = related?.score;
       tracking.score = effectiveOfficeProductPoint(context, relatedPoint);
+      // A product may inherit its point from the incoming document it answers,
+      // so "awaiting a score" has to account for that inherited value too.
+      const inherited = relatedPoint === null || relatedPoint === undefined ? null : Number(relatedPoint);
+      const inheritedScore = inherited !== null && Number.isFinite(inherited) && inherited >= 0 ? inherited : null;
+      tracking.rawScore = inheritedScore ?? tracking.rawScore;
+      tracking.awaitingScore = tracking.awaitingScore && tracking.rawScore === null;
+      // A product IS the finished work, so it is never "still within deadline" —
+      // it was either delivered on time or late, measured by the deadline of the
+      // task it answers against the day the product was drafted.
+      if (related) {
+        tracking.relatedIncoming = { id: related.id, soKyHieu: related.soKyHieu };
+        if (!tracking.dueAt) tracking.dueAt = related.dueAt;
+        const deliveredAt = parseDocumentDate(
+          context.management?.overrides?.createdDate ?? context.observation?.createdDate,
+        ) ?? (context.observedAt ? new Date(context.observedAt) : null);
+        tracking.deadlineStatus = related.dueAt && deliveredAt
+          ? (deliveredAt <= related.dueAt ? "DONE_ON_TIME" : "DONE_LATE")
+          : "NO_DEADLINE";
+      } else if (relatedSymbol) {
+        tracking.relatedIncoming = { id: null, soKyHieu: relatedSymbol };
+        tracking.deadlineStatus = "NO_DEADLINE";
+      } else {
+        tracking.deadlineStatus = "NO_DEADLINE";
+      }
+    } else {
+      const symbol = normalizeOfficeDocumentSymbol(
+        context.management?.overrides?.soKyHieu ?? context.observation?.soKyHieu ?? "",
+      );
+      const product = symbol
+        ? outgoingByIncomingSymbol.get(`${context.organizationId ?? ""}|${symbol}`)
+        : undefined;
+      if (product) {
+        tracking.relatedProduct = { id: product.id, soKyHieu: product.soKyHieu };
+        // Once a product answers the task, the task is done: the product has
+        // already been through the leader, so there is nothing left to track.
+        tracking.status = "COMPLETED";
+        tracking.statusLabel = "Đã xử lý";
+        if (!tracking.completedAt) tracking.completedAt = product.createdAt;
+        tracking.deadlineStatus = tracking.dueAt && product.createdAt
+          ? (product.createdAt <= tracking.dueAt ? "DONE_ON_TIME" : "DONE_LATE")
+          : "NO_DEADLINE";
+      }
     }
     return { ...context, tracking };
   });
   const items = itemsWithTracking.filter((context: any) => {
     const tracking = context.tracking;
+    if (context.pageType !== "incoming") {
+      const isStandalone = !tracking.relatedIncoming?.id
+        && !context.management?.overrides?.relatedIncomingSoKyHieu?.trim()
+        && !context.observation?.relatedIncomingSoKyHieu?.trim()
+        && context.management?.product?.classification !== "LINKED_RESULT";
+      if (isStandalone && tracking.rawScore === null && effectiveOfficeDocumentReworkCount(context) <= 0) {
+        return false;
+      }
+    }
     if (!actorCanReadOfficeDocument(context, actor)) return false;
     if (userId && !selectedUser) return false;
     if (departmentId && !selectedDepartment) return false;
@@ -1136,6 +1409,17 @@ export const listOfficeDocumentContexts = async (
     if (
       requestedDeadlineStatuses.length &&
       !requestedDeadlineStatuses.includes(tracking.deadlineStatus)
+    )
+      return false;
+    if (
+      complaintState === "PENDING"
+      && context.management?.scoreComplaint?.status !== "PENDING"
+    ) return false;
+    if (scoreState === "AWAITING_SCORE" && !tracking.awaitingScore) return false;
+    if (scoreState === "SCORED" && tracking.rawScore === null) return false;
+    if (
+      minHoldingDays !== null &&
+      (tracking.holder?.holdingDays == null || tracking.holder.holdingDays < minHoldingDays)
     )
       return false;
     if (dateFrom && (!tracking.date || tracking.date < dateFrom)) return false;
@@ -1246,17 +1530,19 @@ const trackLogsForObservation = (trackLogs: TrackLogItem[]) =>
     "File văn bản": "",
   }));
 
-const reworkCountFrom = (trackLogs: TrackLogItem[]) => {
+// The rework count is typed as free text inside the routing ("Chuyển tới")
+// comment box on eOffice. That same box's content is what should populate
+// scmager's note field, so both are read off the one matched track log entry.
+const routingSignalFrom = (trackLogs: TrackLogItem[]) => {
   const latest = [...trackLogs].sort(
     (left, right) => Number(right.sequence ?? 0) - Number(left.sequence ?? 0),
   );
   for (const trackLog of latest) {
-    const match = `${trackLog.content ?? ""} ${trackLog.comment ?? ""}`.match(
-      /(?:làm\s*lại|lam\s*lai)\s*:\s*(\d+)/iu,
-    );
-    if (match) return Number(match[1]);
+    const text = `${trackLog.content ?? ""} ${trackLog.comment ?? ""}`.trim();
+    const match = text.match(/(?:làm\s*lại|lam\s*lai)\s*:\s*(\d+)/iu);
+    if (match) return { reworkCount: Number(match[1]), note: text };
   }
-  return 0;
+  return { reworkCount: 0, note: "" };
 };
 
 const vietnamDate = (value: Date | null) =>
@@ -1295,13 +1581,20 @@ export const ingestIncomingBySymbol = async (
     throw notFound(
       `Không tìm thấy văn bản đến có số ký hiệu ${soKyHieu} trên eOffice.`,
     );
+  // Same rule as the extension path: a task with no processing deadline is not
+  // accepted, so it never reaches the tracking and scoring screens.
+  const withDeadline = results.filter((document) => Boolean(document.deadline));
+  if (!withDeadline.length)
+    throw badRequest(
+      `Văn bản ${soKyHieu} không có hạn xử lý nên không được nhận vào hệ thống.`,
+    );
 
   const sourceOrigin =
     process.env.LANGSON_APP_ORIGIN ?? "https://vanphongdientu.langson.gov.vn";
   const orgPrefix = process.env.LANGSON_ORG_PREFIX ?? "QLVB_LSN_XATHIENTAN.";
   const now = new Date();
   const saved = await Promise.all(
-    results.map(async (document) => {
+    withDeadline.map(async (document) => {
       const [detail, trackLogs] = await Promise.all([
         getDocDetail(document.documentId, csrf),
         getTrackLog(document.documentId, orgPrefix, csrf),
@@ -1309,6 +1602,7 @@ export const ingestIncomingBySymbol = async (
       const completed = isCompletedDocumentTrackLog(trackLogs);
       const processing = await resolveDocumentWorkflow(trackLogs, completed);
       const point = getLatestTrackLogPoint(trackLogs)?.point ?? null;
+      const routingSignal = routingSignalFrom(trackLogs);
       const normalized = normalizeOfficeDocumentContext({
         available: true,
         modalOpen: false,
@@ -1333,8 +1627,8 @@ export const ingestIncomingBySymbol = async (
         relatedIncomingSoKyHieu: "",
         comment: "",
         point,
-        reworkCount: reworkCountFrom(trackLogs),
-        note: "",
+        reworkCount: routingSignal.reworkCount,
+        note: routingSignal.note,
         recipients: [],
         timeline: trackLogsForObservation(trackLogs),
         url: `${sourceOrigin}/qlvbdh_lsn/main?6yXl=VAN_BAN_DEN_CA_NHAN&documentId=${encodeURIComponent(document.documentId)}`,
@@ -1551,9 +1845,13 @@ export const createManagedOfficeDocumentContext = async (
     || `m-${Date.now()}-${Math.floor(Math.random() * 1_000_000).toString().padStart(6, "0")}`;
   const sourceUrl = `https://manual.ework.local/office-document-contexts/${documentId}`;
   const { management: managementInput, completed: completedInput, ...observationInput } = input;
-  // Manual references are issued by eWork. Ignore a client-supplied value on
-  // create so every manual document follows the same <number>/VBN convention.
-  const soKyHieu = await nextManualReference(actor);
+  const requestedSoKyHieu = Object.prototype.hasOwnProperty.call(
+    observationInput,
+    "soKyHieu",
+  )
+    ? string(observationInput.soKyHieu, "soKyHieu", 500)
+    : "";
+  const soKyHieu = requestedSoKyHieu || await nextManualReference(actor);
   const normalized = observationPayload(
     { ...observationInput, subject, soKyHieu },
     { pageType, documentId, sourceUrl },
@@ -1758,10 +2056,21 @@ export const updateManagedOfficeDocumentContext = async (
       outgoingDocument: context._id,
       status: { $in: ["PENDING_APPROVAL", "APPROVED"] },
     });
-    if (lockedLink) {
+    // A submitted or approved product is frozen for its owner so the approval
+    // trail stays trustworthy. A leader can still correct it — typically a time
+    // that was declared late — and the correction is written into the
+    // management note so the change is never silent.
+    if (lockedLink && !MANAGER_ROLES.has(actor.role.code)) {
       throw conflict(
         "Sản phẩm đã gửi duyệt hoặc đã duyệt nên không thể sửa trực tiếp.",
       );
+    }
+    if (lockedLink) {
+      await appendOfficeDocumentManagementNote({
+        contextId: String(context._id),
+        organizationId: String(context.organizationId ?? ""),
+        entry: `${actor.fullName || actor.username} đã sửa sản phẩm sau khi gửi duyệt (${Object.keys(input).join(", ")}).`,
+      });
     }
   }
   const { management: managementInput, completed: completedInput, ...observationInput } = input;
@@ -1777,6 +2086,16 @@ export const updateManagedOfficeDocumentContext = async (
     (context.observation ?? {}) as Input,
   );
   const management = await normalizeManagement(actor, managementInput);
+  // A task without a due date cannot be measured for lateness, so an edit is
+  // never allowed to leave it empty. Automatic ingest from eOffice is a
+  // different path and stays untouched — that source is not ours to control.
+  if (
+    context.pageType === "incoming"
+    && observationInput.dueDate !== undefined
+    && !normalized.observation.dueDate
+  ) {
+    throw badRequest("Nhiệm vụ bắt buộc phải có hạn xử lý.");
+  }
   if (
     context.pageType !== "incoming"
     && (
@@ -1887,10 +2206,26 @@ export const updateManagedOfficeDocumentContext = async (
     { new: true, runValidators: true },
   ).lean();
   let resultLink: any = null;
+  // Only build the link when the task actually changed. Re-submitting an
+  // unchanged link throws "đã được liên kết", which used to roll back the whole
+  // edit — so a product that was already submitted could not be corrected at
+  // all, not even its point or note.
+  const previousRelatedSymbol = normalizeOfficeDocumentSymbol(
+    context.management?.overrides?.relatedIncomingSoKyHieu
+      ?? context.observation?.relatedIncomingSoKyHieu
+      ?? "",
+  );
+  const linkAlreadyMatches = Boolean(relatedIncomingSoKyHieu)
+    && normalizeOfficeDocumentSymbol(relatedIncomingSoKyHieu) === previousRelatedSymbol
+    && Boolean(await DocumentResultLinkModel.exists({
+      outgoingDocument: id,
+      status: { $ne: "RETURNED" },
+    }));
   if (
     updated
     && context.pageType !== "incoming"
     && relatedIncomingSoKyHieu
+    && !linkAlreadyMatches
   ) {
     try {
       resultLink = await createDocumentResultLinkService(actor, {

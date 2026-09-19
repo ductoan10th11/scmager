@@ -1,10 +1,31 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Bell, Loader2, LogOut, Save, Shield, SlidersHorizontal, UserRound } from 'lucide-vue-next'
+import {
+  AlertCircle,
+  Bell,
+  CheckCircle2,
+  Eye,
+  EyeOff,
+  KeyRound,
+  Loader2,
+  LogOut,
+  Save,
+  Shield,
+  SlidersHorizontal,
+  UserRound,
+} from 'lucide-vue-next'
 import { useAuth } from '@/features/auth/composables/useAuth'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { http } from '@/shared/api/http'
@@ -37,6 +58,74 @@ const extensionVersionLoading = ref(false)
 const extensionVersionSaving = ref(false)
 const extensionVersionError = ref('')
 const extensionVersionSuccess = ref('')
+
+// Modal đổi mật khẩu state
+const changePasswordOpen = ref(false)
+const currentPassword = ref('')
+const newPassword = ref('')
+const confirmPassword = ref('')
+const showCurrentPassword = ref(false)
+const showNewPassword = ref(false)
+const showConfirmPassword = ref(false)
+const changePasswordLoading = ref(false)
+const changePasswordError = ref('')
+const changePasswordSuccess = ref('')
+
+const openChangePasswordModal = () => {
+  currentPassword.value = ''
+  newPassword.value = ''
+  confirmPassword.value = ''
+  changePasswordError.value = ''
+  changePasswordSuccess.value = ''
+  showCurrentPassword.value = false
+  showNewPassword.value = false
+  showConfirmPassword.value = false
+  changePasswordOpen.value = true
+}
+
+const handlePasswordChange = async () => {
+  changePasswordError.value = ''
+  changePasswordSuccess.value = ''
+
+  if (!currentPassword.value) {
+    changePasswordError.value = 'Vui lòng nhập mật khẩu hiện tại.'
+    return
+  }
+  if (!newPassword.value || newPassword.value.length < 6) {
+    changePasswordError.value = 'Mật khẩu mới phải có ít nhất 6 ký tự.'
+    return
+  }
+  if (newPassword.value !== confirmPassword.value) {
+    changePasswordError.value = 'Xác nhận mật khẩu mới không khớp.'
+    return
+  }
+
+  const userId = user.value?.id || user.value?._id
+  if (!userId) {
+    changePasswordError.value = 'Không tìm thấy thông tin tài khoản.'
+    return
+  }
+
+  changePasswordLoading.value = true
+  try {
+    const response = await http(`/api/users/${userId}/password`, {
+      method: 'PUT',
+      body: {
+        currentPassword: currentPassword.value,
+        newPassword: newPassword.value,
+        confirmPassword: confirmPassword.value,
+      },
+    })
+    changePasswordSuccess.value = response.data?.message || 'Đổi mật khẩu thành công!'
+    setTimeout(() => {
+      changePasswordOpen.value = false
+    }, 1200)
+  } catch (error) {
+    changePasswordError.value = error.message || 'Không thể đổi mật khẩu. Vui lòng kiểm tra lại.'
+  } finally {
+    changePasswordLoading.value = false
+  }
+}
 
 const handleLogout = async () => {
   await logout()
@@ -87,7 +176,7 @@ onMounted(loadExtensionVersion)
       </header>
 
       <Tabs v-model="activeTab" class="flex flex-col gap-6">
-        <TabsList class="w-fit max-w-full rounded-full bg-zinc-100 p-1 flex-nowrap overflow-x-auto">
+        <TabsList class="w-fit max-w-full h-10 rounded-full bg-zinc-100 p-1 flex-nowrap overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
           <TabsTrigger value="profile" class="rounded-full px-5 gap-2 whitespace-nowrap shrink-0">
             <UserRound class="w-4 h-4" />
             Profile
@@ -110,14 +199,24 @@ onMounted(loadExtensionVersion)
                   <Badge class="w-fit max-w-full rounded-full bg-zinc-100 text-zinc-600 border-zinc-100 px-2 py-0.5 text-[10px] uppercase tracking-wider leading-none truncate">{{ roleBadge }}</Badge>
                 </div>
               </div>
-              <Button
-                variant="outline"
-                class="rounded-full border-red-100 bg-red-50 text-red-600 hover:bg-red-100 hover:text-red-700 font-bold gap-2 shrink-0"
-                @click="handleLogout"
-              >
-                <LogOut class="w-4 h-4" />
-                Đăng xuất
-              </Button>
+              <div class="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  class="rounded-full border-indigo-200 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 hover:text-indigo-700 font-bold gap-2 shrink-0"
+                  @click="openChangePasswordModal"
+                >
+                  <KeyRound class="w-4 h-4" />
+                  Đổi mật khẩu
+                </Button>
+                <Button
+                  variant="outline"
+                  class="rounded-full border-red-100 bg-red-50 text-red-600 hover:bg-red-100 hover:text-red-700 font-bold gap-2 shrink-0"
+                  @click="handleLogout"
+                >
+                  <LogOut class="w-4 h-4" />
+                  Đăng xuất
+                </Button>
+              </div>
             </div>
 
             <div class="p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -195,23 +294,144 @@ onMounted(loadExtensionVersion)
               </p>
             </article>
 
-            <article class="bg-white border border-zinc-200/70 !rounded-[32px] p-6 shadow-sm">
-              <div class="flex items-center gap-3">
-                <div class="h-10 w-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
-                  <Shield class="w-5 h-5" />
+            <article class="bg-white border border-zinc-200/70 !rounded-[32px] p-6 shadow-sm flex flex-col justify-between">
+              <div>
+                <div class="flex items-center gap-3">
+                  <div class="h-10 w-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
+                    <Shield class="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h2 class="font-bold text-zinc-900">Bảo mật</h2>
+                    <p class="text-sm text-zinc-500 font-medium mt-1">Đổi mật khẩu và quản lý bảo mật tài khoản.</p>
+                  </div>
                 </div>
-                <div>
-                  <h2 class="font-bold text-zinc-900">Bảo mật</h2>
-                  <p class="text-sm text-zinc-500 font-medium mt-1">Phiên đăng nhập dùng cookie HTTP-only.</p>
-                </div>
+                <p class="mt-5 rounded-lg bg-zinc-50 px-4 py-3 text-sm font-medium text-zinc-600">
+                  Phiên đăng nhập dùng cookie HTTP-only. Bạn có thể tự đổi mật khẩu tài khoản bất cứ lúc nào.
+                </p>
               </div>
-              <p class="mt-5 rounded-lg bg-zinc-50 px-4 py-3 text-sm font-medium text-zinc-600">
-                Liên hệ quản trị viên khi cần đổi mật khẩu hoặc khóa tài khoản.
-              </p>
+              <div class="mt-5">
+                <Button
+                  class="rounded-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold gap-2"
+                  @click="openChangePasswordModal"
+                >
+                  <KeyRound class="w-4 h-4" />
+                  Đổi mật khẩu
+                </Button>
+              </div>
             </article>
           </div>
         </TabsContent>
       </Tabs>
     </div>
+
+    <!-- Dialog Đổi Mật Khẩu -->
+    <Dialog v-model:open="changePasswordOpen">
+      <DialogContent class="sm:max-w-[425px] rounded-[24px]">
+        <DialogHeader>
+          <DialogTitle class="flex items-center gap-2 text-xl font-bold text-zinc-900">
+            <KeyRound class="w-5 h-5 text-indigo-600" />
+            Đổi mật khẩu
+          </DialogTitle>
+          <DialogDescription class="text-sm font-medium text-zinc-500">
+            Nhập mật khẩu hiện tại và mật khẩu mới của bạn bên dưới.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form class="space-y-4 py-2" @submit.prevent="handlePasswordChange">
+          <div class="space-y-1.5">
+            <label class="text-xs font-bold text-zinc-600 uppercase tracking-wider">Mật khẩu hiện tại</label>
+            <div class="relative">
+              <Input
+                v-model="currentPassword"
+                :type="showCurrentPassword ? 'text' : 'password'"
+                placeholder="••••••••"
+                class="h-11 rounded-full px-4 pr-10 bg-zinc-50 focus:bg-white"
+                :disabled="changePasswordLoading"
+              />
+              <button
+                type="button"
+                class="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
+                @click="showCurrentPassword = !showCurrentPassword"
+              >
+                <EyeOff v-if="showCurrentPassword" class="w-4 h-4" />
+                <Eye v-else class="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          <div class="space-y-1.5">
+            <label class="text-xs font-bold text-zinc-600 uppercase tracking-wider">Mật khẩu mới</label>
+            <div class="relative">
+              <Input
+                v-model="newPassword"
+                :type="showNewPassword ? 'text' : 'password'"
+                placeholder="Tối thiểu 6 ký tự"
+                class="h-11 rounded-full px-4 pr-10 bg-zinc-50 focus:bg-white"
+                :disabled="changePasswordLoading"
+              />
+              <button
+                type="button"
+                class="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
+                @click="showNewPassword = !showNewPassword"
+              >
+                <EyeOff v-if="showNewPassword" class="w-4 h-4" />
+                <Eye v-else class="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          <div class="space-y-1.5">
+            <label class="text-xs font-bold text-zinc-600 uppercase tracking-wider">Xác nhận mật khẩu mới</label>
+            <div class="relative">
+              <Input
+                v-model="confirmPassword"
+                :type="showConfirmPassword ? 'text' : 'password'"
+                placeholder="Nhập lại mật khẩu mới"
+                class="h-11 rounded-full px-4 pr-10 bg-zinc-50 focus:bg-white"
+                :disabled="changePasswordLoading"
+              />
+              <button
+                type="button"
+                class="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
+                @click="showConfirmPassword = !showConfirmPassword"
+              >
+                <EyeOff v-if="showConfirmPassword" class="w-4 h-4" />
+                <Eye v-else class="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          <div v-if="changePasswordError" class="p-3 rounded-xl bg-rose-50 border border-rose-100 flex items-center gap-2 text-xs font-medium text-rose-600">
+            <AlertCircle class="w-4 h-4 shrink-0" />
+            <span>{{ changePasswordError }}</span>
+          </div>
+
+          <div v-if="changePasswordSuccess" class="p-3 rounded-xl bg-emerald-50 border border-emerald-100 flex items-center gap-2 text-xs font-medium text-emerald-600">
+            <CheckCircle2 class="w-4 h-4 shrink-0" />
+            <span>{{ changePasswordSuccess }}</span>
+          </div>
+
+          <DialogFooter class="mt-4 pt-2 border-t border-zinc-100 flex sm:justify-end gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              class="rounded-full font-bold"
+              :disabled="changePasswordLoading"
+              @click="changePasswordOpen = false"
+            >
+              Hủy
+            </Button>
+            <Button
+              type="submit"
+              class="rounded-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold"
+              :disabled="changePasswordLoading"
+            >
+              <Loader2 v-if="changePasswordLoading" class="mr-2 h-4 w-4 animate-spin" />
+              Lưu thay đổi
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   </section>
 </template>

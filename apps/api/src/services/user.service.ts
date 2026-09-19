@@ -5,8 +5,14 @@ import { roleRepository } from '../repositories/role.repository';
 import { userRepository } from '../repositories/user.repository';
 import { AuthUser } from '../types/auth';
 import { badRequest, conflict, forbidden, notFound } from '../utils/http-error';
-import { hashPassword } from '../utils/password';
+import { hashPassword, verifyPassword } from '../utils/password';
 import { AuditLogModel } from '../models/audit-log.model';
+
+export type ChangePasswordPayload = {
+  currentPassword?: unknown;
+  newPassword?: unknown;
+  confirmPassword?: unknown;
+};
 
 type RoleCode = (typeof ROLE_CODES)[number];
 type UserStatus = (typeof USER_STATUSES)[number];
@@ -113,7 +119,7 @@ const ensureOrganizationAccess = (actor: AuthUser, organizationId: string | null
 
 const resolveUserOrganization = (actor: AuthUser, value: unknown, fallback: string | null = null) => {
   const requestedOrganization = assertObjectId(value, 'organization');
-  if (actor.role.code === 'ADMIN') return requestedOrganization ?? fallback;
+  if (actor.role.code === 'ADMIN') return requestedOrganization ?? fallback ?? actor.organization ?? null;
 
   if (!actor.organization) throw forbidden('User has no organization assigned.');
   if (requestedOrganization && requestedOrganization !== actor.organization) {
@@ -173,7 +179,13 @@ const getRoleLevel = (user: any) => {
 
 const isSelf = (actor: AuthUser, target: any) => actor.id === String(target._id);
 
-const canManageUser = (actor: AuthUser, target: any) => actor.role.level < getRoleLevel(target);
+const canManageUser = (actor: AuthUser, target: any) => {
+  if (actor.role.code === 'ADMIN') return true;
+  if (['COMMUNE_LEADER', 'OFFICE_CHIEF'].includes(actor.role.code)) {
+    return target?.role?.code !== 'ADMIN';
+  }
+  return actor.role.level < getRoleLevel(target);
+};
 
 const ensureCanReadUser = (actor: AuthUser, target: any) => {
   if (isSelf(actor, target) || canManageUser(actor, target)) return;
@@ -188,6 +200,9 @@ const ensureCanManageUser = (actor: AuthUser, target: any) => {
 const ensureCanAssignRole = (actor: AuthUser, role: any) => {
   if (String(role.code) === 'ADMIN') {
     throw conflict('Only the default system admin can use ADMIN role.');
+  }
+  if (['ADMIN', 'COMMUNE_LEADER', 'OFFICE_CHIEF'].includes(actor.role.code)) {
+    return;
   }
   if (actor.role.level >= Number(role.level)) {
     throw forbidden('You cannot assign a role with equal or higher level than your role.');
@@ -493,6 +508,49 @@ export const userService = {
 
     await writeUserAudit(actor, 'USER_DELETED', user, { status: (user as any).status });
     await userRepository.deleteById(userId as string);
+  },
+
+  async changePassword(actor: AuthUser, id: unknown, payload: ChangePasswordPayload) {
+    const userId = assertObjectId(id, 'id');
+    const user = await userRepository.findByIdWithPassword(userId as string);
+    if (!user) throw notFound('User not found.');
+    ensureOrganizationAccess(actor, objectIdOf((user as any).organization) || null);
+
+    const updatingSelf = isSelf(actor, user);
+    if (!updatingSelf) {
+      ensureCanManageUser(actor, user);
+    }
+
+    const currentPassword = typeof payload.currentPassword === 'string' ? payload.currentPassword : '';
+    const newPassword = typeof payload.newPassword === 'string' ? payload.newPassword : '';
+    const confirmPassword = typeof payload.confirmPassword === 'string' ? payload.confirmPassword : '';
+
+    if (updatingSelf) {
+      if (!currentPassword) {
+        throw badRequest('Vui lòng nhập mật khẩu hiện tại.');
+      }
+      if (!(user as any).passwordHash || !verifyPassword(currentPassword, (user as any).passwordHash)) {
+        throw badRequest('Mật khẩu hiện tại không chính xác.');
+      }
+    }
+
+    if (!newPassword || newPassword.length < 6) {
+      throw badRequest('Mật khẩu mới phải có ít nhất 6 ký tự.');
+    }
+
+    if (confirmPassword && newPassword !== confirmPassword) {
+      throw badRequest('Xác nhận mật khẩu mới không khớp.');
+    }
+
+    (user as any).passwordHash = hashPassword(newPassword);
+
+    await userRepository.save(user);
+
+    await writeUserAudit(actor, 'USER_PASSWORD_CHANGED', user, {
+      bySelf: updatingSelf,
+    });
+
+    return { message: 'Đổi mật khẩu thành công.' };
   },
 
   async ensureDefaultAdmin() {

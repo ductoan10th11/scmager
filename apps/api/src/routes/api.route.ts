@@ -18,6 +18,7 @@ import configRoutes from "./config.route";
 import assignmentAiRoutes from "./assignment-ai.route";
 import documentResultLinkRoutes from "./document-result-link.route";
 import { extensionOfficeDocumentContextRoutes, officeDocumentContextRoutes } from "./office-document-context.route";
+import officeDocumentReportRoutes from "./office-document-report.route";
 import { healthService } from "../services/health.service";
 
 const router = Router();
@@ -54,5 +55,6 @@ router.use("/extension", extensionRoutes);
 router.use("/office-document-contexts", officeDocumentContextRoutes);
 router.use("/document-result-links", documentResultLinkRoutes);
 router.use("/performance", performanceRoutes);
+router.use("/reports", officeDocumentReportRoutes);
 router.use("/policy", policyRoutes);
 export default router;

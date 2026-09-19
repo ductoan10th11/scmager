@@ -13,6 +13,8 @@ type RawParticipant = TrackLogActor & {
   assignedTrackLogId: string | null;
   processedAt: string | null;
   processedTrackLogId: string | null;
+  // Position in the routing chain of the first hand-off to this participant.
+  receivedOrder: number | null;
 };
 
 const idOf = (value: any) => String(value?._id ?? value ?? '');
@@ -77,11 +79,13 @@ const rawWorkflow = (trackLogs: TrackLogItem[], completed: boolean) => {
       assignedTrackLogId: null,
       processedAt: null,
       processedTrackLogId: null,
+      receivedOrder: null,
     };
     participants.set(key, created);
     return created;
   };
 
+  let handoffIndex = 0;
   for (const log of ordered) {
     const sender = actorFrom(log.sender);
     if (sender) {
@@ -89,11 +93,17 @@ const rawWorkflow = (trackLogs: TrackLogItem[], completed: boolean) => {
       participant.processedAt = eventTime(log);
       participant.processedTrackLogId = String(log.id ?? '') || null;
     }
-    const receiver = actorFrom(log.receiver);
-    if (receiver) {
+    const receivers = log.recipients?.length
+      ? log.recipients.map((person) => actorFrom(person)).filter(Boolean)
+      : [actorFrom(log.receiver)].filter(Boolean);
+    for (const receiver of receivers as TrackLogActor[]) {
       const participant = getParticipant(receiver);
       participant.assignedAt = eventTime(log);
       participant.assignedTrackLogId = String(log.id ?? '') || null;
+      if (participant.receivedOrder === null) {
+        handoffIndex += 1;
+        participant.receivedOrder = handoffIndex;
+      }
     }
   }
 
@@ -117,7 +127,8 @@ export const resolveDocumentWorkflow = async (trackLogs: TrackLogItem[], complet
   const candidateUsernames = [...new Set(raw.participants.flatMap((participant) => usernameCandidates(participant.externalUsername)))];
   const users = candidateUsernames.length
     ? await UserModel.find({ username: { $in: candidateUsernames }, status: 'ACTIVE' })
-      .select('_id username fullName position department')
+      .select('_id username fullName position department role')
+      .populate('role', 'code')
       .lean()
     : [];
   const userByUsername = new Map(users.map((user: any) => [String(user.username).toLowerCase(), user]));
@@ -133,6 +144,8 @@ export const resolveDocumentWorkflow = async (trackLogs: TrackLogItem[], complet
       externalFullName: participant.fullName,
       position: user?.position ?? null,
       departmentId: user?.department ?? null,
+      roleCode: (user?.role as any)?.code ?? null,
+      receivedOrder: participant.receivedOrder,
       status: ['COMPLETED', 'MANUALLY_PROCESSED'].includes(raw.status) || participant.key !== raw.currentKey ? 'PROCESSED' : 'PENDING',
       assignedAt: participant.assignedAt,
       assignedTrackLogId: participant.assignedTrackLogId,
@@ -145,7 +158,17 @@ export const resolveDocumentWorkflow = async (trackLogs: TrackLogItem[], complet
     ? assignees.find((participant) => (participant.externalUsername || participant.externalFullName.toLowerCase()) === raw.currentKey) ?? null
     : null;
 
-  return { status: raw.status, currentAssignee, assignees };
+  /**
+   * The specialist who received the document first is the one credited with the
+   * work. A chain such as office chief → department leader → specialist routes
+   * through managers whose job is dispatching, not doing; and anyone the first
+   * specialist forwards to afterwards is assisting, not owning it.
+   */
+  const primaryAssignee: (typeof assignees)[number] | null = assignees
+    .filter((participant) => participant.roleCode === 'SPECIALIST' && participant.userId && participant.receivedOrder)
+    .sort((left, right) => Number(left.receivedOrder) - Number(right.receivedOrder))[0] ?? null;
+
+  return { status: raw.status, currentAssignee, primaryAssignee, assignees };
 };
 
 export const documentWorkflowFiltersFor = async (actor: AuthUser, options: { includeDepartment?: boolean } = {}) => {
