@@ -30,7 +30,7 @@ interface ClientContext {
 
 let client: ClientContext | null = null;
 let building: Promise<ClientContext> | null = null;
-let wrapperLoader: Promise<(instance: AxiosInstance) => AxiosInstance> | null = null;
+let wrapperLoader: Promise<any> | null = null;
 
 function appHost(): string {
   return new URL(APP_ORIGIN).host;
@@ -169,7 +169,7 @@ export async function mergeJarIntoStorageState(
   };
 }
 
-async function loadWrapper(): Promise<(instance: AxiosInstance) => AxiosInstance> {
+async function loadWrapper(): Promise<any> {
   if (!wrapperLoader) {
     wrapperLoader = import('axios-cookiejar-support').then((m) => m.wrapper);
   }

@@ -1,7 +1,7 @@
 <script setup>
-import DashboardFeature from '@/features/dashboard/DashboardFeature.vue'
+import CommuneOperationsFeature from '@/features/statistics/CommuneOperationsFeature.vue'
 </script>
 
 <template>
-  <DashboardFeature />
+  <CommuneOperationsFeature />
 </template>

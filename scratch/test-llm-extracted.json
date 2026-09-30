@@ -1,0 +1,45 @@
+{
+  "reportInfo": {
+    "code": "489/BC-UBND",
+    "title": "Báo cáo Tình hình kinh tế - xã hội 9 tháng năm 2026",
+    "agency": "UBND Xã Thiện Tân",
+    "period": "9 tháng năm 2026",
+    "year": 2026,
+    "summary": "Trong 9 tháng năm 2026, kinh tế xã Thiện Tân tiếp tục tăng trưởng, thu ngân sách nhà nước đạt 184% dự toán tỉnh giao. Công tác giải ngân vốn đầu tư công đạt 60,7% kế hoạch, tỷ lệ hộ nghèo và cận nghèo giảm còn 6,60%. Các lĩnh vực văn hóa, xã hội, quốc phòng - an ninh được đảm bảo, đời sống nhân dân ổn định."
+  },
+  "metrics": [
+    {
+      "code": "HO_NGHEO_CAN_NGHEO",
+      "name": "Số hộ nghèo và cận nghèo",
+      "category": "UBND",
+      "unit": "hộ",
+      "actualValue": 213,
+      "targetValue": null,
+      "completionRate": null,
+      "sourceEvidence": "Theo kết quả rà soát hộ nghèo, hộ cận nghèo năm 2025, toàn xã có 213/3.223 hộ nghèo và cận nghèo, chiếm tỷ lệ 6,60%; trong đó: Hộ nghèo: 80 hộ (2,48%); Hộ cận nghèo: 133 hộ (4,12%).",
+      "note": "Kết quả rà soát năm 2025, áp dụng cho kỳ báo cáo 9 tháng 2026."
+    },
+    {
+      "code": "GIAI_NGAN_VON",
+      "name": "Giải ngân vốn đầu tư công",
+      "category": "UBND",
+      "unit": "triệu đồng",
+      "actualValue": 4736,
+      "targetValue": 7802,
+      "completionRate": 60.7,
+      "sourceEvidence": "Tổng kế hoạch vốn địa phương giao năm 2026: 7.802 triệu đồng. Lũy kế giải ngân 9 tháng đầu năm (đến ngày 17/9/2026): Đạt 4.736 triệu đồng, bằng 60,7% kế hoạch vốn (ước giải ngân đến hết 31/12/2026 đạt 100% kế hoạch).",
+      "note": "Lũy kế 9 tháng đầu năm 2026."
+    },
+    {
+      "code": "THU_NGAN_SACH",
+      "name": "Kết quả thu ngân sách nhà nước",
+      "category": "UBND",
+      "unit": "triệu đồng",
+      "actualValue": 7151,
+      "targetValue": 3893,
+      "completionRate": 184,
+      "sourceEvidence": "Tổng thu ngân sách nhà nước trên địa bàn lũy kế thực hiện được 7.151/3.893 triệu đồng, đạt 184% so với dự toán tỉnh giao, đạt 166% dự toán xã giao (4.313 triệu đồng).",
+      "note": "Lũy kế 9 tháng năm 2026."
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 import UserModel from '../models/user.model';
+import RoleModel from '../models/role.model';
 import type { AuthUser } from '../types/auth';
 import type { TrackLogItem } from './langson-dwr.service';
 
@@ -125,17 +126,47 @@ const rawWorkflow = (trackLogs: TrackLogItem[], completed: boolean) => {
 export const resolveDocumentWorkflow = async (trackLogs: TrackLogItem[], completed: boolean) => {
   const raw = rawWorkflow(trackLogs, completed);
   const candidateUsernames = [...new Set(raw.participants.flatMap((participant) => usernameCandidates(participant.externalUsername)))];
-  const users = candidateUsernames.length
-    ? await UserModel.find({ username: { $in: candidateUsernames }, status: 'ACTIVE' })
+  const candidateFullNames = [...new Set(raw.participants.map((participant) => participant.fullName).filter(Boolean))];
+
+  const orConditions: any[] = [];
+  if (candidateUsernames.length) orConditions.push({ username: { $in: candidateUsernames } });
+  if (candidateFullNames.length) orConditions.push({ fullName: { $in: candidateFullNames } });
+
+  const users = orConditions.length
+    ? await UserModel.find({ $or: orConditions, status: 'ACTIVE' })
       .select('_id username fullName position department role')
       .populate('role', 'code')
       .lean()
     : [];
+
   const userByUsername = new Map(users.map((user: any) => [String(user.username).toLowerCase(), user]));
+  const userByNormalizedName = new Map(
+    users.map((user: any) => [
+      String(user.fullName || '')
+        .normalize('NFD')
+        .replace(/\p{Diacritic}/gu, '')
+        .replace(/\.lsn$/iu, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase(),
+      user,
+    ]),
+  );
+
   const toSnapshot = (participant: RawParticipant) => {
-    const user = usernameCandidates(participant.externalUsername)
+    let user = usernameCandidates(participant.externalUsername)
       .map((candidate) => userByUsername.get(candidate))
       .find(Boolean) as any;
+    if (!user && participant.fullName) {
+      const norm = String(participant.fullName)
+        .normalize('NFD')
+        .replace(/\p{Diacritic}/gu, '')
+        .replace(/\.lsn$/iu, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+      user = userByNormalizedName.get(norm);
+    }
     return {
       userId: user?._id ?? null,
       username: user?.username ?? null,

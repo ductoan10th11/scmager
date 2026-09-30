@@ -983,7 +983,7 @@ onUnmounted(() => {
                     <CalendarIcon class="h-4 w-4 text-zinc-400" />
                   </Button>
                 </PopoverTrigger>
-                <PopoverContent align="start" class="w-auto p-0 rounded-2xl shadow-xl border-zinc-200">
+                <PopoverContent align="start" class="w-auto p-0 rounded-2xl shadow-2xl border border-zinc-200 bg-white">
                   <Calendar v-model="exportStartCalendarDate" locale="vi-VN" :max-value="exportEndCalendarDate" initial-focus />
                 </PopoverContent>
               </Popover>
@@ -1002,7 +1002,7 @@ onUnmounted(() => {
                     <CalendarIcon class="h-4 w-4 text-zinc-400" />
                   </Button>
                 </PopoverTrigger>
-                <PopoverContent align="end" class="w-auto p-0 rounded-2xl shadow-xl border-zinc-200">
+                <PopoverContent align="end" class="w-auto p-0 rounded-2xl shadow-2xl border border-zinc-200 bg-white">
                   <Calendar v-model="exportEndCalendarDate" locale="vi-VN" :min-value="exportStartCalendarDate" initial-focus />
                 </PopoverContent>
               </Popover>

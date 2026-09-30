@@ -132,6 +132,32 @@ const deadlineInfo = computed(() => {
   }
 })
 
+// Thông tin điểm nghẽn / vị trí kẹt
+const bottleneckDisplay = computed(() => {
+  const b = context.value?.tracking?.bottleneck || props.initialData?.bottleneck
+  if (!b) return null
+  let dotClass = 'bg-blue-500'
+  let badgeClass = 'bg-blue-100 text-blue-800'
+  if (b.isLate) {
+    dotClass = 'bg-amber-500 animate-pulse'
+    badgeClass = 'bg-amber-100 text-amber-800'
+  } else if (b.stage === 'COMPLETED') {
+    dotClass = 'bg-emerald-500'
+    badgeClass = 'bg-emerald-100 text-emerald-800'
+  } else if (b.stage === 'SPECIALIST_PROCESSING') {
+    dotClass = 'bg-sky-500'
+    badgeClass = 'bg-sky-100 text-sky-800'
+  } else if (b.stage === 'OFFICE_CHIEF_PENDING') {
+    dotClass = 'bg-purple-500'
+    badgeClass = 'bg-purple-100 text-purple-800'
+  }
+  return {
+    ...b,
+    dotClass,
+    badgeClass,
+  }
+})
+
 // Ý kiến chỉ đạo từ lãnh đạo
 const directorComment = computed(() => {
   if (!context.value) return ''
@@ -405,6 +431,17 @@ const goToOfficeDocuments = () => {
                     </strong>
                   </div>
                 </div>
+              </div>
+
+              <!-- Điểm nghẽn luồng xử lý (Bottleneck Tracking) -->
+              <div v-if="bottleneckDisplay" class="mt-3 pt-3 border-t border-zinc-200/60 flex items-center justify-between gap-2 text-xs">
+                <span class="text-zinc-500 font-medium flex items-center gap-1.5">
+                  <span class="inline-block w-2 h-2 rounded-full" :class="bottleneckDisplay.dotClass"></span>
+                  Vị trí hiện tại:
+                </span>
+                <Badge :class="bottleneckDisplay.badgeClass" class="rounded-lg text-xs font-semibold px-2.5 py-0.5 border-0">
+                  {{ bottleneckDisplay.label }}
+                </Badge>
               </div>
             </div>
 

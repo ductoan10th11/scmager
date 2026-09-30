@@ -49,6 +49,95 @@ export const officeDocumentProjection = (context: any) => {
       ? 'OVERDUE'
       : 'IN_PROGRESS';
 
+  const bottleneck = (() => {
+    if (context.pageType !== 'incoming') {
+      return {
+        stage: 'OUTGOING_HOLDING',
+        role: null,
+        roleLabel: 'Văn bản đi',
+        name: owner.fullName || 'Chưa xác định',
+        departmentId: owner.departmentId || null,
+        departmentName: owner.departmentName || null,
+        isLate: false,
+        label: owner.fullName ? `Đang giữ: ${owner.fullName}` : 'Văn bản đi',
+      };
+    }
+    if (completed) {
+      return {
+        stage: 'COMPLETED',
+        role: null,
+        roleLabel: 'Đã hoàn thành',
+        name: owner.fullName || 'Đã hoàn thành',
+        departmentId: owner.departmentId || null,
+        departmentName: owner.departmentName || null,
+        isLate: false,
+        label: 'Đã hoàn thành',
+      };
+    }
+    // 1. Chuyên viên đang thụ lý:
+    // Văn bản đã đến tay chuyên viên (kể cả do Trưởng phòng giao hoặc Chánh văn phòng bypass chuyển thẳng)
+    if (
+      workflowAssignee?.roleCode === 'SPECIALIST' ||
+      sync.processing?.primaryAssignee?.roleCode === 'SPECIALIST'
+    ) {
+      const name = workflowAssignee?.fullName || sync.processing?.primaryAssignee?.fullName || owner.fullName || 'Chuyên viên';
+      return {
+        stage: 'SPECIALIST_PROCESSING',
+        role: 'SPECIALIST',
+        roleLabel: 'Chuyên viên thụ lý',
+        name,
+        departmentId: owner.departmentId || null,
+        departmentName: owner.departmentName || null,
+        isLate: status === 'OVERDUE',
+        label: `Chuyên viên đang xử lý: ${name}`,
+      };
+    }
+    // 2. Chờ Chánh văn phòng phân phòng:
+    if (workflowAssignee?.roleCode === 'OFFICE_CHIEF') {
+      const name = workflowAssignee?.fullName || 'Chánh văn phòng';
+      return {
+        stage: 'OFFICE_CHIEF_PENDING',
+        role: 'OFFICE_CHIEF',
+        roleLabel: 'Chánh văn phòng',
+        name,
+        departmentId: null,
+        departmentName: null,
+        isLate: status === 'OVERDUE',
+        label: `Chờ Chánh VP phân phòng: ${name}`,
+      };
+    }
+    // 3. Chờ Trưởng phòng giao việc:
+    // Chưa đến tay chuyên viên, nhưng đã về phòng ban (bám theo role chuyên viên)
+    if (
+      workflowAssignee?.roleCode === 'DEPARTMENT_LEADER' ||
+      owner.departmentId ||
+      workflowAssignee?.departmentId
+    ) {
+      const deptName = owner.departmentName || 'Phòng ban';
+      const name = workflowAssignee?.fullName || owner.fullName || `Trưởng phòng (${deptName})`;
+      return {
+        stage: 'DEPARTMENT_LEADER_PENDING',
+        role: 'DEPARTMENT_LEADER',
+        roleLabel: 'Trưởng phòng',
+        name,
+        departmentId: owner.departmentId || workflowAssignee?.departmentId || null,
+        departmentName: deptName,
+        isLate: status === 'OVERDUE',
+        label: `Chờ Trưởng phòng giao việc: ${name}`,
+      };
+    }
+    return {
+      stage: 'OFFICE_CHIEF_PENDING',
+      role: 'OFFICE_CHIEF',
+      roleLabel: 'Chánh văn phòng',
+      name: 'Chánh văn phòng',
+      departmentId: null,
+      departmentName: null,
+      isLate: status === 'OVERDUE',
+      label: 'Chờ Chánh VP phân phòng',
+    };
+  })();
+
   return {
     id: idOf(context),
     documentId: context.externalDocumentId,
@@ -65,6 +154,7 @@ export const officeDocumentProjection = (context: any) => {
     completionSource: completion.source,
     status,
     owner,
+    bottleneck,
     trackLogs: sync.trackLogs ?? [],
     processing: sync.processing ?? null,
     observedAt: context.observedAt ?? context.createdAt ?? null,

@@ -24,6 +24,9 @@ export const MyDepartmentPage = lazyPage(() => import('../pages/MyDepartmentPage
 export const PrivacyPolicyPage = lazyPage(() => import('../pages/PrivacyPolicyPage.vue'))
 export const ExtensionWebViewPage = lazyPage(() => import('../pages/ExtensionWebViewPage.vue'))
 export const OverdueReportPage = lazyPage(() => import('../pages/OverdueReportPage.vue'))
+export const LateAssignmentsPage = lazyPage(() => import('../pages/LateAssignmentsPage.vue'))
+export const StatisticsPage = lazyPage(() => import('../pages/StatisticsPage.vue'))
+export const CommuneReportsPage = lazyPage(() => import('../pages/CommuneReportsPage.vue'))
 
 const preloadableRouteComponents = {
   '/users': UsersPage,
@@ -38,6 +41,9 @@ const preloadableRouteComponents = {
   '/connectors': ConnectorsPage,
   '/settings': SettingsPage,
   '/reports': OverdueReportPage,
+  '/late-assignments': LateAssignmentsPage,
+  '/statistics': StatisticsPage,
+  '/commune-reports': CommuneReportsPage,
 }
 
 export const preloadRouteComponent = (path) => {

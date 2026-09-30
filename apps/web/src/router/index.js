@@ -19,6 +19,9 @@ import {
   UsersPage,
   PrivacyPolicyPage,
   OverdueReportPage,
+  LateAssignmentsPage,
+  StatisticsPage,
+  CommuneReportsPage,
 } from './page-loaders'
 
 const routes = [
@@ -168,6 +171,22 @@ const routes = [
         name: 'Reports',
         component: OverdueReportPage,
         meta: { requiresAuth: true, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER'] },
+      },
+      {
+        path: 'late-assignments',
+        name: 'LateAssignments',
+        component: LateAssignmentsPage,
+        meta: { requiresAuth: true, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER'] },
+      },
+      {
+        path: 'commune-reports',
+        name: 'CommuneReports',
+        component: CommuneReportsPage,
+        meta: { requiresAuth: true, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
+      },
+      {
+        path: 'statistics',
+        redirect: '/dashboard',
       },
       {
         path: 'settings',

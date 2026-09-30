@@ -582,8 +582,15 @@ const submitComplaint = async (action) => {
   }
 };
 
-const displayIdentifier = (context) =>
-  getValue(context, "soKyHieu") || getValue(context, "documentId") || "—";
+const displayIdentifier = (context) => {
+  const symbol = getValue(context, "soKyHieu");
+  if (symbol && String(symbol).trim()) return String(symbol).trim();
+  const docId = getValue(context, "documentId") || context?.externalDocumentId;
+  const isOutgoing = context?.pageType === "outgoing" || context?.pageType === "outgoing_c2";
+  const prefix = isOutgoing ? "Sản phẩm" : "Văn bản";
+  if (docId) return `${prefix} (Mã ${docId})`;
+  return `${prefix} (Chưa có số)`;
+};
 const contextType = (context) =>
   getValue(context, "pageType") || context?.pageType || "—";
 const typeLabel = (context) =>
@@ -724,18 +731,19 @@ const isLinkedProduct = (context) => Boolean(tracking(context).relatedIncoming?.
 const linkBadge = (context) => {
   const info = tracking(context);
   if (context?.pageType === "incoming") {
-    return info.relatedProduct?.id
-      ? {
-        label: "Đã có sản phẩm",
-        title: `Sản phẩm trả lời: ${info.relatedProduct.soKyHieu || "—"}`,
-        class: "bg-emerald-50 text-emerald-700",
-      }
-      : null;
+    if (!info.relatedProduct?.id) return null;
+    const iden = info.relatedProduct.soKyHieu || (info.relatedProduct.documentId ? `Mã ${info.relatedProduct.documentId}` : "Chưa có số");
+    return {
+      label: "Đã có sản phẩm",
+      title: `Sản phẩm trả lời: ${iden}`,
+      class: "bg-emerald-50 text-emerald-700",
+    };
   }
   if (info.relatedIncoming?.id) {
+    const iden = info.relatedIncoming.soKyHieu || (info.relatedIncoming.documentId ? `Mã ${info.relatedIncoming.documentId}` : "Đã liên kết");
     return {
       label: "Đã liên kết",
-      title: `Nhiệm vụ nguồn: ${info.relatedIncoming.soKyHieu || "—"}`,
+      title: `Nhiệm vụ nguồn: ${iden}`,
       class: "bg-emerald-50 text-emerald-700",
     };
   }
@@ -812,7 +820,15 @@ const loadCounterpart = async () => {
   counterpartLoading.value = true;
   try {
     const response = await http(`/api/office-document-contexts/${target.id}`);
-    counterpart.value = response.data ?? null;
+    const data = response.data ?? null;
+    if (data && !data.tracking) {
+      data.tracking = {
+        dueAt: tracking(selected.value).dueAt,
+        deadlineStatus: tracking(selected.value).deadlineStatus,
+        rawScore: data.management?.manualScore ?? data.observation?.point ?? null,
+      };
+    }
+    counterpart.value = data;
   } catch {
     counterpart.value = null;
   } finally {
@@ -831,11 +847,26 @@ const openCounterpart = async (target) => {
   if (!target?.id) return;
   const goingToProduct = activeTab.value === "incoming";
   activeTab.value = goingToProduct ? "outgoing" : "incoming";
-  search.value = target.soKyHieu || "";
+  const incomingSymbol = selected.value?.pageType === "incoming"
+    ? (getValue(selected.value, "soKyHieu") || "")
+    : "";
+  search.value = target.soKyHieu || incomingSymbol || "";
   await fetchContexts(1);
   const found = items.value.find((context) => identity(context) === target.id);
-  if (found) await openContext(found);
-  else error.value = "Không mở được văn bản liên kết. Hãy thử tìm theo số ký hiệu.";
+  if (found) {
+    await openContext(found);
+  } else {
+    try {
+      const response = await http(`/api/office-document-contexts/${target.id}`);
+      if (response?.data) {
+        await openContext(response.data);
+      } else {
+        error.value = "Không mở được văn bản liên kết.";
+      }
+    } catch (e) {
+      error.value = e?.message || "Không mở được văn bản liên kết.";
+    }
+  }
 };
 
 const workflowLabel = (context) =>
@@ -1884,9 +1915,35 @@ onUnmounted(() => {
 
                   <TableCell
                     v-if="activeTab === 'incoming'"
-                    class="max-w-[220px] px-4 py-3.5 text-xs text-zinc-700 truncate"
+                    class="max-w-[240px] px-4 py-3.5 text-xs text-zinc-700"
                   >
-                    {{ workflowLabel(context) }}
+                    <div class="flex flex-col gap-1">
+                      <span class="truncate font-medium text-slate-800">{{ workflowLabel(context) }}</span>
+                      <div v-if="tracking(context).bottleneck" class="flex flex-wrap items-center gap-1">
+                        <Badge
+                          v-if="tracking(context).bottleneck.stage === 'DEPARTMENT_LEADER_PENDING'"
+                          class="rounded-md text-[10px] py-0 px-1.5 border-0 font-semibold shadow-none"
+                          :class="tracking(context).bottleneck.isLate ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'"
+                        >
+                          {{ tracking(context).bottleneck.isLate ? 'Kẹt tại Trưởng phòng' : 'Chờ Trưởng phòng' }}
+                        </Badge>
+                        <Badge
+                          v-else-if="tracking(context).bottleneck.stage === 'OFFICE_CHIEF_PENDING'"
+                          class="rounded-md text-[10px] py-0 px-1.5 border-0 font-semibold bg-purple-100 text-purple-800 shadow-none"
+                        >
+                          Chờ Chánh VP
+                        </Badge>
+                        <Badge
+                          v-else-if="tracking(context).bottleneck.stage === 'SPECIALIST_PROCESSING'"
+                          class="rounded-md text-[10px] py-0 px-1.5 border-0 font-semibold bg-emerald-100 text-emerald-800 shadow-none"
+                        >
+                          Chuyên viên thụ lý
+                        </Badge>
+                        <span v-if="tracking(context).bottleneck.holdingHours >= 24" class="text-[10px] text-amber-600 font-medium">
+                          ({{ Math.floor(tracking(context).bottleneck.holdingHours / 24) }}d)
+                        </span>
+                      </div>
+                    </div>
                   </TableCell>
 
                   <TableCell class="px-4 py-3.5 text-xs">
@@ -2373,7 +2430,7 @@ onUnmounted(() => {
                       </p>
                     </div>
                     <p v-else class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                      {{ counterpartTarget.soKyHieu }} — chưa có trong eWork nên không xem được chi tiết.
+                      {{ counterpartTarget.soKyHieu || (counterpartTarget.documentId ? `Mã ${counterpartTarget.documentId}` : "Sản phẩm liên kết") }} — chưa có trong eWork nên không xem được chi tiết.
                     </p>
                   </div>
                 </section>

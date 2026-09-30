@@ -1,6 +1,6 @@
 import { writeFile } from "node:fs/promises";
-import { EJSON } from "bson";
 import mongoose from "mongoose";
+const EJSON = (mongoose.mongo as any).BSON?.EJSON || JSON;
 import { connectDB } from "../configs/mongo";
 
 const collections = [

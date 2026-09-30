@@ -91,10 +91,12 @@ const actorCanReadOfficeDocument = (context: any, actor: AuthUser) => {
   }
 
   if (context.pageType !== "incoming") {
-    return directlyAssigned || participantMatches({
-      userId: observation.draftingUserId ?? observation.senderUserId,
-      fullName: observation.draftingUser ?? observation.senderUser,
-    });
+    return directlyAssigned
+      || (actor.department && String(assignment.departmentId ?? "") === actor.department)
+      || participantMatches({
+        userId: observation.draftingUserId ?? observation.senderUserId,
+        fullName: observation.draftingUser ?? observation.senderUser,
+      });
   }
 
   // Co-processors are intentionally excluded. Only the primary recipient may view
@@ -888,6 +890,9 @@ export const listOfficeDocumentContexts = async (
       { "observation.subject": regex },
       { "observation.soKyHieu": regex },
       { "observation.draftingUnit": regex },
+      { "observation.relatedIncomingSoKyHieu": regex },
+      { "management.overrides.soKyHieu": regex },
+      { "management.overrides.relatedIncomingSoKyHieu": regex },
     ];
   const departmentId = string(query.departmentId, "departmentId", 240);
   const userId = string(query.userId, "userId", 240);
@@ -1129,6 +1134,123 @@ export const listOfficeDocumentContexts = async (
                 ? completedAt
                 : parseDocumentDate(context.observedAt);
     const score = effectiveOfficeDocumentPoint(context);
+    const bottleneck = (() => {
+      if (context.pageType !== "incoming") {
+        const holder = holderFrom(context);
+        return {
+          stage: "OUTGOING_HOLDING",
+          role: null,
+          roleLabel: "Văn bản đi",
+          name: holder?.fullName || "Chưa xác định",
+          departmentId: null,
+          departmentName: null,
+          holdingSince: holder?.since ?? null,
+          holdingDays: holder?.holdingDays ?? 0,
+          holdingHours: holder?.holdingDays != null ? holder.holdingDays * 24 : 0,
+          isLate: false,
+          label: holder?.fullName ? `Đang giữ: ${holder.fullName}` : "Chưa xác định",
+        };
+      }
+
+      if (completed) {
+        return {
+          stage: "COMPLETED",
+          role: null,
+          roleLabel: "Đã hoàn thành",
+          name: assignee.fullName || "Đã hoàn thành",
+          departmentId: assignee.departmentId || null,
+          departmentName: assignee.departmentName || null,
+          holdingSince: completedAt ? completedAt.toISOString() : null,
+          holdingDays: 0,
+          holdingHours: 0,
+          isLate: deadlineStatus === "DONE_LATE",
+          label: "Đã hoàn thành",
+        };
+      }
+
+      // Check if assigned to specialist
+      const hasSpecialist = Boolean(assignee.userId)
+        || (workflowAssignee?.roleCode === "SPECIALIST" && Boolean(workflowAssignee.fullName));
+      if (hasSpecialist) {
+        const specName = assignee.fullName || workflowAssignee?.fullName || "Chuyên viên";
+        return {
+          stage: "SPECIALIST_PROCESSING",
+          role: "SPECIALIST",
+          roleLabel: "Chuyên viên thụ lý",
+          name: specName,
+          departmentId: assignee.departmentId || null,
+          departmentName: assignee.departmentName || null,
+          holdingSince: workflowAssignee?.assignedAt ?? null,
+          holdingDays: 0,
+          holdingHours: 0,
+          isLate: deadlineStatus === "PENDING_OVERDUE",
+          label: `Chuyên viên đang xử lý: ${specName}`,
+        };
+      }
+
+      // Check if assigned to department / department leader
+      const hasDepartment = Boolean(assignee.departmentId)
+        || Boolean(managedAssignment.departmentId)
+        || (workflowAssignee?.roleCode === "DEPARTMENT_LEADER");
+      if (hasDepartment) {
+        const deptName = assignee.departmentName || managedAssignment.departmentName || "Phòng ban";
+        const leaderName = (workflowAssignee?.roleCode === "DEPARTMENT_LEADER" ? workflowAssignee.fullName : null)
+          || (deptName ? `Trưởng phòng (${deptName})` : "Trưởng phòng");
+
+        const assignedTime = parseDocumentDate(workflowAssignee?.assignedAt)
+          || (context.management?.updatedAt ? new Date(context.management.updatedAt) : null)
+          || (context.observedAt ? new Date(context.observedAt) : null)
+          || parseDocumentDate(observed("receivedDate"))
+          || now;
+
+        const diffMs = Math.max(0, now.getTime() - assignedTime.getTime());
+        const holdingHours = Math.floor(diffMs / 3600000);
+        const holdingDays = Math.floor(diffMs / 86400000);
+        const isLate = holdingHours >= 24 || (dueAt ? dueAt.getTime() <= now.getTime() : false);
+
+        return {
+          stage: "DEPARTMENT_LEADER_PENDING",
+          role: "DEPARTMENT_LEADER",
+          roleLabel: "Trưởng phòng",
+          name: leaderName,
+          departmentId: assignee.departmentId || managedAssignment.departmentId || null,
+          departmentName: deptName,
+          holdingSince: assignedTime.toISOString(),
+          holdingDays,
+          holdingHours,
+          isLate,
+          label: isLate
+            ? `Kẹt tại Trưởng phòng: ${leaderName} (Chậm ${holdingHours >= 48 ? `${holdingDays} ngày` : `${holdingHours}h`})`
+            : `Chờ Trưởng phòng giao việc: ${leaderName}`,
+        };
+      }
+
+      // Neither specialist nor department: Sitting at Office Chief (Chánh văn phòng)
+      const receivedTime = parseDocumentDate(observed("receivedDate"))
+        || (context.observedAt ? new Date(context.observedAt) : null)
+        || now;
+      const diffMs = Math.max(0, now.getTime() - receivedTime.getTime());
+      const holdingHours = Math.floor(diffMs / 3600000);
+      const holdingDays = Math.floor(diffMs / 86400000);
+      const isLate = holdingHours >= 24 || (dueAt ? dueAt.getTime() <= now.getTime() : false);
+
+      return {
+        stage: "OFFICE_CHIEF_PENDING",
+        role: "OFFICE_CHIEF",
+        roleLabel: "Chánh văn phòng",
+        name: "Chánh văn phòng",
+        departmentId: null,
+        departmentName: null,
+        holdingSince: receivedTime.toISOString(),
+        holdingDays,
+        holdingHours,
+        isLate,
+        label: isLate
+          ? `Kẹt tại Chánh VP (Chậm phân phòng ${holdingHours >= 48 ? `${holdingDays} ngày` : `${holdingHours}h`})`
+          : "Chờ Chánh VP phân phòng",
+      };
+    })();
+
     return {
       assignee,
       dueAt,
@@ -1143,10 +1265,11 @@ export const listOfficeDocumentContexts = async (
       manualScore: context.management?.manualScore ?? null,
       completionSource: completion.source,
       holder: context.pageType === "incoming" || completed ? null : holderFrom(context),
+      bottleneck,
       // Filled in by the list pass once both sides of the task/product pair are
       // known, so each row can point at its counterpart.
       relatedIncoming: null as { id: string | null; soKyHieu: string } | null,
-      relatedProduct: null as { id: string; soKyHieu: string } | null,
+      relatedProduct: null as { id: string; soKyHieu: string; documentId?: string; subject?: string } | null,
     };
   };
 
@@ -1262,7 +1385,7 @@ export const listOfficeDocumentContexts = async (
   );
 
   // The reverse direction: for a list of tasks, which product answers each one.
-  const outgoingByIncomingSymbol = new Map<string, { id: string; soKyHieu: string; createdAt: Date | null }>();
+  const outgoingByIncomingSymbol = new Map<string, { id: string; soKyHieu: string; documentId?: string; subject?: string; createdAt: Date | null }>();
   if (String(pageType) === "incoming") {
     const taskSymbols = allItems
       .map((context: any) => normalizeOfficeDocumentSymbol(
@@ -1274,7 +1397,7 @@ export const listOfficeDocumentContexts = async (
         pageType: { $in: ["outgoing", "outgoing_c2"] },
         ...(actor.role.code !== "ADMIN" ? { organizationId: actor.organization } : {}),
       })
-        .select("_id organizationId observation.soKyHieu observation.relatedIncomingSoKyHieu observation.createdDate observedAt management.overrides")
+        .select("_id externalDocumentId organizationId observation.soKyHieu observation.relatedIncomingSoKyHieu observation.subject observation.createdDate observedAt management.overrides")
         .lean();
       for (const product of products as any[]) {
         const relatedSymbol = normalizeOfficeDocumentSymbol(
@@ -1289,6 +1412,10 @@ export const listOfficeDocumentContexts = async (
           id: String(product._id),
           soKyHieu: String(
             product.management?.overrides?.soKyHieu ?? product.observation?.soKyHieu ?? "",
+          ),
+          documentId: String(product.externalDocumentId ?? ""),
+          subject: String(
+            product.management?.overrides?.subject ?? product.observation?.subject ?? "",
           ),
           createdAt: parseDocumentDate(
             product.management?.overrides?.createdDate ?? product.observation?.createdDate,
@@ -1344,7 +1471,12 @@ export const listOfficeDocumentContexts = async (
         ? outgoingByIncomingSymbol.get(`${context.organizationId ?? ""}|${symbol}`)
         : undefined;
       if (product) {
-        tracking.relatedProduct = { id: product.id, soKyHieu: product.soKyHieu };
+        tracking.relatedProduct = {
+          id: product.id,
+          soKyHieu: product.soKyHieu,
+          documentId: (product as any).documentId,
+          subject: (product as any).subject,
+        };
         // Once a product answers the task, the task is done: the product has
         // already been through the leader, so there is nothing left to track.
         tracking.status = "COMPLETED";

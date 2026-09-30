@@ -18,6 +18,7 @@ import { createServer } from "http";
 import app from "./src/app";
 import { connectDB } from "./src/configs/mongo";
 import { seedDefaultAdmin } from "./src/seed/default-admin";
+import { seedCommuneStats } from "./src/seed/seed-commune-stats";
 import { initializeIngestSocket } from "./src/realtime/ingest.socket";
 import { ingestCronService } from "./src/services/ingest-cron.service";
 import { assertRuntimeConfig } from "./src/configs/runtime-config";
@@ -30,6 +31,7 @@ const bootstrap = async () => {
     throw new Error("APP_ROLE must be api for the API process.");
   await connectDB();
   await seedDefaultAdmin();
+  await seedCommuneStats();
   const server = createServer(app);
   initializeIngestSocket(server);
 

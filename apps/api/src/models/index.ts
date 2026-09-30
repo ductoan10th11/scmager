@@ -24,3 +24,5 @@ export * from "./migration-quarantine.model";
 export * from "./office-document-context.model";
 export * from "./document-result-link.model";
 export * from "./config.model";
+export * from "./commune-metric.model";
+export * from "./commune-report.model";
