@@ -14,6 +14,14 @@ import {
   effectiveOfficeDocumentPoint,
   effectiveOfficeDocumentReworkCount,
 } from './office-document-completion.service';
+import {
+  effectiveOfficeDocumentOwner,
+  effectiveOfficeDocumentOwnerId,
+} from './office-document-owner.service';
+import {
+  isOfficeDocumentNotRequired,
+  isOfficeDocumentUnderNotRequiredReview,
+} from './office-document-not-required-state.service';
 
 const idOf = (value: any) => String(value?._id ?? value ?? '');
 const isSpecialist = (actor: AuthUser) => actor.role.code === 'SPECIALIST';
@@ -65,20 +73,7 @@ const documentStatus = (completed: boolean, deadline: Date | null) => {
 export const performanceDocumentOwnerId = (
   context: any,
   completion = effectiveOfficeDocumentCompletion(context),
-) => {
-  const resultPerformerId =
-    completion.source === 'DOCUMENT_RESULT'
-      ? idOf(context.management?.businessCompletion?.submittedBy)
-      : '';
-  if (resultPerformerId) return resultPerformerId;
-  // KPI follows the first specialist the document reached: office chief and
-  // department leader only dispatch it, and whoever the first specialist hands
-  // it to afterwards is assisting. A manager's explicit assignment still wins.
-  const managerEdited = Boolean(context.management?.updatedBy);
-  const primaryId = idOf(context.statusSync?.processing?.primaryAssignee?.userId);
-  if (!managerEdited && primaryId) return primaryId;
-  return idOf(context.management?.assignment?.userId);
-};
+) => effectiveOfficeDocumentOwnerId(context, completion);
 
 /**
  * KPI is derived from the same extension-origin incoming documents shown to
@@ -162,6 +157,9 @@ export const performanceOverviewService = async (
 
   const incomingDocuments = sourceContexts
     .map((context: any) => {
+      // Confirmed as never needing work: not a document of this KPI at all.
+      if (isOfficeDocumentNotRequired(context)) return null;
+      const underReview = isOfficeDocumentUnderNotRequiredReview(context);
       const imported = context.management?.kpiImport ?? null;
       const deadline = parseVietnamDate(
         context.management?.overrides?.dueDate ?? context.observation?.dueDate,
@@ -179,7 +177,6 @@ export const performanceOverviewService = async (
         : completed
           ? Boolean(completedAt && vietnamPeriodKey(completedAt) === period)
           : Boolean(deadline && vietnamPeriodKey(deadline) === period);
-      const assignment = context.management?.assignment ?? {};
       const ownerId = performanceDocumentOwnerId(
         context,
         effectiveCompletion,
@@ -202,6 +199,7 @@ export const performanceOverviewService = async (
         : 0;
       const status = documentStatus(completed, deadline);
       const owner = users.find((user: any) => idOf(user._id) === ownerId);
+      const unlistedOwner = effectiveOfficeDocumentOwner(context, { completion: effectiveCompletion });
       return {
         id: idOf(context._id),
         source: 'OFFICE_CONTEXT',
@@ -214,7 +212,7 @@ export const performanceOverviewService = async (
         deadline,
         point: Number.isFinite(point) ? point : 0,
         reworkCount,
-        creditedPoint: completed
+        creditedPoint: completed && !underReview
           ? calculateCreditedPoint(Number.isFinite(point) ? point : 0, reworkCount, lateWorkingDays)
           : 0,
         lateWorkingDays,
@@ -222,6 +220,14 @@ export const performanceOverviewService = async (
         completedAt,
         completed,
         status,
+        reviewSection: underReview,
+        notRequired: {
+          status: context.management?.notRequired?.status ?? 'NONE',
+          reason: context.management?.notRequired?.reason ?? '',
+          requestedByName: context.management?.notRequired?.requestedByName ?? '',
+          requestedAt: context.management?.notRequired?.requestedAt ?? null,
+          decisionNote: context.management?.notRequired?.decisionNote ?? '',
+        },
         processing: context.statusSync?.processing ?? null,
         trackLogs: context.statusSync?.trackLogs ?? [],
         owner: owner
@@ -235,10 +241,10 @@ export const performanceOverviewService = async (
           : {
               id: ownerId || null,
               username: null,
-              fullName: assignment.fullName || 'Chưa map được người xử lý',
+              fullName: unlistedOwner.fullName || 'Chưa map được người xử lý',
               position: null,
-              department: assignment.departmentId
-                ? { id: idOf(assignment.departmentId), name: assignment.departmentName ?? '', code: '' }
+              department: unlistedOwner.departmentId
+                ? { id: unlistedOwner.departmentId, name: unlistedOwner.departmentName, code: '' }
                 : null,
             },
       };
@@ -402,8 +408,13 @@ export const performanceOverviewService = async (
       };
     })
     .filter(Boolean) as any[];
+  // Awaiting a leader's decision is not scored work: these rows stay out of every
+  // total below and are returned next to the scored ones, flagged reviewSection.
+  const reviewDocuments = incomingDocuments
+    .filter((document) => document.reviewSection)
+    .sort((left, right) => (left.deadline?.getTime?.() ?? 0) - (right.deadline?.getTime?.() ?? 0));
   const documents = [
-    ...incomingDocuments,
+    ...incomingDocuments.filter((document) => !document.reviewSection),
     ...externalWork,
     ...standaloneProducts,
   ];
@@ -418,6 +429,7 @@ export const performanceOverviewService = async (
     inProgressDocumentCount: 0,
     overdueDocumentCount: 0,
     lateWorkingDays: 0,
+    reviewDocumentCount: 0,
   }]));
   const summary = {
     totalDocuments: documents.length,
@@ -428,6 +440,7 @@ export const performanceOverviewService = async (
     pendingPoint: 0,
     lateWorkingDays: 0,
     unmappedDocuments: 0,
+    reviewDocumentCount: reviewDocuments.length,
   };
 
   for (const document of documents) {
@@ -460,6 +473,11 @@ export const performanceOverviewService = async (
     }
   }
 
+  for (const document of reviewDocuments) {
+    const row = document.owner.id ? perUser.get(document.owner.id) : null;
+    if (row) row.reviewDocumentCount += 1;
+  }
+
   const assignees = [...perUser.values()]
     .map((row: any) => ({
       user: {
@@ -480,6 +498,7 @@ export const performanceOverviewService = async (
       inProgressDocumentCount: row.inProgressDocumentCount,
       overdueDocumentCount: row.overdueDocumentCount,
       lateWorkingDays: row.lateWorkingDays,
+      reviewDocumentCount: row.reviewDocumentCount,
     }))
     .sort((left, right) => {
       const priority = (row: any) => row.user.role?.code === 'SPECIALIST' && row.documentCount > 0 ? 0 : row.documentCount > 0 ? 1 : 2;
@@ -503,6 +522,7 @@ export const performanceOverviewService = async (
     inProgressDocumentCount: number;
     overdueDocumentCount: number;
     lateWorkingDays: number;
+    reviewDocumentCount: number;
   };
   const departmentTotals = new Map<string, DepartmentTotals>();
   for (const row of assignees) {
@@ -513,6 +533,7 @@ export const performanceOverviewService = async (
       departmentTotals.set(departmentId, {
         members: 0, monthlyKpi: 0, totalPoint: 0, pendingPoint: 0, documentCount: 0,
         completedDocumentCount: 0, inProgressDocumentCount: 0, overdueDocumentCount: 0, lateWorkingDays: 0,
+        reviewDocumentCount: 0,
       });
     }
     const totals = departmentTotals.get(departmentId)!;
@@ -525,6 +546,7 @@ export const performanceOverviewService = async (
     totals.inProgressDocumentCount += row.inProgressDocumentCount;
     totals.overdueDocumentCount += row.overdueDocumentCount;
     totals.lateWorkingDays += row.lateWorkingDays;
+    totals.reviewDocumentCount += row.reviewDocumentCount;
   }
 
   const leaderIds = assignees
@@ -556,6 +578,7 @@ export const performanceOverviewService = async (
       inProgressDocumentCount: row.inProgressDocumentCount + (totals?.inProgressDocumentCount ?? 0),
       overdueDocumentCount: row.overdueDocumentCount + (totals?.overdueDocumentCount ?? 0),
       lateWorkingDays: row.lateWorkingDays + (totals?.lateWorkingDays ?? 0),
+      reviewDocumentCount: row.reviewDocumentCount + (totals?.reviewDocumentCount ?? 0),
       ownMonthlyKpi: row.monthlyKpi,
       ownDocumentCount: row.documentCount,
       departmentMemberCount: totals?.members ?? 0,
@@ -588,7 +611,9 @@ export const performanceOverviewService = async (
       scope: { role: actor.role.code, userId: actor.id, organizationId: actor.organization, departmentId: actor.department },
       summary: { ...summary, projectedPoint: summary.totalPoint + summary.pendingPoint },
       assignees: enrichedAssignees,
-      documents: documents.slice(0, options.documentLimit ?? 2_000),
+      // Kept out of the slice: the sort above would otherwise let a long list of
+      // scored rows cut the documents a leader still has to decide.
+      documents: [...reviewDocuments, ...documents.slice(0, options.documentLimit ?? 2_000)],
     },
   };
 };

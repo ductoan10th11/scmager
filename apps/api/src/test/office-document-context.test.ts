@@ -528,7 +528,7 @@ test("outgoing owner resolution only accepts the drafter and rejects ambiguous n
 
 test("Office context routes expose the endpoint without an environment gate", () => {
   assert.equal(extensionOfficeDocumentContextRoutes.stack.length, 2);
-  assert.equal(officeDocumentContextRoutes.stack.length, 10);
+  assert.equal(officeDocumentContextRoutes.stack.length, 14);
   assert.equal(
     extensionOfficeDocumentContextRoutes.stack[0].route?.path,
     "/version",
@@ -559,9 +559,25 @@ test("Office context routes expose the endpoint without an environment gate", ()
     officeDocumentContextRoutes.stack[6].route?.path,
     "/:id/complaint/cancel",
   );
-  assert.equal(officeDocumentContextRoutes.stack[7].route?.path, "/:id");
-  assert.equal(officeDocumentContextRoutes.stack[8].route?.path, "/:id");
-  assert.equal(officeDocumentContextRoutes.stack[9].route?.path, "/:id");
+  assert.equal(
+    officeDocumentContextRoutes.stack[7].route?.path,
+    "/:id/not-required/request",
+  );
+  assert.equal(
+    officeDocumentContextRoutes.stack[8].route?.path,
+    "/:id/not-required/decide",
+  );
+  assert.equal(
+    officeDocumentContextRoutes.stack[9].route?.path,
+    "/:id/not-required/cancel",
+  );
+  assert.equal(
+    officeDocumentContextRoutes.stack[10].route?.path,
+    "/:id/not-required/restore",
+  );
+  assert.equal(officeDocumentContextRoutes.stack[11].route?.path, "/:id");
+  assert.equal(officeDocumentContextRoutes.stack[12].route?.path, "/:id");
+  assert.equal(officeDocumentContextRoutes.stack[13].route?.path, "/:id");
 });
 
 test("Office context HMAC rejects unsigned, invalid, and replayed requests", () => {

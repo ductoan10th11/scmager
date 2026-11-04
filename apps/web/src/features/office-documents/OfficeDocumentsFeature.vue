@@ -52,6 +52,10 @@ import SlidingTabs from "@/components/ui/sliding-tabs/SlidingTabs.vue";
 import Pl4ImportDialog from "@/features/performance/components/Pl4ImportDialog.vue";
 import { http } from "@/shared/api/http";
 import { useAuth } from "@/features/auth/composables/useAuth";
+import { useInlineScoreEdit } from "./composables/useInlineScoreEdit";
+import { notRequiredStatus, useNotRequired } from "./composables/useNotRequired";
+import NotRequiredDialog from "./components/NotRequiredDialog.vue";
+import NotRequiredPanel from "./components/NotRequiredPanel.vue";
 
 const activeTab = ref("incoming");
 const router = useRouter();
@@ -100,6 +104,7 @@ const filters = reactive({
   deadlineStatuses: [],
   scoreState: "",
   complaintState: "",
+  notRequiredState: "",
   dateField: "observed",
   dateFrom: "",
   dateTo: "",
@@ -166,6 +171,7 @@ const hasActiveFilters = computed(() => {
     filters.deadlineStatuses.length > 0 ||
     filters.scoreState ||
     filters.complaintState ||
+    filters.notRequiredState ||
     filters.dateFrom ||
     filters.dateTo ||
     search.value.trim()
@@ -178,6 +184,7 @@ const resetFilters = () => {
   filters.deadlineStatuses = [];
   filters.scoreState = "";
   filters.complaintState = "";
+  filters.notRequiredState = "";
   filters.dateFrom = "";
   filters.dateTo = "";
   search.value = "";
@@ -209,6 +216,7 @@ let searchTimer = null;
 let relatedTaskTimer = null;
 let relatedTaskRequestSequence = 0;
 let listRequestSequence = 0;
+let scoreSaveEpoch = 0;
 let activeForegroundRequests = 0;
 let listDebounceTimer = null;
 let detailRequestSequence = 0;
@@ -310,6 +318,25 @@ const isUnchangedRelatedSymbol = computed(() => (
   Boolean(initialRelatedSymbol.value)
   && form.value.relatedIncomingSoKyHieu.trim() === initialRelatedSymbol.value
 ));
+// Who the document belongs to when the edit form opened. An owner the user list
+// does not carry — they left, or sit outside a leader's scope — still has to be
+// selectable, and leaving them untouched must not read as a missing assignment.
+const initialOwner = ref({ userId: "", departmentId: "", fullName: "" });
+const formUserOptions = computed(() => {
+  const options = users.value.filter(
+    (person) =>
+      !form.value.departmentId
+      || String(person.department?._id || person.department || "") === String(form.value.departmentId),
+  );
+  const owner = initialOwner.value;
+  const ownerMissing = form.value.pageType === "incoming"
+    && owner.userId
+    && String(form.value.userId) === owner.userId
+    && !options.some((person) => String(person._id) === owner.userId);
+  return ownerMissing
+    ? [{ _id: owner.userId, fullName: owner.fullName || "Người làm hiện tại" }, ...options]
+    : options;
+});
 const formDepartmentValue = computed({
   get: () => form.value.departmentId || "__none_department__",
   set: (value) => {
@@ -514,11 +541,37 @@ const complaintStatusLabel = (status) => ({
   REJECTED: "Khiếu nại không được chấp nhận",
   CANCELLED: "Khiếu nại đã hủy",
 }[status] || "");
+// An incoming document belongs to its KPI owner, which tracking carries. Source
+// INGEST is only who holds it: nobody owns it yet. The API applies the same rule.
+const documentOwnerId = (context) => {
+  const assignee = context?.tracking?.assignee;
+  if (context?.pageType !== "incoming" || !assignee) {
+    return personId(context?.management?.assignment?.userId);
+  }
+  return assignee.source === "INGEST" ? "" : personId(assignee.userId);
+};
 const canRequestComplaint = (context) => (
-  personId(context?.management?.assignment?.userId) === currentUserId.value
+  documentOwnerId(context) === currentUserId.value
   && complaintOf(context)?.status !== "PENDING"
 );
 const canDecideComplaint = (context) => canManage.value && complaintOf(context)?.status === "PENDING";
+
+const {
+  dialogOpen: notRequiredOpen,
+  dialogMode: notRequiredMode,
+  dialogTarget: notRequiredTarget,
+  openDialog: openNotRequired,
+  canRequest: canRequestNotRequired,
+  canCancel: canCancelNotRequired,
+  canDecide: canDecideNotRequired,
+  canRestore: canRestoreNotRequired,
+} = useNotRequired({ user, currentUserId, currentDepartmentId, documentOwnerId, personId });
+
+const refreshAfterNotRequired = async (context) => {
+  const id = identity(context);
+  await fetchContexts(pagination.value.page, true);
+  await openContext(selected.value && identity(selected.value) === id ? selected.value : context);
+};
 
 const complaintOpen = ref(false);
 const complaintMode = ref("request");
@@ -625,6 +678,7 @@ const queryString = (page = 1) =>
       : {}),
     ...(filters.scoreState ? { scoreState: filters.scoreState } : {}),
     ...(filters.complaintState ? { complaintState: filters.complaintState } : {}),
+    ...(filters.notRequiredState ? { notRequiredState: filters.notRequiredState } : {}),
     ...(filters.dateField ? { dateField: filters.dateField } : {}),
     ...(filters.dateFrom ? { dateFrom: filters.dateFrom } : {}),
     ...(filters.dateTo ? { dateTo: filters.dateTo } : {}),
@@ -637,6 +691,7 @@ const focusLock = ref(false);
 
 const fetchContexts = async (page = 1, keepSelection = false, isBackground = false) => {
   const requestSequence = ++listRequestSequence;
+  const saveEpochAtStart = scoreSaveEpoch;
   if (!isBackground) {
     activeForegroundRequests++;
     loading.value = true;
@@ -647,6 +702,8 @@ const fetchContexts = async (page = 1, keepSelection = false, isBackground = fal
       `/api/office-document-contexts?${queryString(page)}`,
     );
     if (requestSequence !== listRequestSequence) return;
+    // A poll that left before an inline score was saved would put the old score back.
+    if (isBackground && saveEpochAtStart !== scoreSaveEpoch) return;
     items.value = response.data ?? [];
     pagination.value = response.pagination ?? pagination.value;
     if (!keepSelection && !focusLock.value) {
@@ -690,7 +747,8 @@ const openContext = async (context) => {
       selected.value = {
         ...context,
         ...(response.data ?? {}),
-        tracking: response.data?.tracking ?? context?.tracking,
+        // The detail payload carries only tracking.assignee; the list row has the rest.
+        tracking: { ...context?.tracking, ...response.data?.tracking },
       };
   } catch (requestError) {
     if (
@@ -720,6 +778,56 @@ const closeContext = () => {
 };
 
 const tracking = (context) => context?.tracking || {};
+
+// The Sản phẩm tab is out of scope: a product's score goes through approval.
+const canEditScoreInline = (context) => (
+  canManage.value
+  && activeTab.value === "incoming"
+  && context?.pageType === "incoming"
+  // Confirmed as not needed: out of KPI, so a score would mean nothing until restored.
+  && notRequiredStatus(context) !== "CONFIRMED"
+);
+// Sends the score and nothing else. The list is patched in place rather than
+// reloaded so the leader stays on the same page; the response carries the score
+// fields of tracking, which is what the cell, the sort and the panel read.
+const saveInlineScore = async (id, manualScore) => {
+  const { data } = await http(`/api/office-document-contexts/${id}`, {
+    method: "PATCH",
+    body: { management: { manualScore } },
+  });
+  scoreSaveEpoch += 1;
+  const withSavedScore = (row) => ({
+    ...row,
+    ...data,
+    tracking: { ...row.tracking, ...data?.tracking },
+  });
+  const index = items.value.findIndex((row) => identity(row) === id);
+  if (index !== -1) items.value[index] = withSavedScore(items.value[index]);
+  if (identity(selected.value) === id) {
+    selected.value = withSavedScore(selected.value);
+    // A detail request already in flight would answer with the old score.
+    if (detailLoading.value) openContext(selected.value);
+  }
+};
+const {
+  edits: scoreEdits,
+  onCellClick: onScoreCellClick,
+  onKeydown: onScoreKeydown,
+  onBlur: onScoreBlur,
+} = useInlineScoreEdit({
+  rows: sortedItems,
+  identity,
+  currentScore: (context) => tracking(context).rawScore ?? null,
+  canEdit: canEditScoreInline,
+  saveScore: saveInlineScore,
+});
+const scoreCellButton = (context) => ({
+  type: "button",
+  title: "Bấm để sửa điểm",
+  "aria-label": `Sửa điểm nhiệm vụ ${displayIdentifier(context)}, hiện tại ${tracking(context).rawScore ?? "chưa có điểm"}`,
+  "data-score-cell-id": identity(context),
+  class: "-mx-1 cursor-text rounded-md px-1 py-0.5 transition-colors hover:bg-sky-50 hover:ring-1 hover:ring-sky-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500",
+});
 // A product has no deadline of its own; it is on time or late by the task it
 // answers, so the inherited deadline is what gets shown.
 const isLinkedProduct = (context) => Boolean(tracking(context).relatedIncoming?.id);
@@ -795,7 +903,8 @@ const recipientsLabel = (context) =>
     .join(", ");
 const assigneeLabel = (context) =>
   context?.pageType === "incoming"
-    ? context?.management?.assignment?.fullName
+    ? context?.tracking?.assignee?.fullName
+      || context?.management?.assignment?.fullName
       || recipientsLabel(context)
       || "Chưa có người nhận"
     : getValue(context, "draftingUser")
@@ -821,11 +930,12 @@ const loadCounterpart = async () => {
   try {
     const response = await http(`/api/office-document-contexts/${target.id}`);
     const data = response.data ?? null;
-    if (data && !data.tracking) {
+    if (data) {
       data.tracking = {
         dueAt: tracking(selected.value).dueAt,
         deadlineStatus: tracking(selected.value).deadlineStatus,
         rawScore: data.management?.manualScore ?? data.observation?.point ?? null,
+        ...data.tracking,
       };
     }
     counterpart.value = data;
@@ -1131,6 +1241,32 @@ const declareWorkForTask = (context) => {
   router.push({ path: "/assignments", query: { sourceDocument: id } });
 };
 
+// The people the form opens with. For a task that is the KPI owner rather than
+// management.assignment, which is often just the leader it was routed through; a
+// form prefilled from there would hand the task to the leader on save.
+const formOwnerFor = (context) => {
+  const assignment = context.management?.assignment ?? {};
+  if (context.pageType !== "incoming") {
+    return {
+      userId: personId(assignment.userId),
+      departmentId: personId(assignment.departmentId),
+      fullName: assignment.fullName || "",
+    };
+  }
+  const assignee = context.tracking?.assignee;
+  const owner = assignee && documentOwnerId(context) ? assignee : assignment;
+  const userId = personId(owner.userId);
+  const listed = users.value.find((person) => String(person._id) === userId);
+  return {
+    userId,
+    fullName: owner.fullName || listed?.fullName || "",
+    departmentId:
+      personId(owner.departmentId)
+      || personId(listed?.department)
+      || (userId === personId(assignment.userId) ? personId(assignment.departmentId) : ""),
+  };
+};
+
 const openEdit = (context) => {
   formMode.value = "edit";
   formError.value = "";
@@ -1138,6 +1274,7 @@ const openEdit = (context) => {
   // would fling the detail panel open behind the form, which is not what the
   // Sửa button was asked to do.
   editTarget.value = context;
+  initialOwner.value = formOwnerFor(context);
   form.value = {
     pageType: context.pageType,
     subject: getValue(context, "subject"),
@@ -1150,11 +1287,15 @@ const openEdit = (context) => {
     draftingUnit: getValue(context, "draftingUnit"),
     relatedIncomingSoKyHieu: getValue(context, "relatedIncomingSoKyHieu"),
     note: getValue(context, "note"),
-    departmentId: context.management?.assignment?.departmentId || "",
-    userId: context.management?.assignment?.userId || "",
+    departmentId: initialOwner.value.departmentId,
+    userId: initialOwner.value.userId,
     // Fall back to the point actually in force (inherited from the task, or read
     // off eOffice) so the field is never blank on a document that has a score.
-    manualScore: context.management?.manualScore
+    // On a task the effective score goes first: saving writes this value over the
+    // score in force, so a stale manualScore here would change it without anyone
+    // having touched the field.
+    manualScore: (context.pageType === "incoming" ? context.tracking?.rawScore : null)
+      ?? context.management?.manualScore
       ?? context.tracking?.rawScore
       ?? context.management?.overrides?.point
       ?? context.observation?.point
@@ -1183,7 +1324,13 @@ const saveContext = async () => {
     return;
   }
   const score = Number(form.value.manualScore);
-  if (!form.value.departmentId || !form.value.userId) {
+  // Saving a task without touching these fields says nothing about who owns it,
+  // so they are neither required nor sent.
+  const ownerUntouched = formMode.value === "edit"
+    && form.value.pageType === "incoming"
+    && String(form.value.userId) === initialOwner.value.userId
+    && String(form.value.departmentId) === initialOwner.value.departmentId;
+  if (!ownerUntouched && (!form.value.departmentId || !form.value.userId)) {
     formError.value = "Đơn vị phụ trách và người làm là bắt buộc.";
     return;
   }
@@ -1221,10 +1368,14 @@ const saveContext = async () => {
       delete payload.soKyHieu;
     }
     const management = {
-      assignment: {
-        departmentId: payload.departmentId || "",
-        userId: payload.userId || "",
-      },
+      ...(ownerUntouched
+        ? {}
+        : {
+            assignment: {
+              departmentId: payload.departmentId || "",
+              userId: payload.userId || "",
+            },
+          }),
       manualScore: payload.manualScore,
       note: payload.managementNote,
     };
@@ -1434,7 +1585,8 @@ onMounted(async () => {
       !bulkImportOpen.value &&
       !deleteOpen.value &&
       !approvalOpen.value &&
-      !complaintOpen.value
+      !complaintOpen.value &&
+      !notRequiredOpen.value
     ) {
       fetchContexts(pagination.value.page, true, true);
       fetchPendingApprovalCount();
@@ -1727,6 +1879,38 @@ onUnmounted(() => {
                   {{ pagination.total }}
                 </span>
               </button>
+
+              <!-- Not required: awaiting review / confirmed -->
+              <template v-if="activeTab === 'incoming'">
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1.5 h-7 rounded-full border px-3 text-xs font-medium transition-all duration-150"
+                  :class="filters.notRequiredState === 'PENDING'
+                    ? 'border-amber-300 bg-amber-100/80 text-amber-900 shadow-xs ring-1 ring-amber-300 font-semibold'
+                    : 'border-zinc-200/70 bg-white text-zinc-600 hover:border-zinc-300 hover:bg-zinc-50'"
+                  @click="filters.notRequiredState = filters.notRequiredState === 'PENDING' ? '' : 'PENDING'"
+                >
+                  <Clock3 class="h-3 w-3 text-amber-600" />
+                  Chờ xem xét
+                  <span v-if="filters.notRequiredState === 'PENDING'" class="rounded-full bg-amber-200/90 px-1.5 text-[10px] text-amber-950 font-bold">
+                    {{ pagination.total }}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1.5 h-7 rounded-full border px-3 text-xs font-medium transition-all duration-150"
+                  :class="filters.notRequiredState === 'CONFIRMED'
+                    ? 'border-zinc-400 bg-zinc-100 text-zinc-900 shadow-xs ring-1 ring-zinc-300 font-semibold'
+                    : 'border-zinc-200/70 bg-white text-zinc-600 hover:border-zinc-300 hover:bg-zinc-50'"
+                  @click="filters.notRequiredState = filters.notRequiredState === 'CONFIRMED' ? '' : 'CONFIRMED'"
+                >
+                  <XCircle class="h-3 w-3 text-zinc-500" />
+                  Không cần làm
+                  <span v-if="filters.notRequiredState === 'CONFIRMED'" class="rounded-full bg-zinc-200 px-1.5 text-[10px] text-zinc-900 font-bold">
+                    {{ pagination.total }}
+                  </span>
+                </button>
+              </template>
             </div>
 
             <!-- Nút Reset bộ lọc -->
@@ -1900,13 +2084,27 @@ onUnmounted(() => {
 
                   <TableCell v-if="activeTab === 'incoming'" class="px-4 py-3.5">
                     <span
-                      v-if="tracking(context).deadlineStatus && tracking(context).deadlineStatus !== 'NO_DEADLINE'"
+                      v-if="notRequiredStatus(context) === 'CONFIRMED'"
+                      class="inline-flex items-center whitespace-nowrap rounded-full border border-zinc-300 bg-zinc-100 px-2.5 py-0.5 text-xs font-semibold text-zinc-700 shadow-2xs"
+                      title="Lãnh đạo đã xác nhận việc không cần làm, không tính vào KPI"
+                    >
+                      Không cần làm
+                    </span>
+                    <span
+                      v-else-if="tracking(context).deadlineStatus && tracking(context).deadlineStatus !== 'NO_DEADLINE'"
                       class="inline-flex items-center whitespace-nowrap rounded-full border px-2.5 py-0.5 text-xs font-semibold shadow-2xs"
                       :class="deadlineClass(context)"
                     >
                       {{ deadlineLabel(context) }}
                     </span>
                     <span v-else class="text-zinc-300">—</span>
+                    <span
+                      v-if="notRequiredStatus(context) === 'PENDING'"
+                      class="mt-1 flex w-fit items-center whitespace-nowrap rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800"
+                      title="Chuyên viên đề nghị việc không cần làm, chưa tính vào KPI cho đến khi lãnh đạo quyết định"
+                    >
+                      Chờ xem xét
+                    </span>
                   </TableCell>
 
                   <TableCell class="px-4 py-3.5 text-xs text-zinc-700">
@@ -1946,17 +2144,63 @@ onUnmounted(() => {
                     </div>
                   </TableCell>
 
-                  <TableCell class="px-4 py-3.5 text-xs">
-                    <span
-                      v-if="tracking(context).awaitingScore"
-                      class="inline-flex items-center rounded-full bg-amber-100/90 px-2 py-0.5 text-xs font-bold text-amber-900 whitespace-nowrap shadow-2xs"
-                      title="Văn bản đã xong nhưng chưa được chấm điểm"
+                  <TableCell class="px-4 py-3.5 text-xs" @click="onScoreCellClick($event, context)">
+                    <div
+                      v-if="canEditScoreInline(context) && scoreEdits[identity(context)]"
+                      class="inline-block align-middle"
+                      @click.stop
                     >
-                      Chưa chấm
-                    </span>
-                    <strong v-else class="text-sm font-bold text-zinc-900">
-                      {{ tracking(context).rawScore ?? "—" }}
-                    </strong>
+                      <div class="relative w-16">
+                        <input
+                          v-model="scoreEdits[identity(context)].value"
+                          type="text"
+                          inputmode="decimal"
+                          autocomplete="off"
+                          class="h-8 w-full rounded-lg border bg-white px-2 text-sm font-bold text-zinc-900 outline-none focus-visible:border-sky-500 focus-visible:ring-2 focus-visible:ring-sky-500/40"
+                          :class="[
+                            scoreEdits[identity(context)].error ? 'border-rose-400' : 'border-zinc-300',
+                            scoreEdits[identity(context)].saving ? 'pr-6 text-zinc-500' : '',
+                          ]"
+                          :data-score-edit-id="identity(context)"
+                          :readonly="scoreEdits[identity(context)].saving"
+                          :aria-label="`Điểm nhiệm vụ ${displayIdentifier(context)}`"
+                          :aria-busy="scoreEdits[identity(context)].saving"
+                          :aria-invalid="Boolean(scoreEdits[identity(context)].error)"
+                          :aria-describedby="scoreEdits[identity(context)].error ? `score-error-${identity(context)}` : undefined"
+                          @keydown="onScoreKeydown($event, identity(context))"
+                          @blur="onScoreBlur(identity(context))"
+                        />
+                        <Loader2
+                          v-if="scoreEdits[identity(context)].saving"
+                          class="absolute right-1.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-sky-600"
+                          aria-hidden="true"
+                        />
+                      </div>
+                      <p
+                        v-if="scoreEdits[identity(context)].error"
+                        :id="`score-error-${identity(context)}`"
+                        role="alert"
+                        class="mt-1 w-32 text-[11px] font-medium leading-snug text-rose-700"
+                      >
+                        {{ scoreEdits[identity(context)].error }}
+                      </p>
+                    </div>
+                    <component
+                      :is="canEditScoreInline(context) ? 'button' : 'span'"
+                      v-else
+                      v-bind="canEditScoreInline(context) ? scoreCellButton(context) : {}"
+                    >
+                      <span
+                        v-if="tracking(context).awaitingScore"
+                        class="inline-flex items-center rounded-full bg-amber-100/90 px-2 py-0.5 text-xs font-bold text-amber-900 whitespace-nowrap shadow-2xs"
+                        title="Văn bản đã xong nhưng chưa được chấm điểm"
+                      >
+                        Chưa chấm
+                      </span>
+                      <strong v-else class="text-sm font-bold text-zinc-900">
+                        {{ tracking(context).rawScore ?? "—" }}
+                      </strong>
+                    </component>
                     <span
                       v-if="complaintOf(context)?.status === 'PENDING'"
                       class="ml-1.5 inline-flex items-center rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-700 whitespace-nowrap"
@@ -2098,7 +2342,7 @@ onUnmounted(() => {
                   {{ formatCapturedAt(selected) }}
                 </p>
               </div>
-              <div class="flex gap-1">
+              <div class="flex flex-wrap justify-end gap-1">
                 <Button
                   v-if="selected.pageType === 'incoming'"
                   variant="outline"
@@ -2131,6 +2375,15 @@ onUnmounted(() => {
                   @click="openComplaint(selected, 'decide')"
                 >
                   Duyệt khiếu nại
+                </Button>
+                <Button
+                  v-if="canRequestNotRequired(selected)"
+                  size="sm"
+                  variant="outline"
+                  class="border-zinc-300 bg-white text-zinc-800 hover:bg-zinc-50"
+                  @click="openNotRequired(selected, 'request')"
+                >
+                  Chuyển lại lãnh đạo (việc không cần làm)
                 </Button>
                 <Button
                   v-if="canEditContext(selected)"
@@ -2249,6 +2502,13 @@ onUnmounted(() => {
                     </p>
                   </div>
                 </section>
+                <NotRequiredPanel
+                  :context="selected"
+                  :can-cancel="canCancelNotRequired(selected)"
+                  :can-decide="canDecideNotRequired(selected)"
+                  :can-restore="canRestoreNotRequired(selected)"
+                  @action="openNotRequired(selected, $event)"
+                />
                 <section class="border-b border-zinc-100 pb-5">
                   <span
                     class="rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-xs font-bold text-sky-700"
@@ -2680,6 +2940,14 @@ onUnmounted(() => {
         </div>
       </DialogContent>
     </Dialog>
+    <NotRequiredDialog
+      v-model:open="notRequiredOpen"
+      :mode="notRequiredMode"
+      :context="notRequiredTarget"
+      :document-id="String(identity(notRequiredTarget) ?? '')"
+      :label="notRequiredTarget ? displayIdentifier(notRequiredTarget) : ''"
+      @saved="refreshAfterNotRequired"
+    />
     <Dialog v-model:open="formOpen"
       ><DialogContent class="max-h-[calc(100vh-1rem)] w-[calc(100vw-2rem)] gap-3 overflow-y-auto p-5 sm:max-w-[760px]"
         ><DialogHeader
@@ -2896,7 +3164,7 @@ onUnmounted(() => {
                   <SelectTrigger class="h-10 rounded-xl"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="__none_user__">Chưa phân công</SelectItem>
-                    <SelectItem v-for="person in users.filter((person) => !form.departmentId || String(person.department?._id || person.department || '') === String(form.departmentId))" :key="person._id" :value="person._id">{{ person.fullName }}</SelectItem>
+                    <SelectItem v-for="person in formUserOptions" :key="person._id" :value="person._id">{{ person.fullName }}</SelectItem>
                   </SelectContent>
                 </Select>
               </label>

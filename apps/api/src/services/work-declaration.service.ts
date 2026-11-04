@@ -12,6 +12,8 @@ import {
   markWorkDeclarationNotificationsRead,
 } from './notification.service';
 import { AuditLogModel } from '../models/audit-log.model';
+import { effectiveOfficeDocumentOwnerId } from './office-document-owner.service';
+import { isOfficeDocumentNotRequired } from './office-document-not-required-state.service';
 import { emitWorkDeclarationChanged } from '../realtime/ingest.socket';
 import { ensureDailyCapacity, getEffectiveWorkPolicy, type EffectiveWorkPolicy } from './work-policy.service';
 import {
@@ -194,11 +196,14 @@ export const assertSourceDocumentCanBeLinked = (
   source: any,
   ownerId: string,
 ) => {
-  if (idOf(source?.management?.assignment?.userId) !== ownerId) {
+  if (effectiveOfficeDocumentOwnerId(source) !== ownerId) {
     throw forbidden('Nhiệm vụ nguồn không được giao cho người thực hiện đã chọn.');
   }
   if (source?.management?.businessCompletion?.completed === true) {
     throw conflict('Nhiệm vụ nguồn đã được xác nhận hoàn thành.');
+  }
+  if (isOfficeDocumentNotRequired(source)) {
+    throw conflict('Nhiệm vụ nguồn đã được xác nhận không cần làm. Lãnh đạo cần khôi phục trước.');
   }
 };
 
@@ -560,7 +565,7 @@ export const createWorkDeclarationService = async (actor: AuthUser, body: Record
       _id: sourceDocument,
       organizationId: uniqueOwners[0].organization,
       pageType: 'incoming',
-    }).select('_id management.assignment management.businessCompletion');
+    }).select('_id management.assignment management.assignmentMode management.updatedBy management.businessCompletion management.notRequired statusSync.completed statusSync.processing');
     if (!source) throw notFound('Source document not found.');
     assertSourceDocumentCanBeLinked(source, uniqueOwners[0].id);
   }

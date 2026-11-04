@@ -20,6 +20,7 @@ import {
 import { resolveDocumentWorkflow } from "./document-workflow.service";
 import {
   appendOfficeDocumentManagementNote,
+  businessCompletionPointWins,
   effectiveOfficeDocumentCompletion,
   effectiveOfficeDocumentPoint,
   effectiveOfficeDocumentReworkCount,
@@ -35,6 +36,22 @@ import {
   DOCUMENT_RESULT_OUTGOING_POPULATE_SELECT,
   resolveDocumentResultLinkService,
 } from "./document-result-link.service";
+import {
+  effectiveOfficeDocumentOwner,
+  effectiveOfficeDocumentOwnerId,
+  isAssignmentManual,
+  type OfficeDocumentCompletionSource,
+  type OfficeDocumentOwnerDirectory,
+} from "./office-document-owner.service";
+import { closeNotRequiredAfterReassignment } from "./office-document-not-required.service";
+import {
+  loadOfficeDocumentOwnerDirectory,
+  officeDocumentOwnerDirectoryFor,
+} from "./office-document-owner-directory.service";
+import {
+  isOfficeDocumentNotRequired,
+  officeDocumentNotRequiredStatus,
+} from "./office-document-not-required-state.service";
 
 const PAGE_TYPES = ["incoming", "outgoing", "outgoing_c2"] as const;
 const RECIPIENT_ROLES = [
@@ -80,7 +97,8 @@ const actorCanReadOfficeDocument = (context: any, actor: AuthUser) => {
   const participantMatches = (person: any) => personMatchesActor(person, actor);
   const directlyAssigned = participantMatches(assignment)
     || participantMatches(processing.currentAssignee)
-    || (processing.assignees ?? []).some(participantMatches);
+    || (processing.assignees ?? []).some(participantMatches)
+    || effectiveOfficeDocumentOwnerId(context) === actor.id;
 
   if (actor.role.code === "DEPARTMENT_LEADER") {
     return directlyAssigned
@@ -105,6 +123,69 @@ const actorCanReadOfficeDocument = (context: any, actor: AuthUser) => {
     (recipient: any) => recipient?.role === "main" && participantMatches(recipient),
   );
 };
+
+// Any clerk account, not just this commune's: eOffice names them all with
+// "văn thư" / "vanthu", and handing a document to one of them ends its
+// processing.
+const isOfficeClerk = (participant: any) => {
+  const username = String(participant?.externalUsername ?? participant?.username ?? "").toLowerCase();
+  const fullName = String(participant?.externalFullName ?? participant?.fullName ?? "")
+    .normalize("NFC")
+    .toLocaleLowerCase("vi-VN");
+  return username.includes("vanthu") || fullName.includes("văn thư");
+};
+
+/** Whoever the routing says holds the document, which need not be its owner. */
+const workflowAssigneeOf = (processing: any) => {
+  const processedAssignee =
+    [...(processing.assignees ?? [])]
+      .filter(
+        (participant: any) =>
+          participant?.fullName && !isOfficeClerk(participant),
+      )
+      .sort((left: any, right: any) =>
+        String(right.processedAt ?? right.assignedAt ?? "").localeCompare(
+          String(left.processedAt ?? left.assignedAt ?? ""),
+        ),
+      )[0] ?? {};
+  return processing.currentAssignee?.fullName
+    ? processing.currentAssignee
+    : processedAssignee;
+};
+
+/**
+ * tracking.assignee. For an incoming document it is the KPI owner, so the list
+ * column, the "Người làm" filter and the KPI all name the same person. Source
+ * INGEST means nobody owns the document and this is merely who holds it.
+ */
+const trackingAssigneeFor = (
+  context: any,
+  directory: OfficeDocumentOwnerDirectory,
+  completion?: OfficeDocumentCompletionSource,
+) => {
+  const assignment = context.management?.assignment ?? {};
+  if (context.pageType === "incoming") {
+    const owner = effectiveOfficeDocumentOwner(context, { completion, directory });
+    if (owner.source !== "NONE") return owner;
+  } else if (assignment.fullName) {
+    return {
+      source: "MANUAL",
+      userId: assignment.userId ? String(assignment.userId) : "",
+      fullName: assignment.fullName,
+      departmentId: assignment.departmentId ? String(assignment.departmentId) : "",
+      departmentName: assignment.departmentName ?? "",
+    };
+  }
+  const holder = workflowAssigneeOf(context.statusSync?.processing ?? {});
+  return {
+    source: "INGEST",
+    userId: holder.userId ? String(holder.userId) : "",
+    fullName: holder.fullName ?? "",
+    departmentId: holder.departmentId ? String(holder.departmentId) : "",
+    departmentName: "",
+  };
+};
+
 const MANAGED_FIELDS = [
   "title",
   "subject",
@@ -571,7 +652,7 @@ export const upsertOfficeDocumentContext = async (
     externalDocumentId: normalized.externalDocumentId,
   };
   const previous = await OfficeDocumentContextModel.findOne(filter)
-    .select("management.assignment management.product management.manualScore management.overrides management.updatedBy observation.point observation.reworkCount observation.relatedIncomingSoKyHieu")
+    .select("management.assignment management.assignmentMode management.product management.manualScore management.overrides management.updatedBy observation.point observation.reworkCount observation.relatedIncomingSoKyHieu")
     .lean();
 
   // ponytail: standalone products without score or rework count are dropped
@@ -618,9 +699,9 @@ export const upsertOfficeDocumentContext = async (
     };
   }
   const tenant = await resolveContextTenant(normalized);
-  // Any management edit, including intentionally clearing an assignment, is
+  // A manager's assignment, including intentionally clearing one, is
   // authoritative over extension-derived ownership.
-  const isManaged = Boolean(previous?.management?.updatedBy);
+  const isManaged = isAssignmentManual(previous);
   const assignment = isManaged
     ? (previous?.management?.assignment?.userId
       ? previous.management.assignment
@@ -785,10 +866,15 @@ export const backfillOfficeDocumentContextTenants = async () => {
   const contexts = await OfficeDocumentContextModel.find({
     $or: [
       { organizationId: null },
-      { "management.assignment.userId": null, "management.updatedBy": null },
+      { "management.assignment.userId": null, "management.assignmentMode": "AUTO" },
+      {
+        "management.assignment.userId": null,
+        "management.assignmentMode": null,
+        "management.updatedBy": null,
+      },
     ],
   })
-    .select("pageType observation organizationId management.assignment management.updatedBy")
+    .select("pageType observation organizationId management.assignment management.assignmentMode management.updatedBy")
     .lean();
   let resolved = 0;
   let ambiguous = 0;
@@ -797,7 +883,7 @@ export const backfillOfficeDocumentContextTenants = async () => {
     const tenant = context.organizationId
       ? { organizationId: String(context.organizationId), resolution: "UNRESOLVED" as TenantResolution }
       : await resolveContextTenant(context);
-    const assignment = context.management?.updatedBy || context.management?.assignment?.userId
+    const assignment = isAssignmentManual(context) || context.management?.assignment?.userId
       ? null
       : await resolveContextManagementAssignment(context, tenant.organizationId);
     const update: Record<string, unknown> = {};
@@ -840,6 +926,7 @@ export const listOfficeDocumentContexts = async (
     "deadlineStatus",
     "scoreState",
     "complaintState",
+    "notRequiredState",
     "minHoldingDays",
     "dateField",
     "dateFrom",
@@ -918,6 +1005,9 @@ export const listOfficeDocumentContexts = async (
   const complaintState = string(query.complaintState, "complaintState", 20);
   if (complaintState && complaintState !== "PENDING")
     throw badRequest("complaintState must be PENDING.");
+  const notRequiredState = string(query.notRequiredState, "notRequiredState", 20);
+  if (notRequiredState && !["PENDING", "CONFIRMED"].includes(notRequiredState))
+    throw badRequest("notRequiredState must be PENDING or CONFIRMED.");
   const minHoldingDaysRaw = string(query.minHoldingDays, "minHoldingDays", 10);
   const minHoldingDays = minHoldingDaysRaw === "" ? null : Number(minHoldingDaysRaw);
   if (minHoldingDays !== null && (!Number.isSafeInteger(minHoldingDays) || minHoldingDays < 0))
@@ -990,71 +1080,12 @@ export const listOfficeDocumentContexts = async (
     const sync = context.statusSync ?? {};
     const processing = sync.processing ?? {};
     const managedAssignment = context.management?.assignment ?? {};
-    // Any clerk account, not just this commune's: eOffice names them all with
-    // "văn thư" / "vanthu", and handing a document to one of them ends its
-    // processing.
-    const isOfficeClerk = (participant: any) => {
-      const username = String(participant?.externalUsername ?? participant?.username ?? "").toLowerCase();
-      const fullName = String(participant?.externalFullName ?? participant?.fullName ?? "")
-        .normalize("NFC")
-        .toLocaleLowerCase("vi-VN");
-      return username.includes("vanthu") || fullName.includes("văn thư");
-    };
-    const processedAssignee =
-      [...(processing.assignees ?? [])]
-        .filter(
-          (participant: any) =>
-            participant?.fullName && !isOfficeClerk(participant),
-        )
-        .sort((left: any, right: any) =>
-          String(right.processedAt ?? right.assignedAt ?? "").localeCompare(
-            String(left.processedAt ?? left.assignedAt ?? ""),
-          ),
-        )[0] ?? {};
-    const workflowAssignee = processing.currentAssignee?.fullName
-      ? processing.currentAssignee
-      : processedAssignee;
-    // The first specialist in the routing chain owns the work. An extension
-    // payload only captures whoever held the document while the page was open,
-    // so the track log — which keeps the whole chain — decides instead. A
-    // manager's explicit edit still wins over both.
-    const primary: any = processing.primaryAssignee ?? null;
-    const managerEdited = Boolean(context.management?.updatedBy);
-    const assignee = (!managerEdited && primary?.userId)
-      ? {
-          source: "WORKFLOW_PRIMARY",
-          userId: String(primary.userId),
-          fullName: primary.fullName ?? "",
-          departmentId: primary.departmentId ? String(primary.departmentId) : "",
-          departmentName: managedAssignment.departmentName ?? "",
-        }
-      : managedAssignment.fullName
-      ? {
-          source: "MANUAL",
-          userId: managedAssignment.userId
-            ? String(managedAssignment.userId)
-            : "",
-          fullName: managedAssignment.fullName,
-          departmentId: managedAssignment.departmentId
-            ? String(managedAssignment.departmentId)
-            : "",
-          departmentName: managedAssignment.departmentName ?? "",
-        }
-      : {
-          source: "INGEST",
-          userId: workflowAssignee.userId
-            ? String(workflowAssignee.userId)
-            : "",
-          fullName: workflowAssignee.fullName ?? "",
-          departmentId: workflowAssignee.departmentId
-            ? String(workflowAssignee.departmentId)
-            : "",
-          departmentName: "",
-        };
+    const workflowAssignee = workflowAssigneeOf(processing);
+    const completion = effectiveOfficeDocumentCompletion(context);
+    const assignee = trackingAssigneeFor(context, ownerDirectory, completion);
     const observed = (field: string) =>
       context.management?.overrides?.[field] ?? context.observation?.[field];
     const dueAt = parseDocumentDate(observed("dueDate"), true);
-    const completion = effectiveOfficeDocumentCompletion(context);
 
     /**
      * Where the document sits right now, read off the newest routing entry:
@@ -1276,6 +1307,9 @@ export const listOfficeDocumentContexts = async (
   const allItems = await OfficeDocumentContextModel.find(filter)
     .sort({ updatedAt: -1 })
     .lean();
+  const ownerDirectory = await loadOfficeDocumentOwnerDirectory(
+    actor.role.code !== "ADMIN" ? { organization: actor.organization } : {},
+  );
   const selectedUser =
     userId && isValidObjectId(userId)
       ? await UserModel.findOne({ _id: userId, status: "ACTIVE" })
@@ -1311,25 +1345,44 @@ export const listOfficeDocumentContexts = async (
     const matches = (id: unknown, ...values: unknown[]) =>
       ids.has(String(id ?? "")) ||
       values.some((value) => identities.has(normalizedIdentity(value)));
+    // "Người làm" means the KPI owner. Recipients are never consulted: a document
+    // carries dozens of collaborators who are not doing the work.
+    if (context.pageType === "incoming") {
+      const ownerId = effectiveOfficeDocumentOwnerId(context);
+      return ownerId
+        ? ids.has(ownerId)
+        : identities.has(normalizedIdentity(tracking.assignee?.fullName));
+    }
     const manual = context.management?.assignment ?? {};
     if (matches(manual.userId, manual.fullName)) return true;
     if (matches(tracking.assignee?.userId, tracking.assignee?.fullName))
       return true;
-    if (context.pageType === "incoming") {
-      return (observed("recipients") ?? []).some((recipient: any) =>
-        matches(
-          recipient.userId,
-          recipient.userId,
-          recipient.fullName,
-          recipient.department,
-        ),
-      );
-    }
     return matches(
       observed("draftingUserId"),
       observed("draftingUserId"),
       observed("draftingUser"),
     );
+  };
+  const matchesIncomingDepartment = (context: any, tracking: any) => {
+    const selectedId = String(selectedDepartment?._id);
+    if (
+      String(tracking.assignee?.departmentId ?? "") === selectedId
+      || matchesPeople(context, tracking, departmentUsers)
+    ) return true;
+    if (tracking.assignee?.source !== "INGEST") return false;
+    // Nobody owns the document, so where it was routed is all there is to go on.
+    // Once it has an owner these are stale and must not place it here.
+    return String(context.management?.assignment?.departmentId ?? "") === selectedId
+      || (
+        context.management?.overrides?.recipients ??
+        context.observation?.recipients ??
+        []
+      ).some(
+        (recipient: any) =>
+          recipient.entityType === "unit" &&
+          normalizedIdentity(recipient.department || recipient.fullName) ===
+            normalizedIdentity(selectedDepartment?.name),
+      );
   };
   const relatedIncomingSymbols = [
     ...new Set(
@@ -1487,6 +1540,9 @@ export const listOfficeDocumentContexts = async (
           : "NO_DEADLINE";
       }
     }
+    // A confirmed task is no longer measured against its deadline, so it leaves
+    // every deadline filter, and the overdue report built on them, in one place.
+    if (isOfficeDocumentNotRequired(context)) tracking.deadlineStatus = "NO_DEADLINE";
     return { ...context, tracking };
   });
   const items = itemsWithTracking.filter((context: any) => {
@@ -1512,31 +1568,22 @@ export const listOfficeDocumentContexts = async (
     if (selectedUser && !matchesPeople(context, tracking, [selectedUser]))
       return false;
     if (selectedDepartment) {
-      const isManualDepartment =
-        String(context.management?.assignment?.departmentId ?? "") ===
-        String(selectedDepartment._id);
-      const isWorkflowDepartment =
-        String(tracking.assignee?.departmentId ?? "") ===
-        String(selectedDepartment._id);
-      const isUnitRecipient =
-        context.pageType === "incoming" &&
-        (
-          context.management?.overrides?.recipients ??
-          context.observation?.recipients ??
-          []
-        ).some(
-          (recipient: any) =>
-            recipient.entityType === "unit" &&
-            normalizedIdentity(recipient.department || recipient.fullName) ===
-              normalizedIdentity(selectedDepartment.name),
-        );
-      if (
-        !isManualDepartment &&
-        !isWorkflowDepartment &&
-        !isUnitRecipient &&
-        !matchesPeople(context, tracking, departmentUsers)
-      )
-        return false;
+      if (context.pageType === "incoming") {
+        if (!matchesIncomingDepartment(context, tracking)) return false;
+      } else {
+        const isManualDepartment =
+          String(context.management?.assignment?.departmentId ?? "") ===
+          String(selectedDepartment._id);
+        const isWorkflowDepartment =
+          String(tracking.assignee?.departmentId ?? "") ===
+          String(selectedDepartment._id);
+        if (
+          !isManualDepartment &&
+          !isWorkflowDepartment &&
+          !matchesPeople(context, tracking, departmentUsers)
+        )
+          return false;
+      }
     }
     if (
       requestedDeadlineStatuses.length &&
@@ -1547,6 +1594,7 @@ export const listOfficeDocumentContexts = async (
       complaintState === "PENDING"
       && context.management?.scoreComplaint?.status !== "PENDING"
     ) return false;
+    if (notRequiredState && officeDocumentNotRequiredStatus(context) !== notRequiredState) return false;
     if (scoreState === "AWAITING_SCORE" && !tracking.awaitingScore) return false;
     if (scoreState === "SCORED" && tracking.rawScore === null) return false;
     if (
@@ -1602,6 +1650,11 @@ export const getOfficeDocumentContext = async (actor: AuthUser, id: string) => {
   return {
     data: {
       ...context,
+      // Only the owner: the rest of tracking is computed for the list, and the
+      // client merges this over the row it already holds.
+      tracking: {
+        assignee: trackingAssigneeFor(context, await officeDocumentOwnerDirectoryFor(context)),
+      },
       resultLinks: resultLinks.filter((link: any) =>
         canReadDocumentResultLink(actor, link, true)),
     },
@@ -2008,6 +2061,7 @@ export const createManagedOfficeDocumentContext = async (
   }
   if (completedInput !== undefined && typeof completedInput !== "boolean")
     throw badRequest("completed must be a boolean.");
+  if (pageType === "incoming") management["management.assignmentMode"] = "MANUAL";
   if (pageType !== "incoming") {
     const createdDate = normalized.observation.createdDate;
     const draftingUnit = normalized.observation.draftingUnit;
@@ -2152,6 +2206,66 @@ export const getNextManagedOfficeDocumentReference = async (actor: AuthUser) => 
   return { data: { soKyHieu: await nextManualReference(actor, false) } };
 };
 
+/**
+ * Whether a submitted assignment keeps the document with its current owner. The
+ * edit form always posts one, so this is what tells a real reassignment from a
+ * save that merely left the field alone. A department given with no person only
+ * counts as unchanged if that is already the department on record.
+ */
+const assignmentKeepsOwner = (context: any, requested: unknown) => {
+  if (!requested || typeof requested !== "object" || Array.isArray(requested)) return false;
+  const { userId, departmentId } = requested as Input;
+  const requestedUserId = String(userId ?? "").trim();
+  if (requestedUserId !== effectiveOfficeDocumentOwnerId(context)) return false;
+  const requestedDepartmentId = String(departmentId ?? "").trim();
+  return Boolean(requestedUserId)
+    || !requestedDepartmentId
+    || requestedDepartmentId === String(context.management?.assignment?.departmentId ?? "");
+};
+
+/**
+ * Editing an incoming document only moves it when the assignee really changes.
+ * A kept assignment is dropped before normalizeManagement sees it, both so it is
+ * never written and because the owner need not pass the checks on a new assignee:
+ * they may have left, or sit outside the editing leader's department.
+ *
+ * The mode is left alone whenever the document already counts as manual, and that
+ * includes legacy rows with no mode. Writing AUTO over one of those would hand it
+ * back to the workflow owner on a score edit, and clear it from the review report.
+ */
+const incomingAssignmentEdit = (context: any, managementInput: unknown) => {
+  const body = managementInput && typeof managementInput === "object" && !Array.isArray(managementInput)
+    ? (managementInput as Input)
+    : null;
+  if (body?.assignment !== undefined && !assignmentKeepsOwner(context, body.assignment)) {
+    return { managementInput, assignmentMode: "MANUAL" };
+  }
+  const { assignment: _kept, ...rest } = body ?? {};
+  return {
+    managementInput: body ? rest : managementInput,
+    assignmentMode: isAssignmentManual(context) ? null : "AUTO",
+  };
+};
+
+/**
+ * A manager's score on a task has to land on whichever field is actually read.
+ * rawOfficeDocumentPoint prefers the business completion point and the KPI
+ * overview prefers the imported point, so writing manualScore alone would be
+ * accepted and then ignored. A null only clears the manual score; what the
+ * evidence or the import recorded stays as it is.
+ */
+const incomingScoreSourceWrites = (context: any, score: unknown) => {
+  if (typeof score !== "number") return {};
+  return {
+    ...(businessCompletionPointWins(context)
+      ? { "management.businessCompletion.point": score }
+      : {}),
+    ...(context.management?.kpiImport?.importKey
+      ? { "management.kpiImport.point": score }
+      : {}),
+  };
+};
+
 export const updateManagedOfficeDocumentContext = async (
   actor: AuthUser,
   id: string,
@@ -2217,7 +2331,19 @@ export const updateManagedOfficeDocumentContext = async (
     },
     (context.observation ?? {}) as Input,
   );
-  const management = await normalizeManagement(actor, managementInput);
+  const assignmentEdit = context.pageType === "incoming"
+    ? incomingAssignmentEdit(context, managementInput)
+    : { managementInput, assignmentMode: null };
+  const management = await normalizeManagement(actor, assignmentEdit.managementInput);
+  if (assignmentEdit.assignmentMode) {
+    management["management.assignmentMode"] = assignmentEdit.assignmentMode;
+  }
+  if (context.pageType === "incoming") {
+    Object.assign(
+      management,
+      incomingScoreSourceWrites(context, management["management.manualScore"]),
+    );
+  }
   // A task without a due date cannot be measured for lateness, so an edit is
   // never allowed to leave it empty. Automatic ingest from eOffice is a
   // different path and stays untouched — that source is not ours to control.
@@ -2312,6 +2438,9 @@ export const updateManagedOfficeDocumentContext = async (
               ]),
           ),
         };
+  const scoreOnlyEdit = context.pageType === "incoming"
+    && Object.keys(input).length === 1
+    && Object.keys((managementInput ?? {}) as Input).join() === "manualScore";
   const updated = await OfficeDocumentContextModel.findByIdAndUpdate(
     id,
     {
@@ -2335,8 +2464,14 @@ export const updateManagedOfficeDocumentContext = async (
           : {}),
       },
     },
-    { new: true, runValidators: true },
+    // The list sorts by updatedAt, so bumping it on a score alone would pull the
+    // row away while a leader is scoring down the page. management.updatedAt
+    // still records the edit.
+    { new: true, runValidators: true, ...(scoreOnlyEdit ? { timestamps: false } : {}) },
   ).lean();
+  if (updated && assignmentEdit.assignmentMode === "MANUAL") {
+    await closeNotRequiredAfterReassignment(actor, context);
+  }
   let resultLink: any = null;
   // Only build the link when the task actually changed. Re-submitting an
   // unchanged link throws "đã được liên kết", which used to roll back the whole
@@ -2383,6 +2518,19 @@ export const updateManagedOfficeDocumentContext = async (
     data: {
       ...updated,
       ...(resultLink?.data ? { resultLink: resultLink.data } : {}),
+      // Only the score: the rest of tracking is computed for the list, and the
+      // client merges this over the row it already holds. A product is left out
+      // because its point can be inherited, which only the list pass can see.
+      ...(context.pageType === "incoming"
+        ? {
+            tracking: {
+              score: effectiveOfficeDocumentPoint(updated),
+              rawScore: rawOfficeDocumentPoint(updated),
+              awaitingScore: isOfficeDocumentAwaitingScore(updated),
+              manualScore: updated?.management?.manualScore ?? null,
+            },
+          }
+        : {}),
     },
   };
 };
@@ -2414,6 +2562,11 @@ export const deleteManagedOfficeDocumentContext = async (
     throw forbidden("Bạn chỉ được xóa sản phẩm do chính mình khai báo.");
   }
   if (actor.role.code !== "SPECIALIST") requireManager(actor);
+  // Deleting would lose the review trail, and the next extension sync would bring
+  // the document back with no state at all.
+  if (["PENDING", "CONFIRMED"].includes(officeDocumentNotRequiredStatus(context))) {
+    throw conflict("Văn bản đang trong quy trình việc không cần làm nên không thể xóa.");
+  }
   const linked = await DocumentResultLinkModel.exists({
     $or: [{ incomingDocument: id }, { outgoingDocument: id }],
     status: { $ne: "SUPERSEDED" },

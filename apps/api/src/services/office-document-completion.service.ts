@@ -1,6 +1,11 @@
 import type { ClientSession } from "mongoose";
 import OfficeDocumentContextModel from "../models/office-document-context.model";
 import { getLatestTrackLog } from "./langson-dwr.service";
+import { officeDocumentCompletionSource } from "./office-document-owner.service";
+import {
+  isOfficeDocumentNotRequired,
+  isOfficeDocumentUnderNotRequiredReview,
+} from "./office-document-not-required-state.service";
 
 export const normalizeOfficeDocumentSymbol = (value: unknown) => String(value ?? "")
   .normalize("NFC")
@@ -59,23 +64,26 @@ export const effectiveOfficeDocumentCompletion = (context: any) => {
   return {
     completed: official || businessCompleted,
     completedAt: official ? officialAt : businessAt,
-    source: official
-      ? "EOFFICE"
-      : businessCompleted
-        ? business.evidenceType
-        : null,
+    source: officeDocumentCompletionSource(context),
     evidenceId: businessCompleted ? String(business.evidenceId ?? "") : null,
     approvedAt: businessCompleted ? parseOfficeDate(business.approvedAt) : null,
   };
+};
+
+// Whether the point recorded at business completion outranks every other source.
+// rawOfficeDocumentPoint reads by this rule and a manager's score edit writes by
+// it, so the two cannot disagree about which field a score has to land on.
+export const businessCompletionPointWins = (context: any) => {
+  const business = context?.management?.businessCompletion ?? {};
+  return business.completed === true && business.point !== null;
 };
 
 // Returns null when no source has supplied a point at all, which
 // effectiveOfficeDocumentPoint deliberately flattens to 0 for display and KPI
 // maths. Callers that must tell "not scored yet" from "scored zero" use this.
 export const rawOfficeDocumentPoint = (context: any): number | null => {
-  const business = context?.management?.businessCompletion ?? {};
-  const point = business.completed === true && business.point !== null
-    ? business.point
+  const point = businessCompletionPointWins(context)
+    ? context.management.businessCompletion.point
     : context?.management?.manualScore
       ?? context?.management?.overrides?.point
       ?? context?.observation?.point
@@ -89,10 +97,14 @@ export const effectiveOfficeDocumentPoint = (context: any) => rawOfficeDocumentP
 
 /**
  * A document is "awaiting a score" once it is finished but nobody has put a
- * point on it — the list leaders need in order to fill the gaps.
+ * point on it — the list leaders need in order to fill the gaps. A document
+ * under not-required review waits for that decision first, and a confirmed one
+ * never gets scored.
  */
 export const isOfficeDocumentAwaitingScore = (context: any) =>
-  effectiveOfficeDocumentCompletion(context).completed === true
+  !isOfficeDocumentNotRequired(context)
+  && !isOfficeDocumentUnderNotRequiredReview(context)
+  && effectiveOfficeDocumentCompletion(context).completed === true
   && rawOfficeDocumentPoint(context) === null;
 
 export const effectiveOfficeProductPoint = (

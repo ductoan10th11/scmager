@@ -11,6 +11,18 @@ const FIRST_DATA_ROW = 8;
 const TEMPLATE_DATA_ROWS = 16;
 const TEMPLATE_FOOTER_ROW = FIRST_DATA_ROW + TEMPLATE_DATA_ROWS;
 const DATA_ROW_HEIGHT = 36;
+const REVIEW_ROW_LINE_HEIGHT = 15;
+const REVIEW_ROW_MIN_HEIGHT = 36;
+// Section II shares the PL4 columns, so its wider fields span several of them.
+// Everything must stay within A:N: the import refuses a 16th column outright.
+const REVIEW_COLUMNS = [
+  { title: 'STT', from: 'A', to: 'A', charsPerLine: 6 },
+  { title: 'Nội dung', from: 'B', to: 'B', charsPerLine: 26 },
+  { title: 'Hạn xử lý', from: 'C', to: 'C', charsPerLine: 11 },
+  { title: 'Lý do', from: 'D', to: 'I', charsPerLine: 52 },
+  { title: 'Người đề nghị', from: 'J', to: 'K', charsPerLine: 19 },
+  { title: 'Ngày đề nghị', from: 'L', to: 'N', charsPerLine: 30 },
+];
 const vietnamDateFormatter = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Ho_Chi_Minh',
   day: '2-digit',
@@ -155,6 +167,9 @@ const prepareRows = (sheet: ExcelJS.Worksheet, requiredRows: number) => {
   return { lastDataRow: FIRST_DATA_ROW + requiredRows - 1, footerOffset };
 };
 
+const taskContent = (document: any, showsOwner: boolean) =>
+  `${document.soKyHieu || document.documentId || 'Văn bản'}${document.trichYeu ? `\n${document.trichYeu}` : ''}${showsOwner && document.owner?.fullName ? `\n[Người làm: ${document.owner.fullName}]` : ''}`;
+
 const fillFirstPl4Table = (
   sheet: ExcelJS.Worksheet,
   person: any,
@@ -182,7 +197,7 @@ const fillFirstPl4Table = (
     const coefficient = Math.max(0, Number(document.point ?? 0) || 0);
     sheet.getRow(rowNumber).values = [
       index + 1,
-      `${document.soKyHieu || document.documentId || 'Văn bản'}${document.trichYeu ? `\n${document.trichYeu}` : ''}${showsOwner && document.owner?.fullName ? `\n[Người làm: ${document.owner.fullName}]` : ''}`,
+      taskContent(document, showsOwner),
       toVietnamDateCell(document.deadline),
       document.product || 'Văn bản đến',
       coefficient,
@@ -252,6 +267,77 @@ const fillFirstPl4Table = (
   sheet.autoFilter = { from: 'A7', to: `N${Math.max(FIRST_DATA_ROW - 1, lastDataRow)}` };
 };
 
+/**
+ * Section II lists what a leader still has to decide. It starts below everything
+ * the template holds, so the summary rows computed from footerOffset stay put,
+ * and it is after "Tổng cộng", which is where the PL4 import stops reading.
+ *
+ * Section I has no heading to match: the import requires the first task on row 8
+ * directly under the template header, so no row can be added above it.
+ */
+const appendReviewSection = (sheet: ExcelJS.Worksheet, documents: any[], showsOwner: boolean) => {
+  if (!documents.length) return;
+  const titleRow = sheet.rowCount + 2;
+  const headerRow = titleRow + 1;
+  const font = { name: 'Times New Roman', size: 11 };
+  const span = (row: number, from: string, to: string) => {
+    if (from !== to) sheet.mergeCells(`${from}${row}:${to}${row}`);
+    return sheet.getCell(`${from}${row}`);
+  };
+  const border = {
+    top: { style: 'thin' as const, color: { argb: 'FF000000' } },
+    left: { style: 'thin' as const, color: { argb: 'FF000000' } },
+    bottom: { style: 'thin' as const, color: { argb: 'FF000000' } },
+    right: { style: 'thin' as const, color: { argb: 'FF000000' } },
+  };
+  const outline = (row: number) => {
+    for (let column = 1; column <= 14; column += 1) sheet.getRow(row).getCell(column).border = border;
+  };
+
+  const title = span(titleRow, 'A', 'N');
+  title.value = 'II. CÔNG VIỆC CẦN XEM XÉT';
+  title.font = { ...font, size: 12, bold: true };
+  sheet.getRow(titleRow).height = 24;
+
+  for (const column of REVIEW_COLUMNS) {
+    const cell = span(headerRow, column.from, column.to);
+    cell.value = column.title;
+    cell.font = { ...font, bold: true };
+    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+  }
+  sheet.getRow(headerRow).height = 30;
+  outline(headerRow);
+
+  documents.forEach((document, index) => {
+    const rowNumber = headerRow + 1 + index;
+    const values = [
+      index + 1,
+      taskContent(document, showsOwner),
+      toVietnamDateCell(document.deadline),
+      document.notRequired?.reason ?? '',
+      document.notRequired?.requestedByName ?? '',
+      toVietnamDateCell(document.notRequired?.requestedAt),
+    ];
+    let lines = 1;
+    REVIEW_COLUMNS.forEach((column, position) => {
+      const value = values[position];
+      const cell = span(rowNumber, column.from, column.to);
+      cell.value = value;
+      cell.font = font;
+      cell.alignment = { vertical: 'middle', wrapText: true };
+      if (value instanceof Date) cell.numFmt = 'dd/mm/yyyy';
+      if (typeof value === 'string') {
+        const needed = value.split('\n')
+          .reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / column.charsPerLine)), 0);
+        lines = Math.max(lines, needed);
+      }
+    });
+    // Excel does not grow a merged row by itself, so the height is worked out here.
+    sheet.getRow(rowNumber).height = Math.max(REVIEW_ROW_MIN_HEIGHT, lines * REVIEW_ROW_LINE_HEIGHT);
+    outline(rowNumber);
+  });
+};
+
 export const buildPerformanceWorkbook = async (actor: AuthUser, query: Record<string, unknown> = {}) => {
   const userId = String(query.userId ?? '').trim();
   if (!userId) throw badRequest('userId is required.');
@@ -286,6 +372,9 @@ export const buildPerformanceWorkbook = async (actor: AuthUser, query: Record<st
     )
     : new Set([assignee.user.id]);
   const assigneeDocuments = documents.filter((document: any) => departmentOwnerIds.has(document.owner?.id));
+  // Section I holds only scored work, so its totals and rates leave these out.
+  const scoredDocuments = assigneeDocuments.filter((document: any) => !document.reviewSection);
+  const reviewDocuments = assigneeDocuments.filter((document: any) => document.reviewSection);
   // Leadership criteria are rated per calendar month; an export spanning a
   // custom range takes the rating of the month its deadline range ends in.
   const leadership = assignee.user.role?.code === 'DEPARTMENT_LEADER'
@@ -299,11 +388,12 @@ export const buildPerformanceWorkbook = async (actor: AuthUser, query: Record<st
   fillFirstPl4Table(
     sheet,
     assignee.user,
-    assigneeDocuments,
+    scoredDocuments,
     { startDate: start.raw, endDate: end.raw },
     leadership as any,
     isDepartmentSheet,
   );
+  appendReviewSection(sheet, reviewDocuments, isDepartmentSheet);
 
   const content = await workbook.xlsx.writeBuffer();
   return {

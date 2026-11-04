@@ -19,6 +19,7 @@ import {
   clearOfficeDocumentBusinessCompletion,
   normalizeOfficeDocumentSymbol,
 } from "./office-document-completion.service";
+import { isAssignmentManual } from "./office-document-owner.service";
 import { parseOfficeDate } from "./office-document-projection.service";
 import {
   resolveContextManagementAssignment,
@@ -105,7 +106,7 @@ const writeReconciliation = async (
 
   const previousOwner = idOf(context.management?.assignment?.userId);
   const nextOwner = idOf(update["management.assignment.userId"]);
-  if (nextOwner && previousOwner !== nextOwner && !context.management?.updatedBy) {
+  if (nextOwner && previousOwner !== nextOwner && !isAssignmentManual(context)) {
     await AuditLogModel.create({
       actor: null,
       action: "OFFICE_PRODUCT_OWNER_RECONCILED",
@@ -435,10 +436,11 @@ const reconcileProduct = async (
       }, "Organization is unresolved", true);
     return "unresolved" as const;
   }
-  const managedAssignment = context.management?.updatedBy
+  const managed = isAssignmentManual(context);
+  const managedAssignment = managed
     ? context.management?.assignment ?? null
     : null;
-  const assignment = context.management?.updatedBy
+  const assignment = managed
     ? (managedAssignment?.userId ? managedAssignment : null)
     : await resolveContextManagementAssignment(context, organizationId);
   const pointInfo = options.pointInfo ?? null;

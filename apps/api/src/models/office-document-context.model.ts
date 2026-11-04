@@ -236,11 +236,61 @@ const scoreComplaintSchema = new Schema(
   { _id: false },
 );
 
+/**
+ * A specialist saying a document was assigned by mistake and needs no work. It
+ * is a soft exclusion: the document and this trail always stay, because a hard
+ * delete would be undone by the next extension sync. KPI reads the status through
+ * office-document-not-required-state.service; only the extension's observation
+ * and statusSync are rewritten on sync, so this survives it.
+ */
+const notRequiredSchema = new Schema(
+  {
+    status: {
+      type: String,
+      enum: ["NONE", "PENDING", "CONFIRMED", "REJECTED", "CANCELLED"],
+      default: "NONE",
+    },
+    reason: { type: String, trim: true, default: "" },
+    requestedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    // The KPI export names the requester, who may be out of the viewer's scope.
+    requestedByName: { type: String, trim: true, default: "" },
+    requestedAt: { type: Date, default: null },
+    decisionNote: { type: String, trim: true, default: "" },
+    decidedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    decidedAt: { type: Date, default: null },
+    history: {
+      type: [
+        new Schema(
+          {
+            action: {
+              type: String,
+              enum: ["REQUESTED", "CONFIRMED", "REJECTED", "CANCELLED", "RESTORED"],
+              required: true,
+            },
+            actor: { type: Schema.Types.ObjectId, ref: "User", default: null },
+            actorName: { type: String, trim: true, default: "" },
+            note: { type: String, trim: true, default: "" },
+            actedAt: { type: Date, default: Date.now },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
+  },
+  { _id: false },
+);
+
 const managementSchema = new Schema(
   {
     overrides: { type: Schema.Types.Mixed, default: () => ({}) },
     scoreComplaint: { type: scoreComplaintSchema, default: () => ({}) },
+    notRequired: { type: notRequiredSchema, default: () => ({}) },
     assignment: { type: managementAssignmentSchema, default: () => ({}) },
+    // Whether a manager chose the assignee (MANUAL) or it follows the workflow
+    // (AUTO). updatedBy cannot answer this: it is set by any edit. Null marks a
+    // row written before this field existed; see isAssignmentManual.
+    assignmentMode: { type: String, enum: ["AUTO", "MANUAL"], default: null },
     kpiImport: { type: kpiImportSchema, default: () => ({}) },
     businessCompletion: {
       type: businessCompletionSchema,

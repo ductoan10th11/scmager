@@ -8,6 +8,7 @@ import {
   effectiveOfficeDocumentReworkCount,
 } from "./office-document-completion.service";
 import { notifyRoleUsers, notifyUser } from "./notification.service";
+import { effectiveOfficeDocumentOwnerId } from "./office-document-owner.service";
 
 const idOf = (value: any) => String(value?._id ?? value ?? "");
 
@@ -79,7 +80,9 @@ export const requestOfficeDocumentComplaintService = async (
   body: Record<string, unknown>,
 ) => {
   const context = await loadContext(actor, id);
-  const ownerId = String(context.management?.assignment?.userId ?? "");
+  const ownerId = context.pageType === "incoming"
+    ? effectiveOfficeDocumentOwnerId(context)
+    : String(context.management?.assignment?.userId ?? "");
   if (ownerId !== actor.id && actor.role.code === "SPECIALIST") {
     throw forbidden("Bạn chỉ được khiếu nại sản phẩm do chính mình thực hiện.");
   }

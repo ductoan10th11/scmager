@@ -12,6 +12,12 @@ import {
   decideOfficeDocumentComplaint,
   cancelOfficeDocumentComplaint,
 } from "../controllers/office-document-context.controller";
+import {
+  cancelOfficeDocumentNotRequired,
+  decideOfficeDocumentNotRequired,
+  requestOfficeDocumentNotRequired,
+  restoreOfficeDocumentNotRequired,
+} from "../controllers/office-document-not-required.controller";
 import { publicExtensionVersion } from "../controllers/config.controller";
 import { requireAuth } from "../middlewares/auth.middleware";
 import { verifyExtensionSignature } from "../middlewares/extension-auth.middleware";
@@ -55,6 +61,26 @@ officeDocumentContextRoutes.post(
   "/:id/complaint/cancel",
   requireAuth,
   cancelOfficeDocumentComplaint,
+);
+officeDocumentContextRoutes.post(
+  "/:id/not-required/request",
+  requireAuth,
+  requestOfficeDocumentNotRequired,
+);
+officeDocumentContextRoutes.post(
+  "/:id/not-required/decide",
+  requireAuth,
+  decideOfficeDocumentNotRequired,
+);
+officeDocumentContextRoutes.post(
+  "/:id/not-required/cancel",
+  requireAuth,
+  cancelOfficeDocumentNotRequired,
+);
+officeDocumentContextRoutes.post(
+  "/:id/not-required/restore",
+  requireAuth,
+  restoreOfficeDocumentNotRequired,
 );
 officeDocumentContextRoutes.get("/:id", requireAuth, getOfficeDocumentContext);
 officeDocumentContextRoutes.patch(

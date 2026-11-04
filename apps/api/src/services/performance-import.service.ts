@@ -226,6 +226,15 @@ const upsertImportedIncomingDocument = async ({
   const departmentName = typeof department === 'object' ? String(department?.name ?? '') : '';
   const dueDate = vietnamDate(row.deadlineKey);
   const documentId = importedDocumentId(importKey);
+  // Writing `management` whole would otherwise reset this: re-importing a row
+  // must not bring back a task a leader already excluded.
+  const existing: any = await OfficeDocumentContextModel.findOne({
+    sourceHost: 'manual.ework.local',
+    pageType: 'incoming',
+    externalDocumentId: documentId,
+  })
+    .select('management.notRequired')
+    .lean();
   const update = await OfficeDocumentContextModel.updateOne(
     {
       sourceHost: 'manual.ework.local',
@@ -296,6 +305,7 @@ const upsertImportedIncomingDocument = async ({
             userId: target._id,
             fullName: target.fullName,
           },
+          assignmentMode: 'MANUAL',
           kpiImport: {
             importKey,
             point,
@@ -311,6 +321,7 @@ const upsertImportedIncomingDocument = async ({
           note: `Nhập từ bảng KPI PL4. ${row.product}`,
           updatedBy: importedBy,
           updatedAt: now,
+          ...(existing?.management?.notRequired ? { notRequired: existing.management.notRequired } : {}),
         },
       },
     },

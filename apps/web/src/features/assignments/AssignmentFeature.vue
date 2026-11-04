@@ -212,7 +212,12 @@ onMounted(async () => {
         ?? 0,
     )
     formSourceDocument.value = document._id
-    const assignedUserId = idOf(document.management?.assignment?.userId)
+    // The task's owner, which the API checks the declaration against; its
+    // assignment is often just the leader who routed it.
+    const assignee = document.tracking?.assignee
+    const assignedUserId = idOf(
+      assignee?.source === 'INGEST' ? null : assignee?.userId || document.management?.assignment?.userId,
+    )
     openForm(assignedUserId || idOf(currentUser.value), true)
   } catch (error) {
     timelineError.value = error.message || 'Không thể tạo khai báo từ văn bản.'

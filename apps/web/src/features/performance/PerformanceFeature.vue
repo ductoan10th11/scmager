@@ -33,6 +33,7 @@ import { Calendar } from '@/components/ui/calendar'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
+import ReviewDocumentsCard from './components/ReviewDocumentsCard.vue'
 import { PerformanceService } from './services/performance.service'
 import { useAuth } from '@/features/auth/composables/useAuth'
 
@@ -93,11 +94,20 @@ const sortedAssignees = computed(() => {
   })
 })
 
-const documents = computed(() => payload.value?.documents ?? [])
+// Documents awaiting a leader's "not required" decision arrive in the same list
+// but are not scored, so they are kept apart from everything that shows points.
+const allDocuments = computed(() => payload.value?.documents ?? [])
+const documents = computed(() => allDocuments.value.filter((document) => !document.reviewSection))
+const reviewDocuments = computed(() => allDocuments.value.filter((document) => document.reviewSection))
 
 const assigneeDocuments = computed(() =>
   selectedAssignee.value
     ? documents.value.filter((document) => document.owner?.id === selectedAssignee.value.user.id)
+    : []
+)
+const assigneeReviewDocuments = computed(() =>
+  selectedAssignee.value
+    ? reviewDocuments.value.filter((document) => document.owner?.id === selectedAssignee.value.user.id)
     : []
 )
 
@@ -755,6 +765,9 @@ onUnmounted(() => {
                   <Badge v-if="summary.unmappedDocuments" variant="outline" class="rounded-full bg-amber-50 text-amber-700 border-amber-200 font-bold text-xs">
                     {{ formatNumber(summary.unmappedDocuments) }} chưa map người soạn
                   </Badge>
+                  <Badge v-if="summary.reviewDocumentCount" variant="outline" class="rounded-full bg-amber-50 text-amber-700 border-amber-200 font-bold text-xs">
+                    {{ formatNumber(summary.reviewDocumentCount) }} cần xem xét
+                  </Badge>
                 </div>
                 <p class="text-xs font-medium text-zinc-500 mt-0.5">
                   Nhiệm vụ và công việc ngoài hệ thống được tính theo hạn xử lý văn bản.
@@ -888,6 +901,8 @@ onUnmounted(() => {
             </TabsContent>
           </Tabs>
         </Card>
+
+        <ReviewDocumentsCard :documents="reviewDocuments" @open="openDocument" />
       </template>
     </main>
 
@@ -1179,10 +1194,40 @@ onUnmounted(() => {
                   </Table>
                 </div>
               </div>
+
+              <!-- Assignee Documents Awaiting Review -->
+              <div v-if="selectedAssignee.reviewDocumentCount" class="space-y-3 pt-2">
+                <div class="flex items-center justify-between">
+                  <h4 class="text-xs font-bold uppercase tracking-wider text-amber-700">
+                    Công việc cần xem xét
+                  </h4>
+                  <Badge variant="outline" class="rounded-full bg-amber-50 text-amber-700 border-amber-200 font-bold text-[11px]">
+                    {{ selectedAssignee.reviewDocumentCount }} việc, chưa tính KPI
+                  </Badge>
+                </div>
+                <ul v-if="assigneeReviewDocuments.length" class="rounded-2xl border border-amber-200 divide-y divide-amber-100 overflow-hidden">
+                  <li
+                    v-for="document in assigneeReviewDocuments"
+                    :key="document.id"
+                    tabindex="0"
+                    role="button"
+                    class="cursor-pointer px-4 py-3 hover:bg-amber-50/60 transition-colors"
+                    @click="openDocument(document)"
+                    @keydown.enter="openDocument(document)"
+                  >
+                    <p class="truncate font-bold text-xs text-zinc-900">{{ document.soKyHieu || document.documentId }}</p>
+                    <p class="mt-0.5 line-clamp-2 text-[11px] text-zinc-500">{{ document.notRequired?.reason || document.trichYeu }}</p>
+                  </li>
+                </ul>
+              </div>
             </div>
 
             <!-- Content: Document Details & Tracklog -->
             <div v-else-if="selectedDocument" class="min-h-0 flex-1 overflow-y-auto p-6 space-y-6">
+              <div v-if="selectedDocument.reviewSection" class="rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-3 text-xs font-medium text-amber-900">
+                Công việc cần xem xét: chưa tính vào KPI cho đến khi lãnh đạo quyết định.
+                <span v-if="selectedDocument.notRequired?.reason" class="block mt-1">Lý do: {{ selectedDocument.notRequired.reason }}</span>
+              </div>
               <!-- Document Header & Meta -->
               <div class="space-y-3 pb-4 border-b border-zinc-100">
                 <div class="flex flex-wrap items-center gap-2">
@@ -1220,7 +1265,7 @@ onUnmounted(() => {
                   <div class="bg-blue-50/70 p-3 rounded-xl border border-blue-100">
                     <span class="text-[10px] font-bold uppercase text-blue-600 block">Điểm KPI</span>
                     <strong class="text-base font-black text-blue-800 block mt-0.5">
-                      {{ formatNumber(selectedDocument.point) }}
+                      {{ selectedDocument.reviewSection ? '—' : formatNumber(selectedDocument.point) }}
                     </strong>
                   </div>
                   <div class="bg-zinc-50 p-3 rounded-xl border border-zinc-100">

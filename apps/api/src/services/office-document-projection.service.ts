@@ -3,6 +3,15 @@ import {
   effectiveOfficeDocumentPoint,
   effectiveOfficeDocumentReworkCount,
 } from './office-document-completion.service';
+import {
+  effectiveOfficeDocumentOwner,
+  officeDocumentOwnerCandidateClauses,
+  withObjectIds,
+} from './office-document-owner.service';
+import {
+  officeDocumentNotRequiredStatus,
+  officeDocumentStillRequiredClause,
+} from './office-document-not-required-state.service';
 
 export const idOf = (value: any) => String(value?._id ?? value ?? '');
 
@@ -27,14 +36,14 @@ export const officeDocumentProjection = (context: any) => {
   const completed = completion.completed;
   const completedAt = completion.completedAt;
   const deadline = parseOfficeDate(overrides.dueDate ?? observation.dueDate, true);
-  const assignment = context.management?.assignment ?? {};
   const workflowAssignee = sync.processing?.currentAssignee ?? null;
-  const owner = assignment.userId || assignment.fullName
+  const effectiveOwner = effectiveOfficeDocumentOwner(context, { completion });
+  const owner = effectiveOwner.source !== 'NONE'
     ? {
-        id: idOf(assignment.userId) || null,
-        fullName: assignment.fullName ?? '',
-        departmentId: idOf(assignment.departmentId) || null,
-        departmentName: assignment.departmentName ?? '',
+        id: effectiveOwner.userId || null,
+        fullName: effectiveOwner.fullName,
+        departmentId: effectiveOwner.departmentId || null,
+        departmentName: effectiveOwner.departmentName,
       }
     : {
         id: idOf(workflowAssignee?.userId) || null,
@@ -153,6 +162,7 @@ export const officeDocumentProjection = (context: any) => {
     completedAt,
     completionSource: completion.source,
     status,
+    notRequiredStatus: officeDocumentNotRequiredStatus(context),
     owner,
     bottleneck,
     trackLogs: sync.trackLogs ?? [],
@@ -163,7 +173,9 @@ export const officeDocumentProjection = (context: any) => {
 };
 
 export const officeDocumentScope = (actor: { id: string; username?: string; organization?: string | null; department?: string | null; role: { code: string } }) => {
-  const filter: Record<string, unknown> = { pageType: 'incoming' };
+  // Every reader of this scope counts open work: dashboards, the assistant and
+  // the extension. A task confirmed as not required is not work to any of them.
+  const filter: Record<string, unknown> = { pageType: 'incoming', ...officeDocumentStillRequiredClause };
   if (actor.organization) filter.organizationId = actor.organization;
   else if (actor.role.code !== 'ADMIN') filter._id = null;
   if (actor.role.code === 'SPECIALIST') {
@@ -175,11 +187,15 @@ export const officeDocumentScope = (actor: { id: string; username?: string; orga
       { 'statusSync.processing.assignees': { $elemMatch: { userId: actor.id } } },
       { 'statusSync.processing.assignees': { $elemMatch: { externalUsername: actor.username } } },
       { 'observation.recipients': { $elemMatch: { role: 'main', userId: actor.username } } },
+      ...officeDocumentOwnerCandidateClauses([actor.id]),
     ];
   } else if (actor.role.code === 'DEPARTMENT_LEADER') {
     filter.$or = [
       { 'management.assignment.departmentId': actor.department },
       { 'management.assignment.userId': actor.id },
+      ...(actor.department
+        ? [{ 'statusSync.processing.primaryAssignee.departmentId': { $in: withObjectIds([actor.department]) } }]
+        : []),
     ];
   }
   return filter;

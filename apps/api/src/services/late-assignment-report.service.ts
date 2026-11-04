@@ -6,6 +6,7 @@ import UserModel from "../models/user.model";
 import RoleModel from "../models/role.model";
 import { effectiveOfficeDocumentCompletion } from "./office-document-completion.service";
 import { parseOfficeDate } from "./office-document-projection.service";
+import { isOfficeDocumentNotRequired } from "./office-document-not-required-state.service";
 
 export type LateAssignmentRow = {
   id: string;
@@ -152,6 +153,8 @@ export const fetchLateAssignmentRows = async (
     // 1. Must not be completed
     const completion = effectiveOfficeDocumentCompletion(context);
     if (completion.completed) continue;
+    // A task confirmed as not required is nobody's late assignment.
+    if (isOfficeDocumentNotRequired(context)) continue;
 
     const assignment = context.management?.assignment ?? {};
     const sync = context.statusSync ?? {};

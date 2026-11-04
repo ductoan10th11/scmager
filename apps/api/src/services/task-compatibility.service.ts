@@ -3,6 +3,8 @@ import { DepartmentModel, OfficeDocumentContextModel, UserModel } from '../model
 import type { AuthUser } from '../types/auth';
 import { badRequest, forbidden } from '../utils/http-error';
 import { idOf, officeDocumentProjection } from './office-document-projection.service';
+import { effectiveOfficeDocumentOwnerId, officeDocumentOwnerCandidateClauses } from './office-document-owner.service';
+import { officeDocumentStillRequiredClause } from './office-document-not-required-state.service';
 
 const parsePagination = (query: Record<string, unknown>) => {
   const page = Math.max(Number(query.page) || 1, 1);
@@ -33,14 +35,20 @@ export const listCompatibilityTasksService = async (actor: AuthUser, query: Reco
     userIds = (await UserModel.find({ department: actor.department, status: 'ACTIVE' }).select('_id').lean()).map((user: any) => idOf(user));
   } else throw badRequest('departmentId is required for this role.');
 
-  const filter: Record<string, unknown> = { pageType: 'incoming', 'management.assignment.userId': { $in: userIds } };
+  const filter: Record<string, unknown> = {
+    pageType: 'incoming',
+    $or: officeDocumentOwnerCandidateClauses(userIds),
+    ...officeDocumentStillRequiredClause,
+  };
   if (actor.organization) filter.organizationId = actor.organization;
   const contexts = await OfficeDocumentContextModel.find(filter)
     .select('externalDocumentId observation statusSync management observedAt updatedAt')
     .sort({ updatedAt: -1 }).lean();
   const status = typeof query.status === 'string' ? query.status : '';
   const search = typeof query.search === 'string' ? query.search.trim().toLowerCase() : '';
-  const rows = contexts.map(officeDocumentProjection).filter((document) => {
+  // The query is a superset: a candidate may belong to someone else.
+  const owned = contexts.filter((context) => userIds.includes(effectiveOfficeDocumentOwnerId(context)));
+  const rows = owned.map(officeDocumentProjection).filter((document) => {
     if (!document.deadline) return false;
     if (status === 'IN_PROGRESS' && document.status !== 'IN_PROGRESS') return false;
     if (status === 'DONE' && !document.completed) return false;

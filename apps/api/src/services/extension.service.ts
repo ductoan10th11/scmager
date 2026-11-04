@@ -86,10 +86,12 @@ export const extensionOverviewService = async (actor: AuthUser, query: Record<st
       .populate('approval.currentApprover', '_id username fullName position email') : Promise.resolve([]),
   ]);
   const documents = contexts.map(officeDocumentProjection);
-  const completedDocuments = documents.filter((document) => document.completed);
-  const pendingDocuments = documents.filter((document) => !document.completed);
+  // Awaiting a leader's decision on "not required": listed, but not scored yet.
+  const scoredDocuments = documents.filter((document) => document.notRequiredStatus !== 'PENDING');
+  const completedDocuments = scoredDocuments.filter((document) => document.completed);
+  const pendingDocuments = scoredDocuments.filter((document) => !document.completed);
   const overdueDocuments = pendingDocuments.filter((document) => document.status === 'OVERDUE');
-  const totalPoint = documents.reduce((sum, document) => sum + document.point, 0);
+  const totalPoint = scoredDocuments.reduce((sum, document) => sum + document.point, 0);
   const completedPoint = completedDocuments.reduce((sum, document) => sum + document.point, 0);
   const pendingPoint = pendingDocuments.reduce((sum, document) => sum + document.point, 0);
   const overduePoint = overdueDocuments.reduce((sum, document) => sum + document.point, 0);
@@ -99,8 +101,8 @@ export const extensionOverviewService = async (actor: AuthUser, query: Record<st
     serverTime: now.toISOString(), user: toSafeUser(actor),
     tasks: { summary: { total, todo: draft, inProgress: 0, pendingReview: pendingApproval, revisionRequested: returned, done: approved, overdue, dueSoon, today }, items: (workItemsRaw as any[]).map(toWorkItem) },
     ingestDocuments: {
-      summary: { total: documents.length, completed: completedDocuments.length, pending: pendingDocuments.length, deadLetter: 0, failed: 0, updatedLast24h: documents.filter((document) => document.updatedAt && new Date(document.updatedAt).getTime() >= now.getTime() - 86_400_000).length, overdue: overdueDocuments.length },
-      performance: { totalPoint, completedPoint, pendingPoint, overduePoint, dueSoonPoint, completionRate: documents.length ? Math.round((completedDocuments.length / documents.length) * 100) : 0, overdueRate: documents.length ? Math.round((overdueDocuments.length / documents.length) * 100) : 0 },
+      summary: { total: scoredDocuments.length, completed: completedDocuments.length, pending: pendingDocuments.length, deadLetter: 0, failed: 0, updatedLast24h: documents.filter((document) => document.updatedAt && new Date(document.updatedAt).getTime() >= now.getTime() - 86_400_000).length, overdue: overdueDocuments.length },
+      performance: { totalPoint, completedPoint, pendingPoint, overduePoint, dueSoonPoint, completionRate: scoredDocuments.length ? Math.round((completedDocuments.length / scoredDocuments.length) * 100) : 0, overdueRate: scoredDocuments.length ? Math.round((overdueDocuments.length / scoredDocuments.length) * 100) : 0 },
       items: documents.sort((left, right) => (right.deadline?.getTime?.() ?? 0) - (left.deadline?.getTime?.() ?? 0)).slice(0, limit).map(toOfficeDocumentItem),
     },
   } };

@@ -19,6 +19,9 @@ import {
   effectiveOfficeDocumentReworkCount,
   normalizeOfficeDocumentSymbol,
 } from "./office-document-completion.service";
+import { effectiveOfficeDocumentOwner } from "./office-document-owner.service";
+import { isOfficeDocumentNotRequired } from "./office-document-not-required-state.service";
+import { officeDocumentOwnerDirectoryFor } from "./office-document-owner-directory.service";
 import { parseOfficeDate } from "./office-document-projection.service";
 
 const idOf = (value: any) => String(value?._id ?? value ?? "");
@@ -551,7 +554,9 @@ export const resolveDocumentResultLinkService = async (
       soKyHieu: symbolOf(incoming),
       subject: incoming.management?.overrides?.subject ?? incoming.observation?.subject ?? "",
       dueDate: incoming.management?.overrides?.dueDate ?? incoming.observation?.dueDate ?? "",
-      assignee: incoming.management?.assignment ?? null,
+      assignee: effectiveOfficeDocumentOwner(incoming, {
+        directory: await officeDocumentOwnerDirectoryFor(incoming),
+      }),
       point: effectiveOfficeDocumentPoint(incoming),
     },
   };
@@ -684,6 +689,10 @@ export const createDocumentResultLinkService = async (
     && idOf(incoming.organizationId) !== idOf(outgoing.organizationId)
   ) {
     throw forbidden("Nhiệm vụ và sản phẩm phải thuộc cùng tổ chức.");
+  }
+  // Its result would be approved and then counted nowhere, the task being out of KPI.
+  if (isOfficeDocumentNotRequired(incoming)) {
+    throw conflict("Nhiệm vụ đã được xác nhận không cần làm. Lãnh đạo cần khôi phục trước khi liên kết sản phẩm.");
   }
   const existingForOutgoing: any = await DocumentResultLinkModel.findOne({
     organization: outgoing.organizationId,
