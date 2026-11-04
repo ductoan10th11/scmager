@@ -96,6 +96,51 @@ export const rawOfficeDocumentPoint = (context: any): number | null => {
 export const effectiveOfficeDocumentPoint = (context: any) => rawOfficeDocumentPoint(context) ?? 0;
 
 /**
+ * The other fields a hand-set score must reach to take effect on a task:
+ * business completion outranks manualScore in the list, and an imported point
+ * outranks it in KPI. Anything that is not currently winning stays as it is.
+ */
+export const incomingScoreSourceWrites = (context: any, score: unknown) => {
+  if (typeof score !== "number") return {};
+  return {
+    ...(businessCompletionPointWins(context)
+      ? { "management.businessCompletion.point": score }
+      : {}),
+    ...(context.management?.kpiImport?.importKey
+      ? { "management.kpiImport.point": score }
+      : {}),
+  };
+};
+
+/**
+ * Whether a submitted score differs from what the document counts today. The
+ * edit form always posts a score, so a save that left it alone must not read as
+ * a manager having scored the task.
+ */
+export const incomingScoreChanges = (context: any, score: unknown) =>
+  typeof score === "number"
+  && (
+    score !== rawOfficeDocumentPoint(context)
+    || (Boolean(context?.management?.kpiImport?.importKey)
+      && score !== context.management.kpiImport.point)
+  );
+
+/**
+ * The score a person set by hand, or null if the document only has what an
+ * import wrote. Rows from before scoreEditedAt existed still reveal it: an import
+ * leaves manualScore equal to kpiImport.point, and with no import at all nothing
+ * but a person sets manualScore.
+ */
+export const handSetOfficeDocumentScore = (context: any): number | null => {
+  const management = context?.management ?? {};
+  const score = management.manualScore;
+  if (score === null || score === undefined) return null;
+  if (management.scoreEditedAt) return score;
+  if (!management.kpiImport?.importKey) return score;
+  return score === management.kpiImport.point ? null : score;
+};
+
+/**
  * A document is "awaiting a score" once it is finished but nobody has put a
  * point on it — the list leaders need in order to fill the gaps. A document
  * under not-required review waits for that decision first, and a confirmed one

@@ -6,6 +6,7 @@ import {
   appendOfficeDocumentManagementNote,
   effectiveOfficeDocumentPoint,
   effectiveOfficeDocumentReworkCount,
+  incomingScoreSourceWrites,
 } from "./office-document-completion.service";
 import { notifyRoleUsers, notifyUser } from "./notification.service";
 import { effectiveOfficeDocumentOwnerId } from "./office-document-owner.service";
@@ -171,13 +172,26 @@ export const decideOfficeDocumentComplaintService = async (
   // An accepted complaint rewrites the document's own numbers; only the field
   // that was actually disputed changes.
   if (accept) {
-    if (approvedPoint !== null) context.set("management.manualScore", approvedPoint);
+    if (approvedPoint !== null) {
+      context.set("management.manualScore", approvedPoint);
+      if (context.pageType === "incoming") {
+        for (const [path, value] of Object.entries(incomingScoreSourceWrites(context, approvedPoint))) {
+          context.set(path, value);
+        }
+        context.set("management.scoreEditedBy", actor.id);
+        context.set("management.scoreEditedAt", now);
+      }
+    }
     if (approvedReworkCount !== null) {
       const overrides = { ...(context.management?.overrides ?? {}) };
       overrides.reworkCount = approvedReworkCount;
       context.set("management.overrides", overrides);
       if (context.management?.businessCompletion?.completed === true) {
         context.set("management.businessCompletion.reworkCount", approvedReworkCount);
+      }
+      // KPI reads the imported count ahead of the override.
+      if (context.management?.kpiImport?.importKey) {
+        context.set("management.kpiImport.reworkCount", approvedReworkCount);
       }
     }
   }

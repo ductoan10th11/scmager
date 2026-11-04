@@ -5,6 +5,8 @@ import { OfficeDocumentContextModel, UserModel, WorkDeclarationModel } from '../
 import type { AuthUser } from '../types/auth';
 import { badRequest, forbidden } from '../utils/http-error';
 import { assertSafeKpiWorkbookBuffer } from '../utils/kpi-import-upload';
+import { handSetOfficeDocumentScore } from './office-document-completion.service';
+import { effectiveOfficeDocumentOwnerId } from './office-document-owner.service';
 
 const FIRST_DATA_ROW = 8;
 const REQUIRED_HEADERS: Array<[string, string]> = [
@@ -178,12 +180,60 @@ const requireImportPermission = (actor: AuthUser, target: any) => {
     if (String(target._id) !== actor.id) throw forbidden('Chuyên viên chỉ được nhập bảng KPI của chính mình.');
     return;
   }
-  if (actor.role.code === 'DEPARTMENT_LEADER' && String(target.department ?? '') !== String(actor.department ?? '')) throw forbidden('Trưởng phòng chỉ được nhập KPI cho nhân sự trong phòng ban.');
+  if (actor.role.code === 'DEPARTMENT_LEADER' && objectId(target.department) !== String(actor.department ?? '')) throw forbidden('Trưởng phòng chỉ được nhập KPI cho nhân sự trong phòng ban.');
 };
 
 const importKeyFor = (userId: string, row: ImportRow) => createHash('sha256')
   .update(`${userId}|${normalized(row.content)}|${row.deadlineKey}|${normalized(row.product)}`)
   .digest('hex');
+
+const importedDocumentFor = (importKey: string, contexts: any[]) =>
+  contexts.find((context) => context.management?.kpiImport?.importKey === importKey) ?? null;
+
+/**
+ * A score set by hand stands over the sheet: anyone can import their own sheet,
+ * and re-importing an old one must not undo what a leader decided. A leader who
+ * wants another score changes it on the task.
+ */
+const importedScore = (row: ImportRow, existing: any | null) => {
+  const handSet = existing ? handSetOfficeDocumentScore(existing) : null;
+  return handSet === null
+    ? { point: row.point * row.assignedQuantity, keepsHandSetScore: false }
+    : { point: handSet, keepsHandSetScore: true };
+};
+
+/**
+ * An import moves a matched task to the person on the sheet. A specialist importing
+ * their own sheet must not be able to take a colleague's task that way; a leader
+ * can, since that is the same reassignment they could make on the task itself.
+ * Like any other bad row, this refuses the whole file.
+ */
+const refuseRowsOwnedByOtherSpecialist = async (
+  actor: AuthUser,
+  target: any,
+  rows: ImportRow[],
+  contexts: any[],
+) => {
+  if (actor.role.code !== 'SPECIALIST') return;
+  const claimed = rows
+    .map((row) => ({ row, document: documentForRow(row, contexts) }))
+    .map((entry) => ({ ...entry, ownerId: entry.document ? effectiveOfficeDocumentOwnerId(entry.document) : '' }))
+    .filter((entry) => entry.ownerId && entry.ownerId !== String(target._id));
+  if (!claimed.length) return;
+  const owners = await UserModel.find({ _id: { $in: [...new Set(claimed.map((entry) => entry.ownerId))] } })
+    .select('_id fullName role')
+    .populate('role', 'code')
+    .lean();
+  const specialists = new Map(
+    owners
+      .filter((owner: any) => owner.role?.code === 'SPECIALIST')
+      .map((owner: any) => [String(owner._id), owner.fullName]),
+  );
+  const errors = claimed
+    .filter((entry) => specialists.has(entry.ownerId))
+    .map((entry) => `Dòng ${entry.row.row}: nhiệm vụ đang thuộc ${specialists.get(entry.ownerId)}. Hãy nhờ lãnh đạo nhập dòng này.`);
+  if (errors.length) throw badRequest('File có nhiệm vụ đang thuộc chuyên viên khác.', { errors: errors.slice(0, 100) });
+};
 
 const documentForRow = (row: ImportRow, contexts: any[]) => {
   const content = normalized(row.content);
@@ -213,12 +263,13 @@ type ImportedIncomingDocument = {
   row: ImportRow;
   importKey: string;
   point: number;
+  keepsHandSetScore: boolean;
   importedBy: unknown;
   now: Date;
 };
 
 const upsertImportedIncomingDocument = async ({
-  target, row, importKey, point, importedBy, now,
+  target, row, importKey, point, keepsHandSetScore, importedBy, now,
 }: ImportedIncomingDocument) => {
   const completed = row.completedQuantity >= row.assignedQuantity;
   const department = target.department ?? null;
@@ -233,7 +284,7 @@ const upsertImportedIncomingDocument = async ({
     pageType: 'incoming',
     externalDocumentId: documentId,
   })
-    .select('management.notRequired')
+    .select('management.notRequired management.scoreEditedBy management.scoreEditedAt')
     .lean();
   const update = await OfficeDocumentContextModel.updateOne(
     {
@@ -322,6 +373,12 @@ const upsertImportedIncomingDocument = async ({
           updatedBy: importedBy,
           updatedAt: now,
           ...(existing?.management?.notRequired ? { notRequired: existing.management.notRequired } : {}),
+          ...(keepsHandSetScore
+            ? {
+                scoreEditedBy: existing?.management?.scoreEditedBy ?? null,
+                scoreEditedAt: existing?.management?.scoreEditedAt ?? now,
+              }
+            : {}),
         },
       },
     },
@@ -389,15 +446,21 @@ export const importPerformanceWorkbook = async (
     .select('_id observation management')
     .limit(5_000)
     .lean();
+  await refuseRowsOwnedByOtherSpecialist(actor, target, parsed.rows, contexts);
   const now = new Date();
   let updatedDocuments = 0;
   let createdDocuments = 0;
+  let preservedScores = 0;
 
   if (options.dryRun) {
     // Everything above has already validated the file, the name and the
     // permission. Report what would happen so the user can confirm first.
     const preview = parsed.rows.map((row) => {
       const matched = documentForRow(row, contexts);
+      const { point, keepsHandSetScore } = importedScore(
+        row,
+        matched ?? importedDocumentFor(importKeyFor(String(target._id), row), contexts),
+      );
       return {
         order: row.order,
         content: row.content,
@@ -405,7 +468,8 @@ export const importPerformanceWorkbook = async (
           ? new Intl.DateTimeFormat('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }).format(new Date(row.deadline))
           : '',
         product: row.product,
-        point: row.point * row.assignedQuantity,
+        point,
+        keepsHandSetScore,
         reworkCount: row.reworkCount,
         completed: row.completedQuantity >= row.assignedQuantity,
         action: matched ? ('update' as const) : ('create' as const),
@@ -426,6 +490,7 @@ export const importPerformanceWorkbook = async (
         importedRows: parsed.rows.length,
         createdDocuments: preview.filter((row) => row.action === 'create').length,
         updatedDocuments: preview.filter((row) => row.action === 'update').length,
+        preservedScores: preview.filter((row) => row.keepsHandSetScore).length,
         rows: preview,
       },
     };
@@ -449,6 +514,11 @@ export const importPerformanceWorkbook = async (
   for (const row of parsed.rows) {
     const importKey = importKeyFor(String(target._id), row);
     const matchedDocument = documentForRow(row, contexts);
+    const { point, keepsHandSetScore } = importedScore(
+      row,
+      matchedDocument ?? importedDocumentFor(importKey, contexts),
+    );
+    if (keepsHandSetScore) preservedScores += 1;
     if (matchedDocument) {
       const snapshot = await OfficeDocumentContextModel.findById(matchedDocument._id).lean();
       written.push({ id: matchedDocument._id, previous: snapshot });
@@ -460,10 +530,18 @@ export const importPerformanceWorkbook = async (
             'management.assignment.fullName': target.fullName,
             'management.assignment.departmentId': objectId(target.department) || null,
             'management.assignment.departmentName': typeof target.department === 'object' ? String((target.department as any)?.name ?? '') : '',
-            'management.manualScore': row.point * row.assignedQuantity,
+            // The sheet names who did the work, so it decides the owner over the
+            // routing. Without this the task stays with the first specialist.
+            'management.assignmentMode': 'MANUAL',
+            'management.manualScore': point,
+            // Once kept the value equals kpiImport.point, so an older row would no
+            // longer read as hand-set on the next import unless it is stamped now.
+            ...(keepsHandSetScore
+              ? { 'management.scoreEditedAt': matchedDocument.management?.scoreEditedAt ?? now }
+              : {}),
             'management.kpiImport': {
               importKey,
-              point: row.point * row.assignedQuantity,
+              point,
               product: row.product,
               assignedQuantity: row.assignedQuantity,
               completedQuantity: row.completedQuantity,
@@ -485,7 +563,8 @@ export const importPerformanceWorkbook = async (
       target,
       row,
       importKey,
-      point: row.point * row.assignedQuantity,
+      point,
+      keepsHandSetScore,
       importedBy: actor.id,
       now,
     });
@@ -499,7 +578,7 @@ export const importPerformanceWorkbook = async (
     throw error;
   }
 
-  return { data: { user: { id: String(target._id), fullName: target.fullName }, importedRows: parsed.rows.length, createdDocuments, updatedDocuments } };
+  return { data: { user: { id: String(target._id), fullName: target.fullName }, importedRows: parsed.rows.length, createdDocuments, updatedDocuments, preservedScores } };
 };
 
 /** Moves the early KPI-import fallback records into incoming office documents. */
@@ -553,6 +632,7 @@ export const migrateKpiImportWorksToIncomingDocuments = async () => {
       row,
       importKey,
       point: Math.max(0, Number(work.declaredPoint ?? 0)),
+      keepsHandSetScore: false,
       importedBy: work.kpiImport?.importedBy ?? work.assignedBy ?? target._id,
       now,
     });

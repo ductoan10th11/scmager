@@ -20,7 +20,8 @@ import {
 import { resolveDocumentWorkflow } from "./document-workflow.service";
 import {
   appendOfficeDocumentManagementNote,
-  businessCompletionPointWins,
+  incomingScoreChanges,
+  incomingScoreSourceWrites,
   effectiveOfficeDocumentCompletion,
   effectiveOfficeDocumentPoint,
   effectiveOfficeDocumentReworkCount,
@@ -85,7 +86,11 @@ const personMatchesActor = (person: any, actor: AuthUser) => {
   ].some((value) => identities.has(normalizedIdentity(value)));
 };
 
-const actorCanReadOfficeDocument = (context: any, actor: AuthUser) => {
+const actorCanReadOfficeDocument = (
+  context: any,
+  actor: AuthUser,
+  directory?: OfficeDocumentOwnerDirectory,
+) => {
   if (["ADMIN", "OFFICE_CHIEF", "COMMUNE_LEADER"].includes(actor.role.code)) return true;
 
   const assignment = context.management?.assignment ?? {};
@@ -105,7 +110,12 @@ const actorCanReadOfficeDocument = (context: any, actor: AuthUser) => {
       || (actor.department && String(assignment.departmentId ?? "") === actor.department)
       || (processing.assignees ?? []).some(
         (participant: any) => String(participant?.departmentId ?? "") === actor.department,
-      );
+      )
+      // The KPI counts the task on their department, so they must be able to open
+      // it. A result submitter need not appear in the routing at all, which is
+      // why this takes the directory rather than the routing alone.
+      || (Boolean(actor.department)
+        && effectiveOfficeDocumentOwner(context, { directory }).departmentId === actor.department);
   }
 
   if (context.pageType !== "incoming") {
@@ -185,6 +195,18 @@ const trackingAssigneeFor = (
     departmentName: "",
   };
 };
+
+/**
+ * The read rule for a single document. Only a department leader's answer can
+ * depend on the owner's current department, and most documents are settled
+ * without it, so the user lookup happens last and only for them.
+ */
+const actorCanOpenOfficeDocument = async (context: any, actor: AuthUser) =>
+  actorCanReadOfficeDocument(context, actor)
+  || (
+    actor.role.code === "DEPARTMENT_LEADER"
+    && actorCanReadOfficeDocument(context, actor, await officeDocumentOwnerDirectoryFor(context))
+  );
 
 const MANAGED_FIELDS = [
   "title",
@@ -914,6 +936,8 @@ export const backfillOfficeDocumentContextTenants = async () => {
 export const listOfficeDocumentContexts = async (
   actor: AuthUser,
   query: Record<string, unknown>,
+  // Reports read the whole result; the HTTP route never sets this.
+  options: { maxLimit?: number } = {},
 ) => {
   const allowed = [
     "page",
@@ -946,7 +970,7 @@ export const listOfficeDocumentContexts = async (
     requestedLimit < 1
   )
     throw badRequest("page and limit must be positive integers.");
-  const limit = Math.min(requestedLimit, 100);
+  const limit = Math.min(requestedLimit, options.maxLimit ?? 100);
   const skip = (page - 1) * limit;
   if (!Number.isSafeInteger(skip)) throw badRequest("page is too large.");
   const selection = String(query.pageType ?? query.tab ?? "incoming");
@@ -1556,7 +1580,7 @@ export const listOfficeDocumentContexts = async (
         return false;
       }
     }
-    if (!actorCanReadOfficeDocument(context, actor)) return false;
+    if (!actorCanReadOfficeDocument(context, actor, ownerDirectory)) return false;
     if (userId && !selectedUser) return false;
     if (departmentId && !selectedDepartment) return false;
     if (
@@ -1621,7 +1645,7 @@ export const getOfficeDocumentContext = async (actor: AuthUser, id: string) => {
     actor.role.code !== "ADMIN"
     && (!actor.organization || String(context.organizationId ?? "") !== actor.organization)
   ) throw notFound("Office document context was not found.");
-  if (!actorCanReadOfficeDocument(context, actor)) {
+  if (!(await actorCanOpenOfficeDocument(context, actor))) {
     throw notFound("Office document context was not found.");
   }
   const resultLinks = await DocumentResultLinkModel.find({
@@ -2247,25 +2271,6 @@ const incomingAssignmentEdit = (context: any, managementInput: unknown) => {
   };
 };
 
-/**
- * A manager's score on a task has to land on whichever field is actually read.
- * rawOfficeDocumentPoint prefers the business completion point and the KPI
- * overview prefers the imported point, so writing manualScore alone would be
- * accepted and then ignored. A null only clears the manual score; what the
- * evidence or the import recorded stays as it is.
- */
-const incomingScoreSourceWrites = (context: any, score: unknown) => {
-  if (typeof score !== "number") return {};
-  return {
-    ...(businessCompletionPointWins(context)
-      ? { "management.businessCompletion.point": score }
-      : {}),
-    ...(context.management?.kpiImport?.importKey
-      ? { "management.kpiImport.point": score }
-      : {}),
-  };
-};
-
 export const updateManagedOfficeDocumentContext = async (
   actor: AuthUser,
   id: string,
@@ -2282,7 +2287,7 @@ export const updateManagedOfficeDocumentContext = async (
     && (
       !actor.organization
       || String(context.organizationId ?? "") !== actor.organization
-      || !actorCanReadOfficeDocument(context, actor)
+      || !(await actorCanOpenOfficeDocument(context, actor))
     )
   ) {
     throw notFound("Office document context was not found.");
@@ -2339,10 +2344,12 @@ export const updateManagedOfficeDocumentContext = async (
     management["management.assignmentMode"] = assignmentEdit.assignmentMode;
   }
   if (context.pageType === "incoming") {
-    Object.assign(
-      management,
-      incomingScoreSourceWrites(context, management["management.manualScore"]),
-    );
+    const score = management["management.manualScore"];
+    Object.assign(management, incomingScoreSourceWrites(context, score));
+    if (incomingScoreChanges(context, score)) {
+      management["management.scoreEditedBy"] = actor.id;
+      management["management.scoreEditedAt"] = new Date();
+    }
   }
   // A task without a due date cannot be measured for lateness, so an edit is
   // never allowed to leave it empty. Automatic ingest from eOffice is a
@@ -2547,7 +2554,7 @@ export const deleteManagedOfficeDocumentContext = async (
     && (
       !actor.organization
       || String(context.organizationId ?? "") !== actor.organization
-      || !actorCanReadOfficeDocument(context, actor)
+      || !(await actorCanOpenOfficeDocument(context, actor))
     )
   ) {
     throw notFound("Office document context was not found.");

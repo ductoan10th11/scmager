@@ -214,6 +214,7 @@ const importWorkbook = async () => {
               <dd class="mt-0.5 font-bold text-zinc-900">{{ preview.importedRows }}</dd>
               <dd class="text-xs text-zinc-600">
                 tạo mới {{ preview.createdDocuments }} · cập nhật {{ preview.updatedDocuments }}
+                <template v-if="preview.preservedScores"> · giữ điểm đã chấm {{ preview.preservedScores }}</template>
               </dd>
             </div>
           </dl>
@@ -234,7 +235,7 @@ const importWorkbook = async () => {
                   <td class="px-2 py-1.5 text-zinc-400">{{ row.order }}</td>
                   <td class="max-w-[240px] truncate px-2 py-1.5 text-zinc-800" :title="row.content">{{ row.content }}</td>
                   <td class="whitespace-nowrap px-2 py-1.5 text-zinc-600">{{ row.deadline }}</td>
-                  <td class="px-2 py-1.5 text-right font-semibold text-zinc-800">{{ row.point }}</td>
+                  <td class="px-2 py-1.5 text-right font-semibold text-zinc-800" :title="row.keepsHandSetScore ? 'Giữ điểm lãnh đạo đã chấm, không lấy điểm trong file' : undefined">{{ row.point }}<span v-if="row.keepsHandSetScore" class="ml-1 text-amber-700">*</span></td>
                   <td class="whitespace-nowrap px-2 py-1.5">
                     <span v-if="row.action === 'create'" class="rounded-full bg-sky-100 px-2 py-0.5 font-semibold text-sky-700">Tạo mới</span>
                     <span v-else class="rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-800" :title="row.matchedSoKyHieu">Cập nhật</span>
@@ -258,6 +259,7 @@ const importWorkbook = async () => {
       <div v-else class="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
         <p class="font-bold">Đã nhập {{ importResult.importedRows }} dòng cho {{ importResult.user.fullName }}.</p>
         <p class="mt-1">Tạo {{ importResult.createdDocuments }} và cập nhật {{ importResult.updatedDocuments }} nhiệm vụ.</p>
+        <p v-if="importResult.preservedScores" class="mt-1">Giữ nguyên điểm đã chấm tay ở {{ importResult.preservedScores }} nhiệm vụ.</p>
       </div>
 
       <DialogFooter class="gap-2 sm:gap-2">

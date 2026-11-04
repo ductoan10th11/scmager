@@ -301,6 +301,10 @@ const managementSchema = new Schema(
       default: () => ({}),
     },
     manualScore: { type: Number, min: 0, max: 1_000_000, default: null },
+    // Who last changed the score by hand. A PL4 import must not overwrite it, and
+    // the value alone cannot say so: scores are written through to kpiImport.point.
+    scoreEditedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    scoreEditedAt: { type: Date, default: null },
     note: { type: String, trim: true, default: "" },
     updatedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
     updatedAt: { type: Date, default: null },

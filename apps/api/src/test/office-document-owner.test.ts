@@ -226,6 +226,8 @@ test("a score-only save writes the score and bookkeeping, and nothing about owne
     "management.businessCompletion.point",
     "management.kpiImport.point",
     "management.manualScore",
+    "management.scoreEditedAt",
+    "management.scoreEditedBy",
     "management.updatedAt",
     "management.updatedBy",
   ]);

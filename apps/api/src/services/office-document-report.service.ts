@@ -63,7 +63,7 @@ export const fetchOverdueOfficeDocumentRows = async (
   if (dateFrom) forwardedQuery.dateFrom = dateFrom;
   if (dateTo) forwardedQuery.dateTo = dateTo;
 
-  const result = await listOfficeDocumentContexts(actor, forwardedQuery);
+  const result = await listOfficeDocumentContexts(actor, forwardedQuery, { maxLimit: REPORT_FETCH_LIMIT });
   const now = new Date();
   return (result.data ?? []).map((item: any) => {
     const observed = (field: string) => item.management?.overrides?.[field] ?? item.observation?.[field] ?? "";

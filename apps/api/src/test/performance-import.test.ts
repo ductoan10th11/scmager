@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import ExcelJS from 'exceljs';
-import { parsePerformanceWorkbook } from '../services/performance-import.service';
+import OfficeDocumentContextModel from '../models/office-document-context.model';
+import UserModel from '../models/user.model';
+import { handSetOfficeDocumentScore } from '../services/office-document-completion.service';
+import { importPerformanceWorkbook, parsePerformanceWorkbook } from '../services/performance-import.service';
 
 const HEADER_MERGES = [
   'A4:A6', 'B4:B6', 'C4:G4', 'H4:N4', 'C5:C6', 'D5:D6',
@@ -102,4 +105,95 @@ test('PL4 importer rejects decimal rework counts and extra worksheets', async ()
     async () => parsePerformanceWorkbook(await createWorkbook({ extraSheet: true })),
     (error: any) => error?.statusCode === 400 && /không an toàn|đúng một sheet/iu.test(error?.message),
   );
+});
+
+const DEPARTMENT = '507f1f77bcf86cd799439021';
+const ORGANIZATION = '507f1f77bcf86cd799439022';
+const SHEET_USER = '507f1f77bcf86cd799439023';
+const OTHER_SPECIALIST = '507f1f77bcf86cd799439024';
+
+const actorOf = (code: string, id: string) => ({
+  id, username: 'u', email: 'u@x', fullName: 'U', status: 'ACTIVE',
+  role: { id: 'r', code, level: 1 }, organization: ORGANIZATION, department: DEPARTMENT,
+}) as any;
+
+const taskDocument = (management: Record<string, unknown>, statusSync: Record<string, unknown> = {}) => ({
+  _id: '507f1f77bcf86cd799439025',
+  observation: { soKyHieu: 'Nhiệm vụ kiểm thử' },
+  statusSync,
+  management,
+});
+
+/** Runs a dry-run import: the sheet names SHEET_USER, whose department is populated. */
+const previewImport = async (actor: any, documents: any[]) => {
+  const chain = (rows: unknown) => ({
+    select: () => ({
+      populate: () => ({ limit: () => ({ lean: async () => rows }), lean: async () => rows }),
+      limit: () => ({ lean: async () => rows }),
+    }),
+  });
+  const originals = { user: UserModel.find, context: OfficeDocumentContextModel.find };
+  (UserModel as any).find = (filter: any) => chain(filter?._id
+    ? [{ _id: OTHER_SPECIALIST, fullName: 'Chuyên viên khác', role: { code: 'SPECIALIST' } }]
+    : [{
+        _id: SHEET_USER, username: 'u', fullName: 'Nhân sự kiểm thử', organization: ORGANIZATION,
+        department: { _id: DEPARTMENT, name: 'Phòng' },
+      }]);
+  (OfficeDocumentContextModel as any).find = () => chain(documents);
+  try {
+    const buffer = await createWorkbook();
+    return await importPerformanceWorkbook(actor, { buffer } as any, { dryRun: true });
+  } finally {
+    (UserModel as any).find = originals.user;
+    (OfficeDocumentContextModel as any).find = originals.context;
+  }
+};
+
+test('a department leader can import for their own department', async () => {
+  const result: any = await previewImport(actorOf('DEPARTMENT_LEADER', OTHER_SPECIALIST), []);
+  assert.equal(result.data.importedRows, 1);
+});
+
+test('a re-import keeps a score set by hand and says so', async () => {
+  const edited = taskDocument({
+    manualScore: 2, scoreEditedAt: new Date(), kpiImport: { importKey: 'k', point: 2 },
+  });
+  const result: any = await previewImport(actorOf('OFFICE_CHIEF', OTHER_SPECIALIST), [edited]);
+  assert.equal(result.data.rows[0].point, 2);
+  assert.equal(result.data.rows[0].keepsHandSetScore, true);
+  assert.equal(result.data.preservedScores, 1);
+});
+
+test('a re-import replaces a score that only came from an earlier import', async () => {
+  const imported = taskDocument({ manualScore: 3, kpiImport: { importKey: 'k', point: 3 } });
+  const result: any = await previewImport(actorOf('OFFICE_CHIEF', OTHER_SPECIALIST), [imported]);
+  assert.equal(result.data.rows[0].point, 5);
+  assert.equal(result.data.preservedScores, 0);
+});
+
+test('hand-set scores are recognised on rows older than scoreEditedAt', () => {
+  assert.equal(handSetOfficeDocumentScore({ management: { manualScore: 2, kpiImport: { importKey: 'k', point: 3 } } }), 2);
+  assert.equal(handSetOfficeDocumentScore({ management: { manualScore: 3, kpiImport: { importKey: 'k', point: 3 } } }), null);
+  assert.equal(handSetOfficeDocumentScore({ management: { manualScore: 4 } }), 4);
+  assert.equal(handSetOfficeDocumentScore({ management: { manualScore: null } }), null);
+});
+
+test('a specialist cannot import a task that belongs to another specialist', async () => {
+  const taken = taskDocument({}, { processing: { primaryAssignee: { userId: OTHER_SPECIALIST } } });
+  await assert.rejects(
+    previewImport(actorOf('SPECIALIST', SHEET_USER), [taken]),
+    (error: any) => error.details?.errors?.[0]?.includes('Chuyên viên khác'),
+  );
+});
+
+test('a leader can import a task owned by a specialist', async () => {
+  const taken = taskDocument({}, { processing: { primaryAssignee: { userId: OTHER_SPECIALIST } } });
+  const result: any = await previewImport(actorOf('OFFICE_CHIEF', OTHER_SPECIALIST), [taken]);
+  assert.equal(result.data.rows[0].action, 'update');
+});
+
+test('a specialist can import a task of their own', async () => {
+  const own = taskDocument({}, { processing: { primaryAssignee: { userId: SHEET_USER } } });
+  const result: any = await previewImport(actorOf('SPECIALIST', SHEET_USER), [own]);
+  assert.equal(result.data.rows[0].action, 'update');
 });
