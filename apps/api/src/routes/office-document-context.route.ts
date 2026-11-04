@@ -18,6 +18,10 @@ import {
   requestOfficeDocumentNotRequired,
   restoreOfficeDocumentNotRequired,
 } from "../controllers/office-document-not-required.controller";
+import {
+  completeOfficeDocumentManually,
+  undoOfficeDocumentManualCompletion,
+} from "../controllers/office-document-manual-completion.controller";
 import { publicExtensionVersion } from "../controllers/config.controller";
 import { requireAuth } from "../middlewares/auth.middleware";
 import { verifyExtensionSignature } from "../middlewares/extension-auth.middleware";
@@ -81,6 +85,16 @@ officeDocumentContextRoutes.post(
   "/:id/not-required/restore",
   requireAuth,
   restoreOfficeDocumentNotRequired,
+);
+officeDocumentContextRoutes.post(
+  "/:id/manual-completion",
+  requireAuth,
+  completeOfficeDocumentManually,
+);
+officeDocumentContextRoutes.post(
+  "/:id/manual-completion/undo",
+  requireAuth,
+  undoOfficeDocumentManualCompletion,
 );
 officeDocumentContextRoutes.get("/:id", requireAuth, getOfficeDocumentContext);
 officeDocumentContextRoutes.patch(

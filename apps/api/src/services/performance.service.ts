@@ -166,10 +166,13 @@ export const performanceOverviewService = async (
         true,
       );
       const effectiveCompletion = effectiveOfficeDocumentCompletion(context);
-      const completed = imported?.importKey
+      // A sheet only records what was true when it was filled in, so a leader's
+      // later confirmation outranks it.
+      const importDecides = Boolean(imported?.importKey) && effectiveCompletion.source !== 'MANUAL';
+      const completed = importDecides
         ? Number(imported.completedQuantity ?? 0) >= Number(imported.assignedQuantity ?? 1)
         : effectiveCompletion.completed;
-      const completedAt = imported?.importKey && imported.completedAt
+      const completedAt = importDecides && imported.completedAt
         ? new Date(imported.completedAt)
         : contextCompletedAt(context);
       const appearsInPeriod = options.deadlineRange

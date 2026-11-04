@@ -44,5 +44,5 @@ export const useNotRequired = ({ user, currentUserId, currentDepartmentId, docum
   const canDecide = (context) => notRequiredStatus(context) === "PENDING" && canManage(context);
   const canRestore = (context) => notRequiredStatus(context) === "CONFIRMED" && canManage(context);
 
-  return { dialogOpen, dialogMode, dialogTarget, openDialog, canRequest, canCancel, canDecide, canRestore };
+  return { dialogOpen, dialogMode, dialogTarget, openDialog, canManage, canRequest, canCancel, canDecide, canRestore };
 };

@@ -122,7 +122,8 @@ const businessCompletionSchema = new Schema(
     completed: { type: Boolean, default: false, index: true },
     evidenceType: {
       type: String,
-      enum: ["DOCUMENT_RESULT", "WORK_DECLARATION"],
+      // MANUAL: a leader confirmed it with no evidence record, so evidenceId stays null.
+      enum: ["DOCUMENT_RESULT", "WORK_DECLARATION", "MANUAL"],
       default: null,
     },
     evidenceId: { type: Schema.Types.ObjectId, default: null },

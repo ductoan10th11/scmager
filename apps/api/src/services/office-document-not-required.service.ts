@@ -77,10 +77,10 @@ const ownerOf = async (context: any) => effectiveOfficeDocumentOwner(context, {
  * Ownership comes from the effective owner: the assignment on the document usually
  * names whoever dispatched it, and that leader may sit in another department.
  */
-const assertCanManage = async (actor: AuthUser, context: any) => {
+export const assertCanManageOfficeDocumentOwner = async (actor: AuthUser, context: any) => {
   if (ORGANIZATION_DECIDER_ROLES.includes(actor.role.code)) return;
   if (actor.role.code !== "DEPARTMENT_LEADER") {
-    throw forbidden("Chỉ lãnh đạo mới xử lý việc không cần làm.");
+    throw forbidden("Chỉ lãnh đạo mới thực hiện được thao tác này.");
   }
   const owner = await ownerOf(context);
   if (!actor.department || owner.departmentId !== actor.department) {
@@ -252,7 +252,7 @@ export const decideOfficeDocumentNotRequiredService = async (
   body: Record<string, unknown>,
 ) => {
   const context = await loadContext(actor, id);
-  await assertCanManage(actor, context);
+  await assertCanManageOfficeDocumentOwner(actor, context);
   const state = context.management?.notRequired;
   if (state?.status !== "PENDING") throw conflict("Không có đề nghị nào đang chờ xem xét.");
 
@@ -316,7 +316,7 @@ export const restoreOfficeDocumentNotRequiredService = async (
   body: Record<string, unknown> = {},
 ) => {
   const context = await loadContext(actor, id);
-  await assertCanManage(actor, context);
+  await assertCanManageOfficeDocumentOwner(actor, context);
   const state = context.management?.notRequired;
   if (state?.status !== "CONFIRMED") throw conflict("Văn bản không ở trạng thái đã xác nhận không cần làm.");
   const note = optionalText(body.note, "Ý kiến quá dài.");

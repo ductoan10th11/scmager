@@ -186,7 +186,12 @@ export const applyOfficeDocumentBusinessCompletion = async (
       _id: input.incomingDocumentId,
       organizationId: input.organizationId,
       pageType: "incoming",
-      "management.businessCompletion.completed": { $ne: true },
+      // Real evidence replaces a leader's manual confirmation, or approving a
+      // product on a manually completed task would have nowhere to land.
+      $or: [
+        { "management.businessCompletion.completed": { $ne: true } },
+        { "management.businessCompletion.evidenceType": "MANUAL" },
+      ],
     },
     {
       $set: {

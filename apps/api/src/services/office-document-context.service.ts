@@ -1133,10 +1133,16 @@ export const listOfficeDocumentContexts = async (
       };
     })();
 
-    const completed = clerkHandoff ? clerkHandoff.toClerk : completion.completed;
-    const completedAt = clerkHandoff?.toClerk
-      ? (clerkHandoff.at ?? completion.completedAt)
-      : (completed ? completion.completedAt : null);
+    // A leader's confirmation exists precisely because the routing has not caught
+    // up, so the routing must not contradict it.
+    const manuallyCompleted = completion.source === "MANUAL";
+    const completed = manuallyCompleted
+      || (clerkHandoff ? clerkHandoff.toClerk : completion.completed);
+    const completedAt = manuallyCompleted
+      ? completion.completedAt
+      : clerkHandoff?.toClerk
+        ? (clerkHandoff.at ?? completion.completedAt)
+        : (completed ? completion.completedAt : null);
     const now = new Date();
     const deadlineStatus = !dueAt
       ? "NO_DEADLINE"
@@ -1168,7 +1174,7 @@ export const listOfficeDocumentContexts = async (
         )[0]?.sender?.fullName || officialActorName;
     const statusLabel =
       status === "COMPLETED"
-        ? "Đã xử lý"
+        ? (manuallyCompleted ? "Lãnh đạo xác nhận hoàn thành" : "Đã xử lý")
         : status === "RESPONSE_CREATED"
           ? `${responseCreator} đã tạo phúc đáp`
           : status === "IN_PROGRESS"

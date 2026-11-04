@@ -54,6 +54,7 @@ import { http } from "@/shared/api/http";
 import { useAuth } from "@/features/auth/composables/useAuth";
 import { useInlineScoreEdit } from "./composables/useInlineScoreEdit";
 import { notRequiredStatus, useNotRequired } from "./composables/useNotRequired";
+import ManualCompletionDialog from "./components/ManualCompletionDialog.vue";
 import NotRequiredDialog from "./components/NotRequiredDialog.vue";
 import NotRequiredPanel from "./components/NotRequiredPanel.vue";
 
@@ -565,7 +566,31 @@ const {
   canCancel: canCancelNotRequired,
   canDecide: canDecideNotRequired,
   canRestore: canRestoreNotRequired,
+  canManage: canManageTaskOwner,
 } = useNotRequired({ user, currentUserId, currentDepartmentId, documentOwnerId, personId });
+
+// A leader confirms a task as done without waiting for eOffice. The API applies
+// the same rules; these only decide which button to show.
+const canCompleteManually = (context) =>
+  context?.pageType === "incoming"
+  && canManageTaskOwner(context)
+  && tracking(context).status !== "COMPLETED"
+  && context?.statusSync?.completed !== true
+  && context?.management?.businessCompletion?.completed !== true
+  && !["PENDING", "CONFIRMED"].includes(notRequiredStatus(context));
+const canUndoManualCompletion = (context) =>
+  context?.pageType === "incoming"
+  && canManageTaskOwner(context)
+  && context?.management?.businessCompletion?.completed === true
+  && context?.management?.businessCompletion?.evidenceType === "MANUAL";
+const manualCompletionOpen = ref(false);
+const manualCompletionMode = ref("complete");
+const manualCompletionTarget = ref(null);
+const openManualCompletion = (context, mode) => {
+  manualCompletionTarget.value = context;
+  manualCompletionMode.value = mode;
+  manualCompletionOpen.value = true;
+};
 
 const refreshAfterNotRequired = async (context) => {
   const id = identity(context);
@@ -2344,6 +2369,22 @@ onUnmounted(() => {
               </div>
               <div class="flex flex-wrap justify-end gap-1">
                 <Button
+                  v-if="canCompleteManually(selected)"
+                  size="sm"
+                  class="bg-emerald-600 text-white hover:bg-emerald-700"
+                  @click="openManualCompletion(selected, 'complete')"
+                >
+                  Hoàn thành
+                </Button>
+                <Button
+                  v-if="canUndoManualCompletion(selected)"
+                  size="sm"
+                  variant="outline"
+                  @click="openManualCompletion(selected, 'undo')"
+                >
+                  Bỏ hoàn thành
+                </Button>
+                <Button
                   v-if="selected.pageType === 'incoming'"
                   variant="outline"
                   size="sm"
@@ -2946,6 +2987,14 @@ onUnmounted(() => {
       :context="notRequiredTarget"
       :document-id="String(identity(notRequiredTarget) ?? '')"
       :label="notRequiredTarget ? displayIdentifier(notRequiredTarget) : ''"
+      @saved="refreshAfterNotRequired"
+    />
+    <ManualCompletionDialog
+      v-model:open="manualCompletionOpen"
+      :mode="manualCompletionMode"
+      :context="manualCompletionTarget"
+      :document-id="String(identity(manualCompletionTarget) ?? '')"
+      :label="manualCompletionTarget ? displayIdentifier(manualCompletionTarget) : ''"
       @saved="refreshAfterNotRequired"
     />
     <Dialog v-model:open="formOpen"
