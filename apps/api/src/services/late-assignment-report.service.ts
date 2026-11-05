@@ -143,6 +143,7 @@ export const fetchLateAssignmentRows = async (
   }
 
   const contexts = await OfficeDocumentContextModel.find(filter)
+    .select("-observation.recipients")
     .sort({ updatedAt: -1 })
     .lean();
 

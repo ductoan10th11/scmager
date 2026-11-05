@@ -239,10 +239,23 @@ const metricCards = computed(() => [
   },
 ])
 
-const openDocument = (document) => {
+const openDocument = async (document) => {
   selectedAssignee.value = null
   selectedDocument.value = document
   detailLoading.value = false
+  // The overview leaves track logs out, since it is polled for every document.
+  if (document.source !== 'OFFICE_CONTEXT' || document.trackLogs) return
+  detailLoading.value = true
+  try {
+    const trackLogs = await PerformanceService.documentTrackLogs(document.id)
+    if (selectedDocument.value?.id === document.id) {
+      selectedDocument.value = { ...selectedDocument.value, trackLogs }
+    }
+  } catch {
+    // The rest of the detail is already on screen; only the log stays empty.
+  } finally {
+    if (selectedDocument.value?.id === document.id) detailLoading.value = false
+  }
 }
 
 const openAssignee = (assignee) => {

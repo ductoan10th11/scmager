@@ -714,6 +714,24 @@ const queryString = (page = 1) =>
 // panel the notification just opened.
 const focusLock = ref(false);
 
+// List rows are cut down: they carry no collaborators, routing list or track logs.
+// A refresh updates the open detail from the row but keeps what only the detail has.
+const refreshDetailFromRow = (detail, row) => ({
+  ...detail,
+  ...row,
+  observation: {
+    ...row.observation,
+    recipients: detail.observation?.recipients ?? row.observation?.recipients,
+  },
+  statusSync: {
+    ...detail.statusSync,
+    ...row.statusSync,
+    processing: row.statusSync?.processing
+      ? { ...detail.statusSync?.processing, ...row.statusSync.processing }
+      : detail.statusSync?.processing ?? null,
+  },
+});
+
 const fetchContexts = async (page = 1, keepSelection = false, isBackground = false) => {
   const requestSequence = ++listRequestSequence;
   const saveEpochAtStart = scoreSaveEpoch;
@@ -735,9 +753,7 @@ const fetchContexts = async (page = 1, keepSelection = false, isBackground = fal
       selected.value = null;
     } else if (selected.value) {
       const found = items.value.find((i) => identity(i) === identity(selected.value));
-      if (found) {
-        selected.value = { ...selected.value, ...found };
-      }
+      if (found) selected.value = refreshDetailFromRow(selected.value, found);
     }
   } catch (requestError) {
     if (requestSequence !== listRequestSequence) return;
@@ -926,9 +942,20 @@ const recipientsLabel = (context) =>
     .map((recipient) => recipient.fullName || recipient.department)
     .filter(Boolean)
     .join(", ");
+const mainPersonName = (context) => {
+  const main = (getValue(context, "recipients") || []).find(
+    (recipient) => recipient.role === "main" && recipient.entityType === "person",
+  );
+  return main?.fullName || main?.department || "";
+};
+// Same rule as the "Người làm" filter: the main person, unless a leader assigned
+// someone else. The KPI owner only shows when there is no main person.
 const assigneeLabel = (context) =>
   context?.pageType === "incoming"
-    ? context?.tracking?.assignee?.fullName
+    ? (context?.tracking?.assignee?.source === "MANUAL"
+        ? context.tracking.assignee.fullName
+        : mainPersonName(context))
+      || context?.tracking?.assignee?.fullName
       || context?.management?.assignment?.fullName
       || recipientsLabel(context)
       || "Chưa có người nhận"

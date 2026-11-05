@@ -151,7 +151,7 @@ const buildWorkspaceContext = async (actor: AuthUser) => {
       .limit(CONTEXT_WORK_LIMIT)
       .lean(),
     OfficeDocumentContextModel.find(officeDocumentScope(actor))
-      .select('externalDocumentId observation statusSync management observedAt updatedAt')
+      .select('-observation.recipients -statusSync.processing.assignees')
       .sort({ updatedAt: -1 })
       .limit(CONTEXT_DOCUMENT_LIMIT)
       .lean(),

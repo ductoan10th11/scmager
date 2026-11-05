@@ -5,6 +5,10 @@ export const PerformanceService = {
     const query = period ? `?period=${encodeURIComponent(period)}` : ''
     return http(`/api/performance/overview${query}`)
   },
+  async documentTrackLogs(id) {
+    const { data } = await http(`/api/office-document-contexts/${id}`)
+    return data?.statusSync?.trackLogs ?? []
+  },
   leadershipAssessments(period) {
     return http(`/api/performance/leadership-assessments?period=${encodeURIComponent(period)}`)
   },

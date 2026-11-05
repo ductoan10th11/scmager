@@ -1,4 +1,4 @@
-import { isValidObjectId } from "mongoose";
+import { isValidObjectId, Types } from "mongoose";
 import OfficeDocumentContextModel from "../models/office-document-context.model";
 import DepartmentModel from "../models/department.model";
 import UserModel from "../models/user.model";
@@ -207,6 +207,131 @@ const actorCanOpenOfficeDocument = async (context: any, actor: AuthUser) =>
     actor.role.code === "DEPARTMENT_LEADER"
     && actorCanReadOfficeDocument(context, actor, await officeDocumentOwnerDirectoryFor(context))
   );
+
+// An aggregation does not cast, so the organization has to arrive as an ObjectId.
+const listMatch = (filter: Record<string, unknown>) => ({
+  ...filter,
+  ...(filter.organizationId
+    ? { organizationId: new Types.ObjectId(String(filter.organizationId)) }
+    : {}),
+});
+
+// What the list needs from each routing participant. A document can carry about a
+// hundred of them, and reading those whole was most of the cost of a list request.
+const LIST_PARTICIPANT_FIELDS = [
+  "userId",
+  "username",
+  "externalUsername",
+  "fullName",
+  "externalFullName",
+  "departmentId",
+  "assignedAt",
+  "processedAt",
+];
+
+/**
+ * Loads every candidate for the list with the bulky arrays cut down in the database.
+ * Filtering and sorting need all candidates, because tracking is computed here and
+ * not stored, so what can shrink is each document. Recipients keep only those who
+ * can decide anything: the main person and units, never the collaborators.
+ */
+const loadListContexts = (filter: Record<string, unknown>) =>
+  OfficeDocumentContextModel.aggregate([
+    { $match: listMatch(filter) },
+    { $sort: { updatedAt: -1 } },
+    {
+      $set: {
+        "observation.recipients": {
+          $filter: {
+            input: { $ifNull: ["$observation.recipients", []] },
+            as: "recipient",
+            cond: {
+              $or: [
+                { $eq: ["$$recipient.role", "main"] },
+                { $eq: ["$$recipient.entityType", "unit"] },
+              ],
+            },
+          },
+        },
+        "statusSync.processing": {
+          $cond: [
+            { $isArray: "$statusSync.processing.assignees" },
+            {
+              $mergeObjects: [
+                "$statusSync.processing",
+                {
+                  assignees: {
+                    $map: {
+                      input: "$statusSync.processing.assignees",
+                      as: "participant",
+                      in: Object.fromEntries(
+                        LIST_PARTICIPANT_FIELDS.map((field) => [field, `$$participant.${field}`]),
+                      ),
+                    },
+                  },
+                },
+              ],
+            },
+            "$statusSync.processing",
+          ],
+        },
+      },
+    },
+  ]).allowDiskUse(true);
+
+const LIST_CACHE_LIMIT = 8;
+const listCache = new Map<string, { token: string; items: any[] }>();
+
+/**
+ * Identifies the state of a set of documents without reading them. Every write
+ * moves updatedAt, except a score-only edit, which keeps it so the row stays put
+ * and moves management.updatedAt instead. The count catches deletions.
+ */
+const listChangeToken = async (match: Record<string, unknown>) => {
+  const [state] = await OfficeDocumentContextModel.aggregate([
+    { $match: match },
+    {
+      $group: {
+        _id: null,
+        count: { $sum: 1 },
+        updatedAt: { $max: "$updatedAt" },
+        managedAt: { $max: "$management.updatedAt" },
+      },
+    },
+  ]).allowDiskUse(true);
+  return state ? `${state.count}|${+state.updatedAt}|${+state.managedAt}` : "empty";
+};
+
+/**
+ * The page polls every few seconds and the documents rarely change between polls,
+ * yet reading them is most of a list request. They are reused only while the token
+ * still matches, so a list is never stale; there is no expiry to wait out. Callers
+ * share these objects and must not change them. A text search is left out: each one
+ * would be its own entry and they do not repeat.
+ */
+const cachedListContexts = async (filter: Record<string, unknown>) => {
+  if (filter.$or) return loadListContexts(filter);
+  const match = listMatch(filter);
+  const key = JSON.stringify(match);
+  // Taken before the read, so a write landing during it forces a reload next time.
+  const token = await listChangeToken(match);
+  const cached = listCache.get(key);
+  if (cached?.token === token) return cached.items;
+  const items = await loadListContexts(filter);
+  listCache.delete(key);
+  listCache.set(key, { token, items });
+  if (listCache.size > LIST_CACHE_LIMIT) {
+    listCache.delete(listCache.keys().next().value as string);
+  }
+  return items;
+};
+
+/** A list row without what only the detail view reads; it fetches its own copy. */
+const listRow = (item: any) => {
+  const { trackLogs: _trackLogs, processing, ...sync } = item.statusSync ?? {};
+  const { assignees: _assignees, ...routing } = processing ?? {};
+  return { ...item, statusSync: { ...sync, processing: processing ? routing : null } };
+};
 
 const MANAGED_FIELDS = [
   "title",
@@ -1334,9 +1459,7 @@ export const listOfficeDocumentContexts = async (
     };
   };
 
-  const allItems = await OfficeDocumentContextModel.find(filter)
-    .sort({ updatedAt: -1 })
-    .lean();
+  const allItems = await cachedListContexts(filter);
   const ownerDirectory = await loadOfficeDocumentOwnerDirectory(
     actor.role.code !== "ADMIN" ? { organization: actor.organization } : {},
   );
@@ -1360,7 +1483,12 @@ export const listOfficeDocumentContexts = async (
         .select("_id username fullName department")
         .lean()
     : [];
-  const matchesPeople = (context: any, tracking: any, people: any[]) => {
+  const matchesPeople = (
+    context: any,
+    tracking: any,
+    people: any[],
+    { byMainPerson = false } = {},
+  ) => {
     const ids = new Set(people.map((person) => String(person._id)));
     const identities = new Set(
       people
@@ -1375,9 +1503,20 @@ export const listOfficeDocumentContexts = async (
     const matches = (id: unknown, ...values: unknown[]) =>
       ids.has(String(id ?? "")) ||
       values.some((value) => identities.has(normalizedIdentity(value)));
-    // "Người làm" means the KPI owner. Recipients are never consulted: a document
-    // carries dozens of collaborators who are not doing the work.
+    // "Người làm" follows the main person eOffice names. Collaborators are there to
+    // read along and never decide this. A leader's explicit assignment replaces the
+    // main person, and a document with no main person falls back to its owner.
     if (context.pageType === "incoming") {
+      const mainPeople = !byMainPerson || isAssignmentManual(context)
+        ? []
+        : (observed("recipients") ?? []).filter(
+            (recipient: any) => recipient.role === "main" && recipient.entityType === "person",
+          );
+      if (mainPeople.length) {
+        return mainPeople.some((recipient: any) =>
+          matches(recipient.userId, recipient.userId, recipient.fullName, recipient.department),
+        );
+      }
       const ownerId = effectiveOfficeDocumentOwnerId(context);
       return ownerId
         ? ids.has(ownerId)
@@ -1436,7 +1575,9 @@ export const listOfficeDocumentContexts = async (
           ? { organizationId: actor.organization }
           : {}),
         normalizedSoKyHieu: { $in: relatedIncomingSymbols },
-      }).lean()
+      })
+        .select("-observation.recipients")
+        .lean()
     : [];
   // A product answers an incoming task, and it is that task which carries the
   // deadline. Keeping the task's id and deadline alongside its point lets a
@@ -1595,7 +1736,7 @@ export const listOfficeDocumentContexts = async (
       String(selectedUser.department ?? "") !== String(selectedDepartment._id)
     )
       return false;
-    if (selectedUser && !matchesPeople(context, tracking, [selectedUser]))
+    if (selectedUser && !matchesPeople(context, tracking, [selectedUser], { byMainPerson: true }))
       return false;
     if (selectedDepartment) {
       if (context.pageType === "incoming") {
@@ -1638,7 +1779,7 @@ export const listOfficeDocumentContexts = async (
   });
   const total = items.length;
   return {
-    data: items.slice(skip, skip + limit),
+    data: items.slice(skip, skip + limit).map(listRow),
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   };
 };

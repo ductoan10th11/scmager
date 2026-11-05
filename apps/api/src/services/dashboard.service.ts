@@ -33,7 +33,7 @@ const toDashboardWork = (work: any) => ({
 
 const documentsFor = async (actor: AuthUser) => {
   const contexts = await OfficeDocumentContextModel.find(officeDocumentScope(actor))
-    .select('externalDocumentId observation statusSync management observedAt updatedAt')
+    .select('-observation.recipients -statusSync.processing.assignees')
     .sort({ updatedAt: -1 })
     .limit(2_000)
     .lean();

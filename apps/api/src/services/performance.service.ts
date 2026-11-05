@@ -98,7 +98,9 @@ export const performanceOverviewService = async (
   else if (actor.role.code !== 'ADMIN') contextFilter._id = null;
 
   const sourceContextQuery = OfficeDocumentContextModel.find(contextFilter)
-    .select('externalDocumentId observation statusSync management')
+    // KPI needs neither the recipients nor the routing list, and they are most of
+    // each document.
+    .select('-observation.recipients -statusSync.processing.assignees')
     .sort({ observedAt: -1 });
   if (options.sourceLimit !== null && options.sourceLimit !== undefined) {
     sourceContextQuery.limit(options.sourceLimit);
@@ -231,8 +233,11 @@ export const performanceOverviewService = async (
           requestedAt: context.management?.notRequired?.requestedAt ?? null,
           decisionNote: context.management?.notRequired?.decisionNote ?? '',
         },
-        processing: context.statusSync?.processing ?? null,
-        trackLogs: context.statusSync?.trackLogs ?? [],
+        // The page polls this response, so it stays small; the detail view fetches
+        // the track logs of the one document it opens.
+        processing: context.statusSync?.processing
+          ? { currentAssignee: context.statusSync.processing.currentAssignee ?? null }
+          : null,
         owner: owner
           ? {
               id: idOf(owner._id),

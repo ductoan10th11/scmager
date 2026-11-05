@@ -906,8 +906,12 @@ test("the late-assignment report drops a confirmed task", async () => {
 
 const withList = async <T>(documents: any[], run: () => Promise<T>) => {
   const restoreContext = stub(OfficeDocumentContextModel, {
+    aggregate: (pipeline: any[]) => ({
+      allowDiskUse: async () => (pipeline.some((stage) => stage.$group)
+        ? [{ count: documents.length, updatedAt: new Date(), managedAt: Math.random() }]
+        : documents),
+    }),
     find: () => ({
-      sort: () => ({ lean: async () => documents }),
       select: () => ({ lean: async () => [] }),
       lean: async () => [],
     }),

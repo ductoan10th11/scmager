@@ -45,6 +45,7 @@ test("lateAssignmentReportService returns expected structure with mocked documen
     });
 
     (OfficeDocumentContextModel as any).find = () => ({
+      select() { return this; },
       sort: () => ({
         lean: async () => [
           {

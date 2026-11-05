@@ -70,7 +70,7 @@ export const extensionOverviewService = async (actor: AuthUser, query: Record<st
   const activeWorkScope = { ...workScope, status: { $ne: 'CANCELLED' } };
   const [contexts, total, draft, pendingApproval, returned, approved, overdue, dueSoon, today, workItemsRaw] = await Promise.all([
     OfficeDocumentContextModel.find(officeDocumentScope(actor))
-      .select('externalDocumentId observation statusSync management observedAt updatedAt')
+      .select('-observation.recipients -statusSync.processing.assignees')
       .sort({ updatedAt: -1 }).limit(2_000).lean(),
     WorkDeclarationModel.countDocuments(activeWorkScope),
     WorkDeclarationModel.countDocuments({ ...workScope, status: 'DRAFT' }),

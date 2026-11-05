@@ -42,7 +42,7 @@ export const listCompatibilityTasksService = async (actor: AuthUser, query: Reco
   };
   if (actor.organization) filter.organizationId = actor.organization;
   const contexts = await OfficeDocumentContextModel.find(filter)
-    .select('externalDocumentId observation statusSync management observedAt updatedAt')
+    .select('-observation.recipients -statusSync.processing.assignees')
     .sort({ updatedAt: -1 }).lean();
   const status = typeof query.status === 'string' ? query.status : '';
   const search = typeof query.search === 'string' ? query.search.trim().toLowerCase() : '';

@@ -530,8 +530,12 @@ test("an AUTO document, even one edited since, still follows the extension", asy
 
 const listWith = async (documents: any[], query: Record<string, unknown>, actor = chief) => {
   const restoreContext = stub(OfficeDocumentContextModel, {
+    aggregate: (pipeline: any[]) => ({
+      allowDiskUse: async () => (pipeline.some((stage) => stage.$group)
+        ? [{ count: documents.length, updatedAt: new Date(), managedAt: Math.random() }]
+        : documents),
+    }),
     find: () => ({
-      sort: () => ({ lean: async () => documents }),
       select: () => ({ lean: async () => [] }),
       lean: async () => [],
     }),
@@ -613,16 +617,47 @@ test("the person filter returns the owner's documents and no collaborator's", as
   assert.deepEqual(external(await listWith(documents, { userId: leader })), []);
 });
 
-test("an owner with no internal id is matched by name, never through recipients", async () => {
+test("an owner with no internal id is matched by name, never through a collaborator", async () => {
   const nameOnly = routedDocument({ assignment: { userId: null, fullName: "Chuyên viên Một", departmentId: null } }, {
     processing: null,
   });
-  const recipientOnly = routedDocument({ assignment: { userId: null, fullName: "", departmentId: null } }, {
+  const collaboratorOnly = routedDocument({ assignment: { userId: null, fullName: "", departmentId: null } }, {
     processing: null,
   });
-  recipientOnly.observation.recipients = [{ ...collaboratorRecipients[0], role: "main" }];
-  const documents = [withId(nameOnly, "name-only"), withId(recipientOnly, "recipient-only")];
+  collaboratorOnly.observation.recipients = [{ ...collaboratorRecipients[0], role: "collaborator" }];
+  const documents = [withId(nameOnly, "name-only"), withId(collaboratorOnly, "collaborator-only")];
   assert.deepEqual(external(await listWith(documents, { userId: specialist })), ["name-only"]);
+});
+
+test("the person filter follows the main person, not the KPI owner or a collaborator", async () => {
+  const mainIs = (username: string) => ({ userId: username, department: "", fullName: "", role: "main", entityType: "person" });
+  const collaboratorIs = (username: string) => ({ ...mainIs(username), role: "collaborator" });
+  const mainPerson = directoryUsers[0];
+  const other = directoryUsers[1];
+
+  const routedToOther = routedDocument({}, {
+    processing: { primaryAssignee: { userId: other._id, fullName: other.fullName, departmentId: null }, assignees: [] },
+  });
+  routedToOther.observation.recipients = [mainIs(mainPerson.username), collaboratorIs(other.username)];
+  const documents = [withId(routedToOther, "routed-to-other")];
+
+  assert.deepEqual(external(await listWith(documents, { userId: mainPerson._id })), ["routed-to-other"]);
+  assert.deepEqual(external(await listWith(documents, { userId: other._id })), []);
+});
+
+test("a leader's explicit assignment replaces the main person in the filter", async () => {
+  const mainPerson = directoryUsers[0];
+  const other = directoryUsers[1];
+  const reassigned = routedDocument({
+    assignmentMode: "MANUAL",
+    assignment: { userId: other._id, fullName: other.fullName, departmentId: departmentA },
+  });
+  reassigned.observation.recipients = [
+    { userId: mainPerson.username, department: "", fullName: "", role: "main", entityType: "person" },
+  ];
+  const documents = [withId(reassigned, "reassigned")];
+  assert.deepEqual(external(await listWith(documents, { userId: other._id })), ["reassigned"]);
+  assert.deepEqual(external(await listWith(documents, { userId: mainPerson._id })), []);
 });
 
 test("the department filter follows the owner's department", async () => {
@@ -831,4 +866,43 @@ test("a save that keeps the owner leaves a pending not-required request open", a
     { management: { manualScore: 2 } },
   );
   assert.equal(transitions.length, 0);
+});
+
+test("the list reads documents again only when something changed", async () => {
+  const organization = "507f1f77bcf86cd799439099";
+  const orgChief = { ...chief, organization };
+  let reads = 0;
+  let token = { count: 1, updatedAt: new Date(1000), managedAt: new Date(1000) };
+  const document = withId(routedDocument(), "cached");
+  document.organizationId = organization;
+  const restore = stub(OfficeDocumentContextModel, {
+    aggregate: (pipeline: any[]) => ({
+      allowDiskUse: async () => {
+        if (pipeline.some((stage) => stage.$group)) return [token];
+        reads += 1;
+        return [document];
+      },
+    }),
+    find: () => ({ select: () => ({ lean: async () => [] }), lean: async () => [] }),
+  });
+  const restoreUser = stub(UserModel, {
+    find: () => ({ select: () => ({ populate: () => ({ lean: async () => directoryUsers }), lean: async () => [] }) }),
+  });
+  try {
+    await listOfficeDocumentContexts(orgChief, { pageType: "incoming" });
+    await listOfficeDocumentContexts(orgChief, { pageType: "incoming" });
+    assert.equal(reads, 1);
+    token = { ...token, managedAt: new Date(2000) };
+    await listOfficeDocumentContexts(orgChief, { pageType: "incoming" });
+    assert.equal(reads, 2);
+    token = { ...token, count: 2 };
+    await listOfficeDocumentContexts(orgChief, { pageType: "incoming" });
+    assert.equal(reads, 3);
+    await listOfficeDocumentContexts(orgChief, { pageType: "incoming", search: "x" });
+    await listOfficeDocumentContexts(orgChief, { pageType: "incoming", search: "x" });
+    assert.equal(reads, 5);
+  } finally {
+    restore();
+    restoreUser();
+  }
 });
