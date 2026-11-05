@@ -6,6 +6,8 @@ import {
   appendOfficeDocumentManagementNote,
   effectiveOfficeDocumentCompletion,
   effectiveOfficeDocumentReworkCount,
+  incomingScoreChanges,
+  incomingScoreSourceWrites,
 } from "./office-document-completion.service";
 import { assertCanManageOfficeDocumentOwner } from "./office-document-not-required.service";
 import { officeDocumentNotRequiredStatus } from "./office-document-not-required-state.service";
@@ -34,6 +36,51 @@ const parseCompletedAt = (value: unknown, now: Date) => {
   return { completedAt: raw === today ? now : date, label: raw.split("-").reverse().join("/") };
 };
 
+const provided = (value: unknown) => value !== undefined && value !== null && value !== "";
+
+const parseScore = (value: unknown) => {
+  if (!provided(value)) return null;
+  const score = Number(value);
+  if (!Number.isFinite(score) || score < 0 || score > 1_000_000) {
+    throw badRequest("Điểm phải là số từ 0 đến 1.000.000.");
+  }
+  return score;
+};
+
+const parseReworkCount = (value: unknown) => {
+  if (!provided(value)) return null;
+  const count = Number(value);
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw badRequest("Số lần làm lại phải là số nguyên không âm.");
+  }
+  return count;
+};
+
+/**
+ * Writes the score and rework count where they count on this task. Leaving either
+ * out keeps what the task already has. Both also live outside the completion, so
+ * undoing it does not lose what the leader entered.
+ */
+const scoringWrites = (actor: AuthUser, context: any, score: number | null, reworkCount: number | null, now: Date) => ({
+  ...(score === null
+    ? {}
+    : {
+        "management.manualScore": score,
+        ...incomingScoreSourceWrites(context, score),
+        ...(incomingScoreChanges(context, score)
+          ? { "management.scoreEditedBy": actor.id, "management.scoreEditedAt": now }
+          : {}),
+      }),
+  ...(reworkCount === null
+    ? {}
+    : {
+        "management.overrides.reworkCount": reworkCount,
+        ...(context.management?.kpiImport?.importKey
+          ? { "management.kpiImport.reworkCount": reworkCount }
+          : {}),
+      }),
+});
+
 const loadTask = async (actor: AuthUser, id: unknown) => {
   const contextId = String(id ?? "");
   if (!isValidObjectId(contextId)) throw badRequest("id must be a valid ObjectId.");
@@ -56,9 +103,9 @@ const appendNote = (context: any, entry: string) => appendOfficeDocumentManageme
 /**
  * Marks a task done without waiting for eOffice. It is recorded as a business
  * completion, not on statusSync, because statusSync belongs to the eOffice sync.
- * The sync skips business-completed tasks, so it cannot undo this. The point stays
- * null so the score keeps coming from manualScore and the task can await one;
- * the rework count is carried over because a business completion overrides it.
+ * The sync skips business-completed tasks, so it cannot undo this. The completion's
+ * own point stays null so the score keeps coming from manualScore; its rework count
+ * is always set because a business completion overrides the one on the task.
  */
 export const completeOfficeDocumentManuallyService = async (
   actor: AuthUser,
@@ -74,6 +121,8 @@ export const completeOfficeDocumentManuallyService = async (
   }
   const now = new Date();
   const { completedAt, label } = parseCompletedAt(body.completedDate, now);
+  const score = parseScore(body.score);
+  const reworkCount = parseReworkCount(body.reworkCount);
   const updated: any = await OfficeDocumentContextModel.findOneAndUpdate(
     {
       _id: context._id,
@@ -91,13 +140,19 @@ export const completeOfficeDocumentManuallyService = async (
         "management.businessCompletion.approvedBy": actor.id,
         "management.businessCompletion.approvedAt": now,
         "management.businessCompletion.point": null,
-        "management.businessCompletion.reworkCount": effectiveOfficeDocumentReworkCount(context),
+        "management.businessCompletion.reworkCount": reworkCount ?? effectiveOfficeDocumentReworkCount(context),
+        ...scoringWrites(actor, context, score, reworkCount, now),
       },
     },
     { new: true, runValidators: true },
   ).lean();
   if (!updated) throw conflict("Trạng thái nhiệm vụ vừa thay đổi, hãy tải lại rồi thử lại.");
-  await appendNote(context, `${actor.fullName || actor.username} xác nhận hoàn thành nhiệm vụ, ngày hoàn thành ${label}.`);
+  const details = [
+    `ngày hoàn thành ${label}`,
+    ...(score === null ? [] : [`điểm ${score}`]),
+    ...(reworkCount === null ? [] : [`làm lại ${reworkCount} lần`]),
+  ].join(", ");
+  await appendNote(context, `${actor.fullName || actor.username} xác nhận hoàn thành nhiệm vụ: ${details}.`);
   return { data: { id: String(context._id), completed: true, completedAt } };
 };
 

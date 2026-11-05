@@ -22,8 +22,16 @@ const vietnamToday = () => new Intl.DateTimeFormat("en-CA", {
   day: "2-digit",
 }).format(new Date());
 
+const currentReworkCount = (context) => {
+  const management = context?.management ?? {};
+  if (management.kpiImport?.importKey) return management.kpiImport.reworkCount ?? 0;
+  return management.overrides?.reworkCount ?? context?.observation?.reworkCount ?? 0;
+};
+
 const today = ref(vietnamToday());
 const completedDate = ref(today.value);
+const score = ref("0");
+const reworkCount = ref("0");
 const saving = ref(false);
 const error = ref("");
 
@@ -31,15 +39,30 @@ watch(() => props.open, (open) => {
   if (!open) return;
   today.value = vietnamToday();
   completedDate.value = today.value;
+  // What the task already has, so a quick confirm never wipes an existing score.
+  score.value = String(props.context?.tracking?.rawScore ?? 0);
+  reworkCount.value = String(currentReworkCount(props.context));
   error.value = "";
 });
 
 const completing = computed(() => props.mode === "complete");
 
 const submit = async () => {
-  if (completing.value && !completedDate.value) {
-    error.value = "Chọn ngày hoàn thành.";
-    return;
+  const parsedScore = Number(String(score.value).trim().replace(",", "."));
+  const parsedRework = Number(String(reworkCount.value).trim());
+  if (completing.value) {
+    if (String(score.value).trim() === "" || !Number.isFinite(parsedScore) || parsedScore < 0 || parsedScore > 1000000) {
+      error.value = "Điểm phải là số từ 0 đến 1.000.000.";
+      return;
+    }
+    if (String(reworkCount.value).trim() === "" || !Number.isSafeInteger(parsedRework) || parsedRework < 0) {
+      error.value = "Số lần làm lại phải là số nguyên không âm.";
+      return;
+    }
+    if (!completedDate.value) {
+      error.value = "Chọn ngày hoàn thành.";
+      return;
+    }
   }
   saving.value = true;
   error.value = "";
@@ -47,7 +70,9 @@ const submit = async () => {
     const path = completing.value ? "manual-completion" : "manual-completion/undo";
     await http(`/api/office-document-contexts/${props.documentId}/${path}`, {
       method: "POST",
-      body: completing.value ? { completedDate: completedDate.value } : {},
+      body: completing.value
+        ? { score: parsedScore, reworkCount: parsedRework, completedDate: completedDate.value }
+        : {},
     });
     emit("update:open", false);
     emit("saved", props.context);
@@ -73,10 +98,20 @@ const submit = async () => {
           Nhiệm vụ trở lại trạng thái chưa hoàn thành và tiếp tục đồng bộ trạng thái từ eOffice.
         </template>
       </p>
-      <label v-if="completing" class="grid gap-1.5 text-sm font-medium">
-        <span>Ngày hoàn thành</span>
-        <Input v-model="completedDate" type="date" :max="today" class="h-10 rounded-xl" />
-      </label>
+      <div v-if="completing" class="grid gap-3 sm:grid-cols-2">
+        <label class="grid gap-1.5 text-sm font-medium">
+          <span>Điểm</span>
+          <Input v-model="score" type="text" inputmode="decimal" class="h-10 rounded-xl" />
+        </label>
+        <label class="grid gap-1.5 text-sm font-medium">
+          <span>Làm lại</span>
+          <Input v-model="reworkCount" type="text" inputmode="numeric" class="h-10 rounded-xl" />
+        </label>
+        <label class="grid gap-1.5 text-sm font-medium sm:col-span-2">
+          <span>Ngày hoàn thành</span>
+          <Input v-model="completedDate" type="date" :max="today" class="h-10 rounded-xl" />
+        </label>
+      </div>
       <p v-if="error" role="alert" class="text-sm font-medium text-rose-700">{{ error }}</p>
       <div class="flex justify-end gap-2 border-t border-zinc-100 pt-3">
         <Button variant="ghost" :disabled="saving" @click="emit('update:open', false)">Đóng</Button>

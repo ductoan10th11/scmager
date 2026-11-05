@@ -219,3 +219,54 @@ test("real evidence replaces a manual completion", async () => {
     { "management.businessCompletion.evidenceType": "MANUAL" },
   ]);
 });
+
+test("the score and rework count entered on completing take effect", async () => {
+  const document = task();
+  const { write } = await run(document, () =>
+    completeOfficeDocumentManuallyService(actorOf("OFFICE_CHIEF"), documentId, { score: 1.18, reworkCount: 1 }));
+  const saved = applySet(document, write.set);
+  assert.equal(rawOfficeDocumentPoint(saved), 1.18);
+  assert.equal(effectiveOfficeDocumentReworkCount(saved), 1);
+  assert.equal(isOfficeDocumentAwaitingScore(saved), false);
+  assert.ok(saved.management.scoreEditedAt);
+});
+
+test("a score of zero counts as scored, not as missing", async () => {
+  const document = task();
+  const { write } = await run(document, () =>
+    completeOfficeDocumentManuallyService(actorOf("OFFICE_CHIEF"), documentId, { score: 0, reworkCount: 0 }));
+  const saved = applySet(document, write.set);
+  assert.equal(rawOfficeDocumentPoint(saved), 0);
+  assert.equal(isOfficeDocumentAwaitingScore(saved), false);
+  assert.equal(effectiveOfficeDocumentReworkCount(saved), 0);
+});
+
+test("on an imported task they reach the values KPI reads", async () => {
+  const document = task({ kpiImport: { importKey: "k", point: 5, reworkCount: 3 } });
+  const { write } = await run(document, () =>
+    completeOfficeDocumentManuallyService(actorOf("OFFICE_CHIEF"), documentId, { score: 2, reworkCount: 1 }));
+  assert.equal(write.set["management.kpiImport.point"], 2);
+  assert.equal(write.set["management.kpiImport.reworkCount"], 1);
+});
+
+test("what the leader entered survives undoing the completion", async () => {
+  const document = task();
+  const { write } = await run(document, () =>
+    completeOfficeDocumentManuallyService(actorOf("OFFICE_CHIEF"), documentId, { score: 2, reworkCount: 1 }));
+  const completed = applySet(document, write.set);
+  const { write: undo } = await run(completed, () =>
+    undoOfficeDocumentManualCompletionService(actorOf("OFFICE_CHIEF"), documentId));
+  const reopened = applySet(completed, undo.set);
+  assert.equal(rawOfficeDocumentPoint(reopened), 2);
+  assert.equal(effectiveOfficeDocumentReworkCount(reopened), 1);
+});
+
+test("an invalid score or rework count is refused", async () => {
+  for (const body of [{ score: -1 }, { score: "abc" }, { score: 1_000_001 }, { reworkCount: 1.5 }, { reworkCount: -1 }]) {
+    await assert.rejects(
+      run(task(), () => completeOfficeDocumentManuallyService(actorOf("OFFICE_CHIEF"), documentId, body)),
+      /Điểm|làm lại/,
+    );
+  }
+});
+
