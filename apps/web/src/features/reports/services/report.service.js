@@ -11,6 +11,7 @@ const buildQuery = (filters) => {
   if (filters.slaHours !== undefined && filters.slaHours !== null) params.set('slaHours', filters.slaHours)
   if (filters.filterType) params.set('filterType', filters.filterType)
   if (filters.search) params.set('search', filters.search)
+  if (filters.sortOrder) params.set('sortOrder', filters.sortOrder)
   return params
 }
 

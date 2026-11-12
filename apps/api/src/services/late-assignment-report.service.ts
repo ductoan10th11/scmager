@@ -17,7 +17,10 @@ export type LateAssignmentRow = {
   departmentName: string;
   leaderUserId: string;
   leaderName: string;
+  // When the document reached the department leader now holding it.
   receivedAt: string | null;
+  // When eOffice routing was last read for it; the row is only as fresh as this.
+  syncedAt: string | null;
   holdingHours: number;
   holdingDays: number;
   dueAt: string | null;
@@ -38,10 +41,47 @@ const resolveScopedDepartmentId = (actor: AuthUser, query: Record<string, unknow
   return requested;
 };
 
+const isClerk = (participant: any) => {
+  const username = String(participant?.username || participant?.externalUsername || "").toLowerCase();
+  const name = String(participant?.fullName || participant?.externalFullName || "").toLowerCase();
+  return username.includes("vanthu") || name.includes("văn thư");
+};
+
+/**
+ * A leader who acted after the document reached them (in practice: created the
+ * response themselves) is working it, not sitting on it. Track logs sharing a
+ * minute are ordered by id, as the workflow resolver orders them.
+ */
+const hasActedSinceReceived = (participant: any) => {
+  const processed = parseOfficeDate(participant?.processedAt);
+  if (!processed) return false;
+  const assigned = parseOfficeDate(participant?.assignedAt);
+  if (!assigned) return true;
+  if (processed.getTime() !== assigned.getTime()) return processed.getTime() > assigned.getTime();
+  return Number(participant?.processedTrackLogId) > Number(participant?.assignedTrackLogId);
+};
+
+const sortByArrival = (rows: LateAssignmentRow[], order: "asc" | "desc") => {
+  const time = (row: LateAssignmentRow) => (row.receivedAt ? new Date(row.receivedAt).getTime() : 0);
+  return rows.sort((a, b) => (order === "asc" ? time(a) - time(b) : time(b) - time(a)));
+};
+
+type LateAssignmentCollection = {
+  rows: LateAssignmentRow[];
+  // Pending documents whose eOffice routing was never read: nobody can say who holds them.
+  unsyncedCount: number;
+  lastSyncedAt: string | null;
+};
+
 export const fetchLateAssignmentRows = async (
   actor: AuthUser,
   query: Record<string, unknown>,
-): Promise<LateAssignmentRow[]> => {
+): Promise<LateAssignmentRow[]> => (await collectLateAssignments(actor, query)).rows;
+
+const collectLateAssignments = async (
+  actor: AuthUser,
+  query: Record<string, unknown>,
+): Promise<LateAssignmentCollection> => {
   if (actor.role.code === "SPECIALIST") {
     throw forbidden("Chuyên viên không có quyền truy cập báo cáo này.");
   }
@@ -50,6 +90,7 @@ export const fetchLateAssignmentRows = async (
   const search = String(query.search ?? "").trim().toLowerCase();
   const slaHours = Math.max(0, Number(query.slaHours ?? 24));
   const filterType = String(query.filterType ?? "ALL_LATE"); // "ALL_LATE", "SLA_24", "SLA_48", "OVERDUE", "ALL_PENDING"
+  const sortOrder = String(query.sortOrder ?? "").toLowerCase() === "asc" ? "asc" : "desc";
 
   // Base Mongo query for incoming documents
   const filter: Record<string, unknown> = {
@@ -107,10 +148,11 @@ export const fetchLateAssignmentRows = async (
 
   const resolveRole = (participant: any): string | null => {
     if (!participant) return null;
-    if (participant.roleCode) return participant.roleCode;
+    // The live role first: the snapshot is from the last sync and roles change.
     if (participant.userId && userMap.has(String(participant.userId))) {
       return (userMap.get(String(participant.userId)).role as any)?.code ?? null;
     }
+    if (participant.roleCode) return participant.roleCode;
     const username = String(participant.username || participant.externalUsername || "")
       .toLowerCase()
       .replace(/\.lsn$/, "");
@@ -149,8 +191,13 @@ export const fetchLateAssignmentRows = async (
 
   const now = new Date();
   const rows: LateAssignmentRow[] = [];
+  let unsyncedCount = 0;
+  let lastSyncedAt: Date | null = null;
 
   for (const context of contexts) {
+    const syncedAt = context.statusSync?.lastSyncedAt ? new Date(context.statusSync.lastSyncedAt) : null;
+    if (syncedAt && (!lastSyncedAt || syncedAt > lastSyncedAt)) lastSyncedAt = syncedAt;
+
     // 1. Must not be completed
     const completion = effectiveOfficeDocumentCompletion(context);
     if (completion.completed) continue;
@@ -186,53 +233,41 @@ export const fetchLateAssignmentRows = async (
       continue;
     }
 
-    // 3. Nếu vẫn đang dừng ở Chánh văn phòng (chưa chuyển về phòng ban, chưa giao chuyên viên)
-    if (currentAssigneeRole === "OFFICE_CHIEF" && !assignment.departmentId) {
-      continue; // Đang ở Chánh VP, không tính chậm cho Trưởng phòng
+    // 3. Chỉ tính khi luồng eOffice cho thấy văn bản ĐANG nằm ở một Trưởng phòng.
+    // Không có luồng (chưa đồng bộ được) thì không biết ai đang giữ: assignment chỉ là
+    // phòng/người nhận dự kiến, nên không được suy ra "Trưởng phòng chậm giao" từ đó.
+    const hasWorkflow = Array.isArray(sync.trackLogs) && sync.trackLogs.length > 0;
+    if (!hasWorkflow) {
+      const expectedDeptId = String(assignment.departmentId || "");
+      if (!departmentId || expectedDeptId === departmentId) unsyncedCount += 1;
+      continue;
     }
+    // Đang ở Lãnh đạo UBND, Chánh VP, Văn thư, đơn vị ngoài..., hoặc Trưởng phòng đã
+    // chuyển tiếp/trả lại (không còn người giữ hiện tại) -> không phải Trưởng phòng chậm giao.
+    if (!currentAssignee || currentAssigneeRole !== "DEPARTMENT_LEADER" || isClerk(currentAssignee)) continue;
+    // Trưởng phòng đã tự xử lý (tạo phúc đáp) sau khi nhận.
+    if (hasActedSinceReceived(currentAssignee)) continue;
 
-    // 4. Xác định phòng ban và Trưởng phòng đang giữ văn bản
-    let targetDeptId = String(assignment.departmentId || currentAssignee?.departmentId || "");
-    if (!targetDeptId && currentAssignee?.userId) {
-      const leader = userMap.get(String(currentAssignee.userId));
-      if (leader?.department) targetDeptId = String(leader.department);
-    }
-    if (!targetDeptId && assignment.userId) {
-      const u = userMap.get(String(assignment.userId));
-      if (u?.department) targetDeptId = String(u.department);
-    }
-
-    const isAtDepartmentLeader =
-      currentAssigneeRole === "DEPARTMENT_LEADER" ||
-      Boolean(targetDeptId);
-
-    if (!isAtDepartmentLeader) continue;
+    // 4. Phòng ban là phòng của Trưởng phòng đang giữ, không phải phòng được gán dự kiến.
+    const holder = currentAssignee.userId ? userMap.get(String(currentAssignee.userId)) : null;
+    const targetDeptId = String(holder?.department || currentAssignee.departmentId || assignment.departmentId || "");
 
     if (departmentId && targetDeptId !== departmentId) continue;
 
     // 5. Calculate timing and overdue
     const deptInfo = targetDeptId ? deptMap.get(targetDeptId) : null;
-    const departmentName = assignment.departmentName || deptInfo?.name || "Phòng ban";
+    const assignmentDepartmentName = String(assignment.departmentId || "") === targetDeptId ? assignment.departmentName : "";
+    const departmentName = deptInfo?.name || assignmentDepartmentName || "Phòng ban";
     const leaderInfo = targetDeptId ? leaderByDeptId.get(targetDeptId) : null;
 
-    const isClerk = (actor: any) => {
-      const u = String(actor?.username || actor?.externalUsername || "").toLowerCase();
-      const n = String(actor?.fullName || actor?.externalFullName || "").toLowerCase();
-      return u.includes("vanthu") || n.includes("văn thư");
-    };
+    const leaderName = currentAssignee.fullName || currentAssignee.externalFullName
+      || leaderInfo?.fullName || `Trưởng phòng (${departmentName})`;
+    const leaderUserId = currentAssignee.userId ? String(currentAssignee.userId) : (leaderInfo?.id || "");
 
-    const hasRealAssigneeName = Boolean(currentAssignee?.fullName || currentAssignee?.externalFullName) && !isClerk(currentAssignee);
-    const leaderName = hasRealAssigneeName
-      ? (currentAssignee.fullName || currentAssignee.externalFullName)
-      : (leaderInfo?.fullName || `Trưởng phòng (${departmentName})`);
-    const leaderUserId = currentAssignee?.userId
-      ? String(currentAssignee.userId)
-      : (leaderInfo?.id || "");
-
-    const assignedTime = parseOfficeDate(currentAssignee?.assignedAt)
-      || (context.management?.updatedAt ? new Date(context.management.updatedAt) : null)
-      || (context.observedAt ? new Date(context.observedAt) : null)
+    // Thời gian đến = lúc văn bản được chuyển tới Trưởng phòng đang giữ.
+    const assignedTime = parseOfficeDate(currentAssignee.assignedAt)
       || parseOfficeDate(overrides.receivedDate ?? observation.receivedDate)
+      || (context.observedAt ? new Date(context.observedAt) : null)
       || now;
 
     const diffMs = Math.max(0, now.getTime() - assignedTime.getTime());
@@ -280,7 +315,8 @@ export const fetchLateAssignmentRows = async (
       departmentName,
       leaderUserId,
       leaderName,
-      receivedAt: assignedTime ? assignedTime.toISOString() : null,
+      receivedAt: assignedTime.toISOString(),
+      syncedAt: syncedAt ? syncedAt.toISOString() : null,
       holdingHours,
       holdingDays,
       dueAt: dueAt ? dueAt.toISOString() : null,
@@ -291,16 +327,20 @@ export const fetchLateAssignmentRows = async (
     });
   }
 
-  // Sort by holdingHours descending (most delayed first)
-  rows.sort((a, b) => b.holdingHours - a.holdingHours || (b.isOverdue ? 1 : 0) - (a.isOverdue ? 1 : 0));
-  return rows;
+  // Theo thời gian đến; mặc định văn bản mới đến lên trước (sortOrder=asc để đảo lại).
+  sortByArrival(rows, sortOrder);
+  return {
+    rows,
+    unsyncedCount,
+    lastSyncedAt: lastSyncedAt ? lastSyncedAt.toISOString() : null,
+  };
 };
 
 export const lateAssignmentReportService = async (
   actor: AuthUser,
   query: Record<string, unknown>,
 ) => {
-  const items = await fetchLateAssignmentRows(actor, query);
+  const { rows: items, unsyncedCount, lastSyncedAt } = await collectLateAssignments(actor, query);
 
   // Group by Department
   const deptSummaryMap = new Map<string, {
@@ -396,6 +436,9 @@ export const lateAssignmentReportService = async (
         overdueCount: totalOverdue,
         avgHoldingHours,
         affectedDepartmentsCount: departmentSummary.length,
+        // Không tính vào báo cáo vì chưa đọc được luồng eOffice của chúng.
+        unsyncedCount,
+        lastSyncedAt,
       },
       departmentSummary,
       leaderSummary,

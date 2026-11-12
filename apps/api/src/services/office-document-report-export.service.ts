@@ -16,6 +16,19 @@ const formatVietnamDate = (value: string | null) => {
   return new Intl.DateTimeFormat("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" }).format(new Date(value));
 };
 
+const formatVietnamDateTime = (value: string | null) => {
+  if (!value) return "";
+  return new Intl.DateTimeFormat("vi-VN", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(value));
+};
+
 export const buildOverdueOfficeDocumentReportWorkbook = async (
   actor: AuthUser,
   query: Record<string, unknown>,
@@ -70,7 +83,7 @@ export const buildLateAssignmentReportWorkbook = async (
     { header: "Trích yếu", key: "subject", width: 55 },
     { header: "Phòng ban", key: "departmentName", width: 25 },
     { header: "Trưởng phòng phụ trách", key: "leaderName", width: 25 },
-    { header: "Ngày nhận", key: "receivedAt", width: 16 },
+    { header: "Thời gian đến", key: "receivedAt", width: 18 },
     { header: "Số giờ chậm giao", key: "holdingHours", width: 18 },
     { header: "Số ngày chậm", key: "holdingDays", width: 16 },
     { header: "Hạn xử lý văn bản", key: "dueAt", width: 18 },
@@ -85,7 +98,7 @@ export const buildLateAssignmentReportWorkbook = async (
       subject: row.subject,
       departmentName: row.departmentName,
       leaderName: row.leaderName,
-      receivedAt: formatVietnamDate(row.receivedAt),
+      receivedAt: formatVietnamDateTime(row.receivedAt),
       holdingHours: row.holdingHours,
       holdingDays: row.holdingDays,
       dueAt: formatVietnamDate(row.dueAt),

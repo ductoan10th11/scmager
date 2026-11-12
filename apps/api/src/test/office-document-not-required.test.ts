@@ -883,7 +883,14 @@ test("the late-assignment report drops a confirmed task", async () => {
       assignment: { userId: null, fullName: "", departmentId: departmentB, departmentName: "Phòng B" },
       ...management,
     });
-    document.statusSync = { completed: false, processing: {} };
+    document.statusSync = {
+      completed: false,
+      trackLogs: [{ id: "1" }],
+      processing: {
+        currentAssignee: { userId: leaderB, fullName: "Trưởng phòng B", roleCode: "DEPARTMENT_LEADER", departmentId: departmentB, assignedAt: "25/07/2026 08:00" },
+        assignees: [],
+      },
+    };
     return document;
   };
   const restoreDepartment = stub(DepartmentModel, { find: () => query([]) });
