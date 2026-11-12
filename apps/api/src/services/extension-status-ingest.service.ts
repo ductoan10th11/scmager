@@ -100,6 +100,10 @@ export async function runExtensionStatusOnlyIngest(
   hooks: ExtensionStatusSyncHooks = {},
   dependencies: StatusOnlyDependencies = defaultDependencies,
 ): Promise<ExtensionStatusSyncSummary> {
+  // Switches off this job alone: the ingest sprint around it keeps running.
+  if (process.env.EXTENSION_STATUS_SYNC_ENABLED === 'false') {
+    return { selected: 0, synced: 0, completed: 0, failed: 0, sessionHealed: 0, errors: [] };
+  }
   const c = config();
   const now = new Date();
   const contexts = await OfficeDocumentContextModel.find({

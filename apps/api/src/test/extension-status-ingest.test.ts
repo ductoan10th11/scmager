@@ -1,7 +1,19 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { afterEach, beforeEach } from 'node:test';
 import OfficeDocumentContextModel from '../models/office-document-context.model';
 import { runExtensionStatusOnlyIngest } from '../services/extension-status-ingest.service';
+
+// The sync runs unless EXTENSION_STATUS_SYNC_ENABLED is 'false'. The host's .env
+// may switch it off, which must not leak into tests of the running sync.
+let hostStatusSyncFlag: string | undefined;
+beforeEach(() => {
+  hostStatusSyncFlag = process.env.EXTENSION_STATUS_SYNC_ENABLED;
+  delete process.env.EXTENSION_STATUS_SYNC_ENABLED;
+});
+afterEach(() => {
+  if (hostStatusSyncFlag === undefined) delete process.env.EXTENSION_STATUS_SYNC_ENABLED;
+  else process.env.EXTENSION_STATUS_SYNC_ENABLED = hostStatusSyncFlag;
+});
 
 test('status-only ingest selects unfinished extension incoming contexts and updates only their status projection', async () => {
   const originalFind = OfficeDocumentContextModel.find;
@@ -63,6 +75,26 @@ test('status-only ingest selects unfinished extension incoming contexts and upda
   } finally {
     OfficeDocumentContextModel.find = originalFind;
     OfficeDocumentContextModel.updateOne = originalUpdateOne;
+  }
+});
+
+test('status sync switched off reads and writes nothing', async () => {
+  const originalFind = OfficeDocumentContextModel.find;
+  const originalFlag = process.env.EXTENSION_STATUS_SYNC_ENABLED;
+  let reads = 0;
+  OfficeDocumentContextModel.find = (() => {
+    reads += 1;
+    throw new Error('status sync must not read documents while switched off');
+  }) as unknown as typeof OfficeDocumentContextModel.find;
+  process.env.EXTENSION_STATUS_SYNC_ENABLED = 'false';
+  try {
+    const result = await runExtensionStatusOnlyIngest();
+    assert.deepEqual(result, { selected: 0, synced: 0, completed: 0, failed: 0, sessionHealed: 0, errors: [] });
+    assert.equal(reads, 0);
+  } finally {
+    OfficeDocumentContextModel.find = originalFind;
+    if (originalFlag === undefined) delete process.env.EXTENSION_STATUS_SYNC_ENABLED;
+    else process.env.EXTENSION_STATUS_SYNC_ENABLED = originalFlag;
   }
 });
 

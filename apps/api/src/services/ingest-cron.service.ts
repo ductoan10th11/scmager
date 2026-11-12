@@ -219,7 +219,7 @@ async function executeSprint(scheduleAfter: boolean): Promise<void> {
   try {
     lastStartedAt = new Date();
     lastError = '';
-    pushLog('INFO', 'TICK_STARTED', 'Status-only ingest started for extension documents.');
+    pushLog('INFO', 'TICK_STARTED', 'Document ingest started.');
 
     let statusSummary: ExtensionStatusSyncSummary;
     try {
