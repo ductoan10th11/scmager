@@ -1,6 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuth } from '@/features/auth/composables/useAuth'
-import LandingPage from '../pages/LandingPage.vue'
 import LoginPage from '../pages/LoginPage.vue'
 import ExtensionWebViewPage from '../pages/ExtensionWebViewPage.vue'
 import DashboardPage from '../pages/DashboardPage.vue'
@@ -17,7 +16,6 @@ import {
   AssignmentPage,
   PerformancePage,
   UsersPage,
-  PrivacyPolicyPage,
   OverdueReportPage,
   LateAssignmentsPage,
   StatisticsPage,
@@ -30,12 +28,6 @@ const routes = [
     redirect: '/login',
   },
   {
-    path: '/landing',
-    name: 'Landing',
-    component: LandingPage,
-    meta: { public: true },
-  },
-  {
     path: '/login',
     name: 'Login',
     component: LoginPage,
@@ -46,16 +38,6 @@ const routes = [
     name: 'ExtensionWebView',
     component: ExtensionWebViewPage,
     meta: { public: true },
-  },
-  {
-    path: '/privacy-policy',
-    name: 'PrivacyPolicy',
-    component: PrivacyPolicyPage,
-    meta: { public: true },
-  },
-  {
-    path: '/privacy',
-    redirect: '/privacy-policy',
   },
   {
     path: '/presentations',

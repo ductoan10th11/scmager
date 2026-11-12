@@ -21,7 +21,6 @@ export const ConnectorsPage = lazyPage(() => import('../pages/ConnectorsPage.vue
 export const SettingsPage = lazyPage(() => import('../pages/SettingsPage.vue'))
 
 export const MyDepartmentPage = lazyPage(() => import('../pages/MyDepartmentPage.vue'))
-export const PrivacyPolicyPage = lazyPage(() => import('../pages/PrivacyPolicyPage.vue'))
 export const ExtensionWebViewPage = lazyPage(() => import('../pages/ExtensionWebViewPage.vue'))
 export const OverdueReportPage = lazyPage(() => import('../pages/OverdueReportPage.vue'))
 export const LateAssignmentsPage = lazyPage(() => import('../pages/LateAssignmentsPage.vue'))

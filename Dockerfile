@@ -7,6 +7,7 @@ COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY packages ./packages
 RUN pnpm install --frozen-lockfile
+COPY policy ./policy
 COPY apps ./apps
 RUN pnpm --filter api build && pnpm --filter web build
 
