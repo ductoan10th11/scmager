@@ -2,8 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import OfficeDocumentContextModel from "../models/office-document-context.model";
 import {
+  getLatestTrackLogPoint,
   outgoingPublishedFilter,
   parseOutgoingDocumentListHtml,
+  parseTrackLogHtmlResponse,
+  reworkCountIn,
+  trackLogNote,
+  withoutScoreHeader,
 } from "../services/langson-dwr.service";
 import { outgoingProductReconciliationInternals } from "../services/outgoing-product-reconciliation.service";
 
@@ -206,4 +211,146 @@ test("missing related incoming source is not created by reconciliation", async (
   } finally {
     OfficeDocumentContextModel.findOne = originalFindOne;
   }
+});
+
+test("withoutScoreHeader removes the score block from either end of a remark", () => {
+  const cases: Array<[string, string]> = [
+    ["Đề nghị xử lý đúng hạn.\n[P=0.9,R=,GV]", "Đề nghị xử lý đúng hạn."],
+    ["Đã hoàn thành dự thảo.\n[P=0.8,R=1,GV]", "Đã hoàn thành dự thảo."],
+    ["Sửa lại theo góp ý.\n[P=,R=2,GV]", "Sửa lại theo góp ý."],
+    ["Sửa lại theo góp ý.\n[R=2,GV]", "Sửa lại theo góp ý."],
+    ["Chuyển xử lý.\n[P=,R=,GV]", "Chuyển xử lý."],
+    ["Đã hoàn thành dự thảo[P=0,8,R=1,GV]", "Đã hoàn thành dự thảo"],
+    ["[P=0.8,R=1,GV]", ""],
+    ["Đề nghị xử lý đúng hạn.\n[GV]", "Đề nghị xử lý đúng hạn."],
+    ["Đề nghị xử lý đúng hạn [GV]", "Đề nghị xử lý đúng hạn"],
+    ["Đề nghị xử lý đúng hạn[GV]", "Đề nghị xử lý đúng hạn"],
+    ["[GV]", ""],
+    ["Đề nghị xử lý đúng hạn. Điểm: 0.9, Làm lại: 1. [GV]", "Đề nghị xử lý đúng hạn."],
+    ["Xem [GV] ở mục 2 và [phụ lục, GV]", "Xem [GV] ở mục 2 và [phụ lục, GV]"],
+    ["Đề nghị xử lý đúng hạn.\nĐiểm: 0.9, Làm lại: 1.", "Đề nghị xử lý đúng hạn."],
+    ["Đề nghị xử lý đúng hạn. Điểm: 0,9, Làm lại: 1", "Đề nghị xử lý đúng hạn."],
+    ["Đề nghị xử lý đúng hạn. Làm lại: 2", "Đề nghị xử lý đúng hạn."],
+    ["Đề nghị xử lý đúng hạn, Điểm: 0.9", "Đề nghị xử lý đúng hạn"],
+    ["Điểm: 0.9, Làm lại: 1.\nĐề nghị xử lý đúng hạn.", "Đề nghị xử lý đúng hạn."],
+    ["Điểm: 0.9. Làm lại: 1. Đề nghị xử lý đúng hạn.", "Đề nghị xử lý đúng hạn."],
+    ["Điểm: 0.9, Làm lại: 1.", ""],
+    ["Làm lại: 2", ""],
+    ["Đề nghị xử lý đúng hạn.", "Đề nghị xử lý đúng hạn."],
+    ["Làm lại: 2 lần theo yêu cầu của lãnh đạo", "lần theo yêu cầu của lãnh đạo"],
+    ["Tiêu chí Điểm: 5 cần rà soát lại.", "Tiêu chí Điểm: 5 cần rà soát lại."],
+  ];
+  for (const [input, expected] of cases) {
+    assert.equal(withoutScoreHeader(input), expected, input);
+  }
+});
+
+test("trackLogNote reads one field so a repeated remark is not doubled", () => {
+  const remark = "Đề nghị xử lý đúng hạn. Điểm: 0.9, Làm lại: 1.";
+  assert.equal(trackLogNote({ comment: remark, content: remark }), "Đề nghị xử lý đúng hạn.");
+  assert.equal(trackLogNote({ comment: remark, content: "" }), "Đề nghị xử lý đúng hạn.");
+});
+
+test("routing signal keeps the rework count and a clean note when the score is at the end", () => {
+  const remark = "Đề nghị xử lý đúng hạn. Điểm: 0.9, Làm lại: 1.";
+  const signal = outgoingProductReconciliationInternals.routingSignalFrom([
+    {
+      id: "1",
+      sequence: 1,
+      sender: { username: "a", fullName: "A" },
+      receiver: { username: "b", fullName: "B" },
+      action: "Chuyển tới",
+      comment: remark,
+      content: remark,
+      receivedAt: null,
+      processingAt: null,
+      completedAt: null,
+    },
+  ]);
+  assert.deepEqual(signal, { reworkCount: 1, note: "Đề nghị xử lý đúng hạn." });
+});
+
+test("a score in its own eOffice paragraph is still read from the tracklog", () => {
+  const cell = (value: string) => `<td>${value}</td>`;
+  const remark = '<span name="comment"><p>Đề nghị xử lý đúng hạn.</p><p>Điểm: 0.9, Làm lại: 1.</p></span>';
+  const logs = parseTrackLogHtmlResponse(dwrHtml(
+    `<table><tr class="log_role_type_received" act_id="1" stt="1">${
+      ["1", "A", "B", "", "", "", "", remark].map(cell).join("")
+    }</tr></table>`,
+  ));
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].comment, "Đề nghị xử lý đúng hạn. Điểm: 0.9, Làm lại: 1.");
+  assert.equal(getLatestTrackLogPoint(logs)?.point, 0.9);
+  assert.equal(trackLogNote(logs[0]), "Đề nghị xử lý đúng hạn.");
+});
+
+test("a score already stored fused onto the previous sentence is still read", () => {
+  const point = getLatestTrackLogPoint([
+    {
+      id: "1",
+      sequence: 1,
+      sender: { username: "a", fullName: "A" },
+      receiver: { username: "b", fullName: "B" },
+      action: "Chuyển tới",
+      comment: "Đề nghị xử lý đúng hạn.Điểm: 0.9",
+      content: "Đề nghị xử lý đúng hạn.Điểm: 0.9",
+      receivedAt: null,
+      processingAt: null,
+      completedAt: null,
+    },
+  ]);
+  assert.equal(point?.point, 0.9);
+});
+
+test("a [GV] comment yields a clean note and no score from the tracklog", () => {
+  const remark = "Sửa lại theo góp ý.\n[GV]";
+  const log = {
+    id: "1",
+    sequence: 1,
+    sender: { username: "a", fullName: "A" },
+    receiver: { username: "b", fullName: "B" },
+    action: "Chuyển tới",
+    comment: remark,
+    content: remark,
+    receivedAt: null,
+    processingAt: null,
+    completedAt: null,
+  };
+  assert.equal(getLatestTrackLogPoint([log]), null);
+  assert.deepEqual(
+    outgoingProductReconciliationInternals.routingSignalFrom([log]),
+    { reworkCount: 0, note: "Sửa lại theo góp ý." },
+  );
+});
+
+test("the [P=,R=,GV] token is read from the tracklog, blank values included", () => {
+  const log = (comment: string) => ({
+    id: "1",
+    sequence: 1,
+    sender: { username: "a", fullName: "A" },
+    receiver: { username: "b", fullName: "B" },
+    action: "Chuyển tới",
+    comment,
+    content: comment,
+    receivedAt: null,
+    processingAt: null,
+    completedAt: null,
+  });
+  const pointOf = (comment: string) => getLatestTrackLogPoint([log(comment)])?.point ?? null;
+
+  assert.equal(pointOf("Đã hoàn thành dự thảo.\n[P=0.8,R=1,GV]"), 0.8);
+  assert.equal(pointOf("Đã hoàn thành dự thảo.\n[P=0,8,R=1,GV]"), 0.8);
+  assert.equal(pointOf("Đề nghị xử lý đúng hạn.\n[P=0.9,R=,GV]"), 0.9);
+  assert.equal(pointOf("Sửa lại theo góp ý.\n[P=,R=2,GV]"), null);
+  assert.equal(pointOf("Sửa lại theo góp ý.\n[R=2,GV]"), null);
+
+  assert.equal(reworkCountIn("Đã hoàn thành dự thảo.\n[P=0.8,R=1,GV]"), 1);
+  assert.equal(reworkCountIn("Sửa lại theo góp ý.\n[P=,R=2,GV]"), 2);
+  assert.equal(reworkCountIn("Đề nghị xử lý đúng hạn.\n[P=0.9,R=,GV]"), null);
+  assert.equal(reworkCountIn("Làm lại: 3"), 3);
+
+  assert.deepEqual(
+    outgoingProductReconciliationInternals.routingSignalFrom([log("Đã hoàn thành dự thảo.\n[P=0.8,R=1,GV]")]),
+    { reworkCount: 1, note: "Đã hoàn thành dự thảo." },
+  );
 });

@@ -868,6 +868,29 @@ test("a save that keeps the owner leaves a pending not-required request open", a
   assert.equal(transitions.length, 0);
 });
 
+test("the list puts the most recently received documents first", async () => {
+  let sort: unknown;
+  const restore = stub(OfficeDocumentContextModel, {
+    aggregate: (pipeline: any[]) => ({
+      allowDiskUse: async () => {
+        sort = pipeline.find((stage) => stage.$sort)?.$sort ?? sort;
+        return [];
+      },
+    }),
+    find: () => ({ select: () => ({ lean: async () => [] }), lean: async () => [] }),
+  });
+  const restoreUser = stub(UserModel, {
+    find: () => ({ select: () => ({ populate: () => ({ lean: async () => [] }), lean: async () => [] }) }),
+  });
+  try {
+    await listOfficeDocumentContexts(chief, { pageType: "incoming", search: "x" });
+    assert.deepEqual(sort, { observedAt: -1, _id: -1 });
+  } finally {
+    restore();
+    restoreUser();
+  }
+});
+
 test("the list reads documents again only when something changed", async () => {
   const organization = "507f1f77bcf86cd799439099";
   const orgChief = { ...chief, organization };

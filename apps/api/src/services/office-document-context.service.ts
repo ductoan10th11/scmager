@@ -15,6 +15,9 @@ import {
   isCompletedDocumentTrackLog,
   LANGSON_COMPLETED_RULE,
   newestNgayDenFilter,
+  reworkCountIn,
+  trackLogNote,
+  withoutScoreHeader,
   type TrackLogItem,
 } from "./langson-dwr.service";
 import { resolveDocumentWorkflow } from "./document-workflow.service";
@@ -238,7 +241,9 @@ const LIST_PARTICIPANT_FIELDS = [
 const loadListContexts = (filter: Record<string, unknown>) =>
   OfficeDocumentContextModel.aggregate([
     { $match: listMatch(filter) },
-    { $sort: { updatedAt: -1 } },
+    // Newest arrival first. Not updatedAt: background status retries move that on
+    // old documents, which buries whatever was just sent in. _id keeps pages stable.
+    { $sort: { observedAt: -1, _id: -1 } },
     {
       $set: {
         "observation.recipients": {
@@ -758,7 +763,7 @@ export const normalizeOfficeDocumentContext = (payload: unknown) => {
       comment: string(body.comment, "comment", 12000),
       point,
       reworkCount,
-      note: string(body.note, "note", 12000),
+      note: withoutScoreHeader(string(body.note, "note", 12000)),
       recipients: normalizeRecipients(body.recipients),
       timeline: normalizeTimeline(body.timeline),
     },
@@ -801,6 +806,11 @@ export const upsertOfficeDocumentContext = async (
   const previous = await OfficeDocumentContextModel.findOne(filter)
     .select("management.assignment management.assignmentMode management.product management.manualScore management.overrides management.updatedBy observation.point observation.reworkCount observation.relatedIncomingSoKyHieu")
     .lean();
+  // A body only carries what this round declares: a rework-only round sends
+  // point null, a score-only round sends rework 0. Neither means the omitted
+  // value was withdrawn, so a score recorded earlier survives the later body.
+  normalized.observation.point ??= previous?.observation?.point ?? null;
+  normalized.observation.reworkCount ||= previous?.observation?.reworkCount ?? 0;
 
   // ponytail: standalone products without score or rework count are dropped
   // because they carry no evaluation and answer no task.
@@ -1895,8 +1905,8 @@ const routingSignalFrom = (trackLogs: TrackLogItem[]) => {
   );
   for (const trackLog of latest) {
     const text = `${trackLog.content ?? ""} ${trackLog.comment ?? ""}`.trim();
-    const match = text.match(/(?:làm\s*lại|lam\s*lai)\s*:\s*(\d+)/iu);
-    if (match) return { reworkCount: Number(match[1]), note: text };
+    const reworkCount = reworkCountIn(text);
+    if (reworkCount !== null) return { reworkCount, note: trackLogNote(trackLog) };
   }
   return { reworkCount: 0, note: "" };
 };

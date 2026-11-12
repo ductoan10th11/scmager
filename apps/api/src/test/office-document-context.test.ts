@@ -708,3 +708,86 @@ test("Office context list requires an authenticated session on both API mounts",
     );
   }
 });
+
+test("the extension's point, rework count and note are taken from the body as sent", () => {
+  const { observation } = normalizeOfficeDocumentContext({
+    ...payload,
+    pageType: "outgoing",
+    comment: "Đã hoàn thành dự thảo.\n[P=0.8,R=1,GV]",
+    point: 0.8,
+    reworkCount: 1,
+    note: "Đã hoàn thành dự thảo.\n[P=0.8,R=1,GV]",
+  });
+  assert.equal(observation.point, 0.8);
+  assert.equal(observation.reworkCount, 1);
+  assert.equal(observation.note, "Đã hoàn thành dự thảo.");
+  assert.equal(observation.comment, "Đã hoàn thành dự thảo.\n[P=0.8,R=1,GV]");
+});
+
+test("a comment that omits the score or rework count keeps the stored value", async () => {
+  const originalFindOne = OfficeDocumentContextModel.findOne;
+  const originalFindOneAndUpdate = OfficeDocumentContextModel.findOneAndUpdate;
+  const originalUserFind = UserModel.find;
+  const originalDepartmentFind = DepartmentModel.find;
+  const originalDepartmentFindOne = DepartmentModel.findOne;
+  let written: any = null;
+  OfficeDocumentContextModel.findOne = (() => ({
+    select: () => ({
+      lean: async () => ({
+        observation: { point: 0.8, reworkCount: 1, relatedIncomingSoKyHieu: "105/UBND-VP" },
+        management: { product: { scoreStatus: "APPROVED", proposedPoint: 0.8 } },
+      }),
+    }),
+  })) as unknown as typeof OfficeDocumentContextModel.findOne;
+  OfficeDocumentContextModel.findOneAndUpdate = (async (_filter: unknown, update: any) => {
+    written = update.$set;
+    return { _id: "existing-id" };
+  }) as unknown as typeof OfficeDocumentContextModel.findOneAndUpdate;
+  UserModel.find = (() => ({
+    select: () => ({
+      limit: () => ({ lean: async () => [] }),
+      lean: async () => [],
+    }),
+    lean: async () => [],
+  })) as unknown as typeof UserModel.find;
+  DepartmentModel.find = (() => ({
+    select: () => ({ lean: async () => [] }),
+    lean: async () => [],
+  })) as unknown as typeof DepartmentModel.find;
+  DepartmentModel.findOne = (() => ({
+    select: () => ({ lean: async () => null }),
+    lean: async () => null,
+  })) as unknown as typeof DepartmentModel.findOne;
+  try {
+    await upsertOfficeDocumentContext({
+      ...payload,
+      pageType: "outgoing",
+      relatedIncomingSoKyHieu: "105/UBND-VP",
+      comment: "Sửa lại theo góp ý.\n[GV]",
+      point: null,
+      reworkCount: 2,
+      note: "Sửa lại theo góp ý.",
+    });
+    assert.equal(written.observation.point, 0.8);
+    assert.equal(written.observation.reworkCount, 2);
+    assert.equal(written["management.product.proposedPoint"], 0.8);
+    assert.equal(written["management.product.scoreStatus"], "APPROVED");
+    assert.equal(written["management.product.scoreSource"], "EOFFICE");
+
+    await upsertOfficeDocumentContext({
+      ...payload,
+      pageType: "outgoing",
+      relatedIncomingSoKyHieu: "105/UBND-VP",
+      point: 0.9,
+      reworkCount: 0,
+    });
+    assert.equal(written.observation.point, 0.9);
+    assert.equal(written.observation.reworkCount, 1);
+  } finally {
+    OfficeDocumentContextModel.findOne = originalFindOne;
+    OfficeDocumentContextModel.findOneAndUpdate = originalFindOneAndUpdate;
+    UserModel.find = originalUserFind;
+    DepartmentModel.find = originalDepartmentFind;
+    DepartmentModel.findOne = originalDepartmentFindOne;
+  }
+});

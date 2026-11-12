@@ -817,12 +817,53 @@ export type ExtractedTrackLogPoint = {
 
 const TRACK_LOG_POINT_PATTERNS = [
   /\[\s*p\s*:\s*(\d+(?:[.,]\d+)?)\s*\]/i,
-  /(?:^|\s)điểm\s*:\s*(\d+(?:[.,]\d+)?)\b/iu,
+  /\[(?:[^\]]*,)?\s*p\s*=\s*(\d+(?:[.,]\d+)?)\s*(?:,[^\]]*)?\]/i,
+  /(?<![\p{L}\p{N}])điểm\s*:\s*(\d+(?:[.,]\d+)?)\b/iu,
 ];
 
+const TRACK_LOG_REWORK_PATTERNS = [
+  /\[(?:[^\]]*,)?\s*r\s*=\s*(\d+)\s*(?:,[^\]]*)?\]/i,
+  /(?:làm\s*lại|lam\s*lai)\s*:\s*(\d+)/iu,
+];
+
+/** The rework count in a remark: `[P=,R=<n>,GV]` or the older `Làm lại: <n>`. */
+export const reworkCountIn = (text: string): number | null => {
+  const match = TRACK_LOG_REWORK_PATTERNS
+    .map((pattern) => text.match(pattern))
+    .find(Boolean);
+  return match ? Number(match[1]) : null;
+};
+
+const SCORE_TOKEN_ITEM = String.raw`(?:[pr]\s*=\s*(?:\d+(?:[.,]\d+)?)?|gv)`;
+const SCORE_TOKEN = String.raw`\[\s*${SCORE_TOKEN_ITEM}(?:\s*,\s*${SCORE_TOKEN_ITEM})*\s*\]`;
+const SCORE_FIELD = String.raw`(?:${SCORE_TOKEN}|(?<![\p{L}\p{N}])(?:(?:điểm|diem)\s*:\s*[-\d.,]+|(?:làm\s*lại|lam\s*lai)\s*:\s*\d+))`;
+const SCORE_BLOCK = String.raw`${SCORE_FIELD}(?:\s*[,;.]?\s*${SCORE_FIELD})*\s*[,;.]?`;
+const LEADING_SCORE_BLOCK = new RegExp(String.raw`^\s*${SCORE_BLOCK}\s*`, 'iu');
+const TRAILING_SCORE_BLOCK = new RegExp(String.raw`${SCORE_BLOCK}\s*$`, 'iu');
+
 /**
- * A point belongs to the latest tracklog that contains either `[p:<number>]`
- * or `Điểm: <number>`. Decimal separators `.` and `,` are both accepted.
+ * Removes the extension's markers from an eOffice remark. Current entries end
+ * with a `[P=0.8,R=1,GV]` token, in which P and R may be blank or absent (a bare
+ * `[GV]` is also in the tracklog); older ones carry a "Điểm: 0.9, Làm lại: 1."
+ * header, so all of these forms are handled.
+ */
+export const withoutScoreHeader = (text: string) => text
+  .replace(LEADING_SCORE_BLOCK, '')
+  .replace(TRAILING_SCORE_BLOCK, '')
+  .replace(/[\s,;]+$/u, '')
+  .trim();
+
+/**
+ * The clerk's note on one tracklog entry. `comment` and `content` normally hold
+ * the same remark, so only one of them is read: joining them repeats the note
+ * and leaves a score block stranded in the middle, out of reach of the strip.
+ */
+export const trackLogNote = (log: Pick<TrackLogItem, 'comment' | 'content'>) =>
+  withoutScoreHeader(String(log.content || log.comment || ''));
+
+/**
+ * A point belongs to the latest tracklog that contains `[P=<number>,...]`,
+ * `[p:<number>]` or `Điểm: <number>`. Decimal separators `.` and `,` are both accepted.
  * This makes a later correction in eOffice supersede an earlier point declaration.
  */
 export function getLatestTrackLogPoint(trackLogs: TrackLogItem[]): ExtractedTrackLogPoint | null {
@@ -888,7 +929,9 @@ export function parseTrackLogHtmlResponse(raw: string): TrackLogItem[] {
 
   const cleanHtml = (value: string) => decodeHtmlEntities(
     value
-      .replace(/<br\s*\/?>/gi, ' ')
+      // A paragraph break is a word break: without it a remark in its own <p>
+      // fuses onto the previous sentence ("...hạn.Điểm: 0.9").
+      .replace(/<br\s*\/?>|<\/p>/gi, ' ')
       .replace(/<[^>]+>/g, '')
       .replace(/\s+/g, ' ')
       .trim(),

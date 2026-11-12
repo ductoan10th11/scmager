@@ -360,6 +360,8 @@ officeDocumentContextSchema.index(
 );
 officeDocumentContextSchema.index({ pageType: 1, updatedAt: -1 });
 officeDocumentContextSchema.index({ organizationId: 1, pageType: 1, updatedAt: -1 });
+officeDocumentContextSchema.index({ pageType: 1, observedAt: -1, _id: -1 });
+officeDocumentContextSchema.index({ organizationId: 1, pageType: 1, observedAt: -1, _id: -1 });
 officeDocumentContextSchema.index({
   organizationId: 1,
   pageType: 1,

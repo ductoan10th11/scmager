@@ -11,6 +11,8 @@ import {
   getLatestTrackLogPoint,
   getOutgoingDocumentDetail,
   getTrackLog,
+  reworkCountIn,
+  trackLogNote,
   type OutgoingDocumentListItem,
   type TrackLogItem,
 } from "./langson-dwr.service";
@@ -135,14 +137,6 @@ const timelineFrom = (trackLogs: TrackLogItem[]) => trackLogs.map((item) => ({
 }));
 
 
-// eOffice prefixes the routing remark with a scoring header
-// ("Điểm: 0.9, Làm lại: 1"). The extension already strips it before sending, so
-// the same is done here to keep both paths writing the identical note.
-const withoutScoreHeader = (text: string) => text
-  .replace(/^\s*(?:điểm|diem)\s*:\s*[-\d.,]+\s*(?:[,;]\s*)?/iu, '')
-  .replace(/^\s*(?:làm\s*lại|lam\s*lai)\s*:\s*\d+\s*(?:[,;]\s*)?/iu, '')
-  .trim();
-
 /**
  * Whoever routes a document on eOffice types their remarks into one free-text
  * box — the rework count lives inside that same text. Both the count and the
@@ -157,9 +151,9 @@ const routingSignalFrom = (trackLogs: TrackLogItem[]) => {
   for (const item of latest) {
     const text = `${item.comment ?? ""} ${item.content ?? ""}`.trim();
     if (!text) continue;
-    if (!note) note = withoutScoreHeader(text);
-    const match = text.match(/(?:làm\s*lại|lam\s*lai)\s*:\s*(\d+)/iu);
-    if (match) return { reworkCount: Number(match[1]), note: withoutScoreHeader(text) };
+    if (!note) note = trackLogNote(item);
+    const reworkCount = reworkCountIn(text);
+    if (reworkCount !== null) return { reworkCount, note: trackLogNote(item) };
   }
   return { reworkCount: 0, note };
 };
@@ -797,6 +791,7 @@ export const outgoingProductReconciliationInternals = {
   dateInYear,
   needsReconciliation,
   reworkCountFrom,
+  routingSignalFrom,
   retryDelayMs,
   sourceFingerprint,
   upsertIncomingSource,
