@@ -41,8 +41,15 @@ export const useNotRequired = ({ user, currentUserId, currentDepartmentId, docum
     notRequiredStatus(context) === "PENDING"
     && personId(notRequiredOf(context)?.requestedBy) === currentUserId.value;
 
+  // A leader skips the request and takes the task out of the KPI at once.
+  const canDiscard = (context) =>
+    context?.pageType === "incoming"
+    && canManage(context)
+    && !["PENDING", "CONFIRMED"].includes(notRequiredStatus(context))
+    && context?.management?.businessCompletion?.completed !== true;
+
   const canDecide = (context) => notRequiredStatus(context) === "PENDING" && canManage(context);
   const canRestore = (context) => notRequiredStatus(context) === "CONFIRMED" && canManage(context);
 
-  return { dialogOpen, dialogMode, dialogTarget, openDialog, canManage, canRequest, canCancel, canDecide, canRestore };
+  return { dialogOpen, dialogMode, dialogTarget, openDialog, canManage, canRequest, canCancel, canDecide, canRestore, canDiscard };
 };

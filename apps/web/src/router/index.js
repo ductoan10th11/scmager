@@ -6,6 +6,7 @@ import DashboardPage from '../pages/DashboardPage.vue'
 import MainLayout from '../layouts/MainLayout.vue'
 import {
   OfficeDocumentsPage,
+  DiscardedTasksPage,
   IngestMonitorPage,
   ConnectorsPage,
   OrganizationDepartmentsPage,
@@ -131,6 +132,12 @@ const routes = [
         path: 'office-documents',
         name: 'OfficeDocuments',
         component: OfficeDocumentsPage,
+        meta: { requiresAuth: true, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
+      },
+      {
+        path: 'discarded-tasks',
+        name: 'DiscardedTasks',
+        component: DiscardedTasksPage,
         meta: { requiresAuth: true, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
       },
       {

@@ -14,8 +14,8 @@ const emit = defineEmits(["action"]);
 
 const STATUS = {
   PENDING: { label: "Chờ lãnh đạo xem xét", box: "border-amber-300/80 bg-amber-50/50", badge: "bg-amber-100 text-amber-900 border-amber-300", icon: Clock3 },
-  CONFIRMED: { label: "Đã xác nhận không cần làm", box: "border-zinc-300 bg-zinc-50/70", badge: "bg-zinc-100 text-zinc-800 border-zinc-300", icon: Ban },
-  REJECTED: { label: "Lãnh đạo từ chối đề nghị", box: "border-rose-300/80 bg-rose-50/50", badge: "bg-rose-100 text-rose-900 border-rose-300", icon: XCircle },
+  CONFIRMED: { label: "Đã loại bỏ", box: "border-zinc-300 bg-zinc-50/70", badge: "bg-zinc-100 text-zinc-800 border-zinc-300", icon: Ban },
+  REJECTED: { label: "Lãnh đạo từ chối đề nghị loại bỏ", box: "border-rose-300/80 bg-rose-50/50", badge: "bg-rose-100 text-rose-900 border-rose-300", icon: XCircle },
   CANCELLED: { label: "Đề nghị đã hủy", box: "border-zinc-300 bg-zinc-50/70", badge: "bg-zinc-100 text-zinc-800 border-zinc-300", icon: XCircle },
   // A restored document is back to normal; only its history is left to show.
   NONE: { label: "Đã khôi phục", box: "border-emerald-300/80 bg-emerald-50/50", badge: "bg-emerald-100 text-emerald-900 border-emerald-300", icon: CheckCircle2 },
@@ -23,7 +23,8 @@ const STATUS = {
 
 const HISTORY_LABELS = {
   REQUESTED: "Đề nghị",
-  CONFIRMED: "Xác nhận không cần làm",
+  CONFIRMED: "Đồng ý loại bỏ",
+  DISCARDED: "Loại bỏ",
   REJECTED: "Từ chối",
   CANCELLED: "Hủy đề nghị",
   RESTORED: "Khôi phục",
@@ -49,7 +50,7 @@ const formatDateTime = (value) => {
   <section v-if="visible" class="mb-4 space-y-2 rounded-xl border p-3 text-xs" :class="status.box">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div class="flex flex-wrap items-center gap-2">
-        <span class="font-bold text-zinc-900">Việc không cần làm</span>
+        <span class="font-bold text-zinc-900">Loại bỏ nhiệm vụ</span>
         <span class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-bold" :class="status.badge">
           <component :is="status.icon" class="h-3 w-3" />
           {{ status.label }}

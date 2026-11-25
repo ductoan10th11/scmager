@@ -2,7 +2,7 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { io } from 'socket.io-client'
-import { AlertTriangle, Bell, CheckCheck, CheckCircle2, Clock3, FileText, Forward, Loader2, RotateCcw, Send } from 'lucide-vue-next'
+import { AlertTriangle, Bell, CheckCheck, CheckCircle2, Clock3, FileText, Forward, Loader2, RotateCcw, Send, Ban } from 'lucide-vue-next'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Button } from '@/components/ui/button'
 import { http } from '@/shared/api/http'
@@ -29,9 +29,9 @@ const typeLabels = {
   WORK_DECLARATION_RETURNED: 'Công việc cần bổ sung',
   WORK_DECLARATION_RESCHEDULED: 'Đổi thời gian công việc',
   DOCUMENTS_AWAITING_SCORE: 'Văn bản chờ chấm điểm',
-  OFFICE_DOCUMENT_NOT_REQUIRED_REQUESTED: 'Đề nghị việc không cần làm',
-  OFFICE_DOCUMENT_NOT_REQUIRED_CONFIRMED: 'Việc không cần làm',
-  OFFICE_DOCUMENT_NOT_REQUIRED_REJECTED: 'Từ chối việc không cần làm',
+  OFFICE_DOCUMENT_NOT_REQUIRED_REQUESTED: 'Đề nghị loại bỏ nhiệm vụ',
+  OFFICE_DOCUMENT_NOT_REQUIRED_CONFIRMED: 'Nhiệm vụ đã loại bỏ',
+  OFFICE_DOCUMENT_NOT_REQUIRED_REJECTED: 'Từ chối loại bỏ',
   OFFICE_DOCUMENT_NOT_REQUIRED_RESTORED: 'Khôi phục văn bản',
   DOCUMENT_RESULT_SUBMITTED: 'Sản phẩm chờ duyệt',
   DOCUMENT_RESULT_FORWARDED: 'Sản phẩm chuyển duyệt',
@@ -54,7 +54,7 @@ const typeMeta = {
   WORK_DECLARATION_RESCHEDULED: { icon: Clock3, class: 'bg-sky-50 text-sky-700' },
   DOCUMENTS_AWAITING_SCORE: { icon: AlertTriangle, class: 'bg-amber-50 text-amber-700' },
   OFFICE_DOCUMENT_NOT_REQUIRED_REQUESTED: { icon: Send, class: 'bg-amber-50 text-amber-700' },
-  OFFICE_DOCUMENT_NOT_REQUIRED_CONFIRMED: { icon: CheckCircle2, class: 'bg-emerald-50 text-emerald-700' },
+  OFFICE_DOCUMENT_NOT_REQUIRED_CONFIRMED: { icon: Ban, class: 'bg-zinc-100 text-zinc-700' },
   OFFICE_DOCUMENT_NOT_REQUIRED_REJECTED: { icon: RotateCcw, class: 'bg-amber-50 text-amber-700' },
   OFFICE_DOCUMENT_NOT_REQUIRED_RESTORED: { icon: RotateCcw, class: 'bg-sky-50 text-sky-700' },
   DOCUMENT_RESULT_SUBMITTED: { icon: Send, class: 'bg-sky-50 text-sky-700' },

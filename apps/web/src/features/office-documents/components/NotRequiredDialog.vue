@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref, watch } from "vue";
-import { CheckCircle2, RotateCcw, XCircle } from "lucide-vue-next";
+import { Ban, CheckCircle2, RotateCcw, XCircle } from "lucide-vue-next";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -17,13 +17,15 @@ const props = defineProps({
 const emit = defineEmits(["update:open", "saved"]);
 
 const TITLES = {
-  request: "Chuyển lại lãnh đạo (việc không cần làm)",
-  cancel: "Hủy đề nghị việc không cần làm",
-  decide: "Xem xét việc không cần làm",
+  request: "Đề nghị loại bỏ nhiệm vụ",
+  discard: "Loại bỏ nhiệm vụ",
+  cancel: "Hủy đề nghị loại bỏ",
+  decide: "Xem xét đề nghị loại bỏ",
   restore: "Khôi phục vào danh sách tính KPI",
 };
 const DESCRIPTIONS = {
   request: "Văn bản chuyển sang mục Công việc cần xem xét và chưa tính KPI cho đến khi lãnh đạo quyết định. Nếu bị từ chối, văn bản trở lại danh sách với hạn xử lý ban đầu và vẫn tính chậm hạn.",
+  discard: "Nhiệm vụ không tính KPI và chuyển sang mục Nhiệm vụ đã bỏ. Có thể khôi phục lại sau.",
   cancel: "Văn bản trở lại danh sách tính KPI như bình thường.",
   decide: "Xác nhận: văn bản không tính KPI, vẫn được lưu lại. Từ chối: văn bản tính KPI theo hạn xử lý ban đầu.",
   restore: "Văn bản tính KPI trở lại theo hạn xử lý ban đầu. Lịch sử đề nghị vẫn được giữ.",
@@ -50,7 +52,7 @@ const submit = async (path, body) => {
     emit("update:open", false);
     emit("saved", props.context);
   } catch (requestError) {
-    error.value = requestError.message || "Không thể cập nhật việc không cần làm.";
+    error.value = requestError.message || "Không thể cập nhật trạng thái loại bỏ.";
   } finally {
     saving.value = false;
   }
@@ -72,9 +74,9 @@ const submit = async (path, body) => {
           <p class="mt-1 whitespace-pre-wrap text-amber-900">{{ reason || "Không có lý do." }}</p>
         </div>
 
-        <label v-if="mode === 'request'" class="grid gap-2 text-sm font-semibold text-zinc-700">
+        <label v-if="mode === 'request' || mode === 'discard'" class="grid gap-2 text-sm font-semibold text-zinc-700">
           Lý do (bắt buộc)
-          <Textarea v-model="text" class="min-h-24 resize-none" placeholder="Vì sao đây là việc không cần làm..." />
+          <Textarea v-model="text" class="min-h-24 resize-none" placeholder="Vì sao nhiệm vụ này không phải làm..." />
         </label>
         <label v-else-if="mode === 'decide'" class="grid gap-2 text-sm font-semibold text-zinc-700">
           Ý kiến (bắt buộc khi từ chối)
@@ -95,6 +97,15 @@ const submit = async (path, body) => {
             :disabled="saving || !trimmed"
             @click="submit('request', { reason: trimmed })"
           >Gửi đề nghị</Button>
+          <Button
+            v-else-if="mode === 'discard'"
+            class="gap-1.5 rounded-full bg-rose-600 font-bold text-white hover:bg-rose-700"
+            :disabled="saving || !trimmed"
+            @click="submit('discard', { reason: trimmed })"
+          >
+            <Ban class="h-4 w-4" />
+            Loại bỏ
+          </Button>
           <Button
             v-else-if="mode === 'cancel'"
             class="rounded-full bg-zinc-800 font-bold text-white hover:bg-zinc-900"
@@ -117,7 +128,7 @@ const submit = async (path, body) => {
               @click="submit('decide', { accept: true, note: trimmed })"
             >
               <CheckCircle2 class="h-4 w-4" />
-              Xác nhận không cần làm
+              Đồng ý loại bỏ
             </Button>
           </template>
           <Button

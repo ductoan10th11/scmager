@@ -265,7 +265,7 @@ const notRequiredSchema = new Schema(
           {
             action: {
               type: String,
-              enum: ["REQUESTED", "CONFIRMED", "REJECTED", "CANCELLED", "RESTORED"],
+              enum: ["REQUESTED", "CONFIRMED", "REJECTED", "CANCELLED", "RESTORED", "DISCARDED"],
               required: true,
             },
             actor: { type: Schema.Types.ObjectId, ref: "User", default: null },

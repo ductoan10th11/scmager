@@ -15,6 +15,7 @@ import {
 import {
   cancelOfficeDocumentNotRequired,
   decideOfficeDocumentNotRequired,
+  discardOfficeDocument,
   requestOfficeDocumentNotRequired,
   restoreOfficeDocumentNotRequired,
 } from "../controllers/office-document-not-required.controller";
@@ -80,6 +81,11 @@ officeDocumentContextRoutes.post(
   "/:id/not-required/cancel",
   requireAuth,
   cancelOfficeDocumentNotRequired,
+);
+officeDocumentContextRoutes.post(
+  "/:id/not-required/discard",
+  requireAuth,
+  discardOfficeDocument,
 );
 officeDocumentContextRoutes.post(
   "/:id/not-required/restore",

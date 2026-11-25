@@ -22,6 +22,7 @@ import {
 import {
   cancelOfficeDocumentNotRequiredService,
   decideOfficeDocumentNotRequiredService,
+  discardOfficeDocumentService,
   requestOfficeDocumentNotRequiredService,
   restoreOfficeDocumentNotRequiredService,
 } from "../services/office-document-not-required.service";
@@ -487,6 +488,59 @@ test("a manager restores a confirmed task and the trail records it", async () =>
   });
 });
 
+test("a leader discards a task directly and restore brings it back", async () => {
+  await withDocument(incoming(), async (store) => {
+    await assert.rejects(discardOfficeDocumentService(owner, documentId, { reason: "x" }), refusedWith(403));
+    await assert.rejects(discardOfficeDocumentService(otherLeader, documentId, { reason: "x" }), refusedWith(403));
+    await assert.rejects(discardOfficeDocumentService(ownLeader, documentId, { reason: "  " }), refusedWith(400));
+    await assert.rejects(discardOfficeDocumentService(ownLeader, documentId, { reason: "x".repeat(2_001) }), refusedWith(400));
+
+    const result = await discardOfficeDocumentService(ownLeader, documentId, { reason: "Không thuộc thẩm quyền" });
+    assert.equal(result.data.notRequired.status, "CONFIRMED");
+    const state = store.document.management.notRequired;
+    assert.equal(state.reason, "Không thuộc thẩm quyền");
+    assert.equal(state.requestedBy, null);
+    assert.equal(state.decidedBy, leaderA);
+    assert.deepEqual(state.history.map((entry: any) => entry.action), ["DISCARDED"]);
+    assert.match(store.document.management.note, /loại bỏ.*Không thuộc thẩm quyền/);
+    assert.equal(store.notifications.length, 1);
+    assert.equal(String(store.notifications[0].recipient), specialist);
+    assert.equal(store.notifications[0].type, "OFFICE_DOCUMENT_NOT_REQUIRED_CONFIRMED");
+
+    await assert.rejects(discardOfficeDocumentService(chief, documentId, { reason: "Lần nữa" }), refusedWith(409));
+    await restoreOfficeDocumentNotRequiredService(chief, documentId, {});
+    assert.equal(store.document.management.notRequired.status, "NONE");
+    // No requester to tell, so the owner hears it counts again.
+    assert.equal(store.notifications[1].type, "OFFICE_DOCUMENT_NOT_REQUIRED_RESTORED");
+    assert.equal(String(store.notifications[1].recipient), specialist);
+    await assert.doesNotReject(discardOfficeDocumentService(communeLeader, documentId, { reason: "Lần hai" }));
+  });
+});
+
+test("discard leaves a pending request to its decision and refuses finished or outgoing work", async () => {
+  await withDocument(incoming(pending()), async () => {
+    await assert.rejects(discardOfficeDocumentService(chief, documentId, { reason: "x" }), refusedWith(409));
+  });
+  for (const status of ["REJECTED", "CANCELLED"]) {
+    await withDocument(incoming(pending({ status })), async (store) => {
+      await discardOfficeDocumentService(admin, documentId, { reason: "Bỏ" });
+      assert.equal(store.document.management.notRequired.status, "CONFIRMED");
+    });
+  }
+  const withResult = incoming({
+    businessCompletion: { completed: true, evidenceType: "WORK_DECLARATION", submittedBy: specialist },
+  });
+  await withDocument(withResult, async () => {
+    await assert.rejects(discardOfficeDocumentService(chief, documentId, { reason: "x" }), refusedWith(409));
+  });
+  await withDocument(incoming({}, { pageType: "outgoing" }), async () => {
+    await assert.rejects(discardOfficeDocumentService(chief, documentId, { reason: "x" }), refusedWith(400));
+  });
+  await withDocument(incoming({ scoreComplaint: { status: "PENDING" } }), async () => {
+    await assert.rejects(discardOfficeDocumentService(chief, documentId, { reason: "x" }), refusedWith(409));
+  });
+});
+
 test("restore only applies to a confirmed task", async () => {
   await withDocument(incoming(pending()), async () => {
     await assert.rejects(restoreOfficeDocumentNotRequiredService(chief, documentId, {}), refusedWith(409));
@@ -945,12 +999,12 @@ const listFixture = () => [
 const listed = (query: Record<string, unknown>) => withList(listFixture(), async () =>
   ((await listOfficeDocumentContexts(chief, query)).data as any[]).map((row) => row.observation.soKyHieu));
 
-test("the list exposes the state and filters on it", async () => {
+test("the list exposes the state, hides discarded tasks by default and filters on it", async () => {
   await withList(listFixture(), async () => {
     const rows = (await listOfficeDocumentContexts(chief, {})).data as any[];
     assert.deepEqual(
       rows.map((row) => row.management.notRequired?.status ?? "NONE"),
-      ["NONE", "PENDING", "CONFIRMED"],
+      ["NONE", "PENDING"],
     );
   });
   assert.deepEqual(await listed({ notRequiredState: "PENDING" }), ["2/TEST"]);

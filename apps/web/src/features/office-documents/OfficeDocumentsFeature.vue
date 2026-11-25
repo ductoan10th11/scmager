@@ -5,6 +5,7 @@ import {
   ArrowUp,
   ArrowUpDown,
   ArrowUpRight,
+  Ban,
   Building2,
   Calendar as CalendarIcon,
   CalendarDays,
@@ -59,6 +60,10 @@ import NotRequiredDialog from "./components/NotRequiredDialog.vue";
 import NotRequiredPanel from "./components/NotRequiredPanel.vue";
 
 const activeTab = ref("incoming");
+const props = defineProps({
+  // The "Nhiệm vụ đã bỏ" page: the same screen locked to discarded tasks.
+  discarded: { type: Boolean, default: false },
+});
 const router = useRouter();
 const route = useRoute();
 const loading = ref(false);
@@ -105,7 +110,7 @@ const filters = reactive({
   deadlineStatuses: [],
   scoreState: "",
   complaintState: "",
-  notRequiredState: "",
+  notRequiredState: props.discarded ? "CONFIRMED" : "",
   dateField: "observed",
   dateFrom: "",
   dateTo: "",
@@ -172,7 +177,7 @@ const hasActiveFilters = computed(() => {
     filters.deadlineStatuses.length > 0 ||
     filters.scoreState ||
     filters.complaintState ||
-    filters.notRequiredState ||
+    (!props.discarded && filters.notRequiredState) ||
     filters.dateFrom ||
     filters.dateTo ||
     search.value.trim()
@@ -185,7 +190,7 @@ const resetFilters = () => {
   filters.deadlineStatuses = [];
   filters.scoreState = "";
   filters.complaintState = "";
-  filters.notRequiredState = "";
+  filters.notRequiredState = props.discarded ? "CONFIRMED" : "";
   filters.dateFrom = "";
   filters.dateTo = "";
   search.value = "";
@@ -566,6 +571,7 @@ const {
   canCancel: canCancelNotRequired,
   canDecide: canDecideNotRequired,
   canRestore: canRestoreNotRequired,
+  canDiscard: canDiscardTask,
   canManage: canManageTaskOwner,
 } = useNotRequired({ user, currentUserId, currentDepartmentId, documentOwnerId, personId });
 
@@ -595,6 +601,10 @@ const openManualCompletion = (context, mode) => {
 const refreshAfterNotRequired = async (context) => {
   const id = identity(context);
   await fetchContexts(pagination.value.page, true);
+  // The task just left this list; if it was the last row of the last page, step back.
+  if (!items.value.length && pagination.value.page > 1) {
+    await fetchContexts(Math.max(1, pagination.value.totalPages), true);
+  }
   await openContext(selected.value && identity(selected.value) === id ? selected.value : context);
 };
 
@@ -1007,6 +1017,8 @@ watch(counterpartTarget, (target) => {
 // Full switch: replaces the open record with its counterpart, list tab included.
 const openCounterpart = async (target) => {
   if (!target?.id) return;
+  // This page lists only discarded tasks; the counterpart lives on Văn bản.
+  if (props.discarded) return router.push({ path: "/office-documents", query: { focus: target.id } });
   const goingToProduct = activeTab.value === "incoming";
   activeTab.value = goingToProduct ? "outgoing" : "incoming";
   const incomingSymbol = selected.value?.pageType === "incoming"
@@ -1667,14 +1679,20 @@ onUnmounted(() => {
         class="mx-auto flex max-w-[1560px] flex-wrap items-center justify-between gap-3"
       >
         <div>
-          <h1 class="flex items-center gap-2 text-xl font-bold text-zinc-900">
+          <h1 v-if="discarded" class="flex items-center gap-2 text-xl font-bold text-zinc-900">
+            <Ban class="h-5 w-5 text-rose-600" /> Nhiệm vụ đã bỏ
+          </h1>
+          <h1 v-else class="flex items-center gap-2 text-xl font-bold text-zinc-900">
             <FileText class="h-5 w-5 text-sky-600" /> Văn bản
           </h1>
-          <p class="mt-1 text-sm text-zinc-500">
+          <p v-if="discarded" class="mt-1 text-sm text-zinc-500">
+            Nhiệm vụ không phải làm, không tính vào KPI. Lãnh đạo có thể mở chi tiết để khôi phục.
+          </p>
+          <p v-else class="mt-1 text-sm text-zinc-500">
             Ngữ cảnh quan sát từ eOffice do extension gửi; không phải
           </p>
         </div>
-        <div class="flex items-center gap-2">
+        <div v-if="!discarded" class="flex items-center gap-2">
           <Button
             v-if="canReviewResults"
             variant="outline"
@@ -1716,7 +1734,7 @@ onUnmounted(() => {
       <div class="space-y-4">
         <!-- Tabs & Ô tìm kiếm -->
         <div class="flex flex-col justify-start gap-4 md:flex-row md:items-center">
-          <div class="shrink-0">
+          <div v-if="!discarded" class="shrink-0">
             <SlidingTabs :tabs="TABS" v-model="activeTab" />
           </div>
           <div class="relative w-full md:w-[380px]">
@@ -1846,7 +1864,8 @@ onUnmounted(() => {
             <div class="flex flex-wrap items-center gap-2">
               <span class="text-xs font-semibold text-zinc-400 mr-0.5">Trạng thái:</span>
 
-              <template v-if="activeTab === 'incoming'">
+              <!-- A discarded task has no deadline status, so these would always come back empty. -->
+              <template v-if="activeTab === 'incoming' && !discarded">
                 <!-- Done on time -->
                 <button
                   type="button"
@@ -1932,8 +1951,8 @@ onUnmounted(() => {
                 </span>
               </button>
 
-              <!-- Not required: awaiting review / confirmed -->
-              <template v-if="activeTab === 'incoming'">
+              <!-- Not required: awaiting review (discarded ones have their own page) -->
+              <template v-if="activeTab === 'incoming' && !discarded">
                 <button
                   type="button"
                   class="inline-flex items-center gap-1.5 h-7 rounded-full border px-3 text-xs font-medium transition-all duration-150"
@@ -1945,20 +1964,6 @@ onUnmounted(() => {
                   <Clock3 class="h-3 w-3 text-amber-600" />
                   Chờ xem xét
                   <span v-if="filters.notRequiredState === 'PENDING'" class="rounded-full bg-amber-200/90 px-1.5 text-[10px] text-amber-950 font-bold">
-                    {{ pagination.total }}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  class="inline-flex items-center gap-1.5 h-7 rounded-full border px-3 text-xs font-medium transition-all duration-150"
-                  :class="filters.notRequiredState === 'CONFIRMED'
-                    ? 'border-zinc-400 bg-zinc-100 text-zinc-900 shadow-xs ring-1 ring-zinc-300 font-semibold'
-                    : 'border-zinc-200/70 bg-white text-zinc-600 hover:border-zinc-300 hover:bg-zinc-50'"
-                  @click="filters.notRequiredState = filters.notRequiredState === 'CONFIRMED' ? '' : 'CONFIRMED'"
-                >
-                  <XCircle class="h-3 w-3 text-zinc-500" />
-                  Không cần làm
-                  <span v-if="filters.notRequiredState === 'CONFIRMED'" class="rounded-full bg-zinc-200 px-1.5 text-[10px] text-zinc-900 font-bold">
                     {{ pagination.total }}
                   </span>
                 </button>
@@ -2335,7 +2340,7 @@ onUnmounted(() => {
             v-else
             class="py-16 text-center text-sm font-medium text-zinc-400"
           >
-            {{ tabConfig.empty }}
+            {{ discarded ? "Chưa có nhiệm vụ nào bị loại bỏ." : tabConfig.empty }}
           </div>
           <footer
             class="flex flex-wrap items-center justify-between gap-3 border-t border-zinc-100 px-4 py-3"
@@ -2412,7 +2417,7 @@ onUnmounted(() => {
                   Bỏ hoàn thành
                 </Button>
                 <Button
-                  v-if="selected.pageType === 'incoming'"
+                  v-if="selected.pageType === 'incoming' && notRequiredStatus(selected) !== 'CONFIRMED'"
                   variant="outline"
                   size="sm"
                   @click="declareWorkForTask(selected)"
@@ -2420,7 +2425,7 @@ onUnmounted(() => {
                   Khai báo việc
                 </Button>
                 <Button
-                  v-if="selected.pageType === 'incoming'"
+                  v-if="selected.pageType === 'incoming' && notRequiredStatus(selected) !== 'CONFIRMED'"
                   size="sm"
                   class="bg-sky-600 text-white hover:bg-sky-700"
                   @click="openProductForTask(selected)"
@@ -2445,13 +2450,15 @@ onUnmounted(() => {
                   Duyệt khiếu nại
                 </Button>
                 <Button
-                  v-if="canRequestNotRequired(selected)"
+                  v-if="canDiscardTask(selected) || canRequestNotRequired(selected)"
                   size="sm"
                   variant="outline"
-                  class="border-zinc-300 bg-white text-zinc-800 hover:bg-zinc-50"
-                  @click="openNotRequired(selected, 'request')"
+                  class="gap-1 border-rose-200 bg-white text-rose-700 hover:bg-rose-50"
+                  :title="canDiscardTask(selected) ? 'Loại bỏ nhiệm vụ khỏi KPI' : 'Đề nghị lãnh đạo loại bỏ nhiệm vụ'"
+                  @click="openNotRequired(selected, canDiscardTask(selected) ? 'discard' : 'request')"
                 >
-                  Chuyển lại lãnh đạo (việc không cần làm)
+                  <Ban class="h-3.5 w-3.5" />
+                  Loại bỏ
                 </Button>
                 <Button
                   v-if="canEditContext(selected)"

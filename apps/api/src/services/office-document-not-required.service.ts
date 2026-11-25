@@ -99,7 +99,7 @@ const applyTransition = async (
   context: any,
   input: {
     from: Record<string, unknown>;
-    action: "REQUESTED" | "CONFIRMED" | "REJECTED" | "CANCELLED" | "RESTORED";
+    action: "REQUESTED" | "CONFIRMED" | "REJECTED" | "CANCELLED" | "RESTORED" | "DISCARDED";
     note: string;
     at: Date;
     set: Record<string, unknown>;
@@ -342,9 +342,10 @@ export const restoreOfficeDocumentNotRequiredService = async (
   const entry = `${actorName(actor)} khôi phục văn bản đã xác nhận không cần làm; văn bản tính KPI lại theo hạn cũ.${note ? ` Ý kiến: ${note}` : ""}`;
   await appendNote(context, entry);
 
-  const requesterId = idOf(state.requestedBy);
-  if (requesterId) {
-    await notifyUser(requesterId, {
+  // A task a leader discarded directly has no requester: tell its owner instead.
+  const recipientId = idOf(state.requestedBy) || effectiveOfficeDocumentOwnerId(context);
+  if (recipientId && recipientId !== actor.id) {
+    await notifyUser(recipientId, {
       actor: actor.id,
       type: "OFFICE_DOCUMENT_NOT_REQUIRED_RESTORED",
       title: "Văn bản được khôi phục vào danh sách tính KPI",
@@ -352,6 +353,71 @@ export const restoreOfficeDocumentNotRequiredService = async (
       relatedModel: "IncomingDocument",
       relatedId: idOf(context._id),
       metadata: { note },
+    });
+  }
+
+  return { data: summarize(updated) };
+};
+
+/**
+ * A leader takes a task out of the KPI without waiting for a request. It lands
+ * in the same CONFIRMED state a decided request does, so the KPI, the reports
+ * and restore treat both alike; only the history tells them apart.
+ */
+export const discardOfficeDocumentService = async (
+  actor: AuthUser,
+  id: unknown,
+  body: Record<string, unknown>,
+) => {
+  const context = await loadContext(actor, id);
+  await assertCanManageOfficeDocumentOwner(actor, context);
+  const status = officeDocumentNotRequiredStatus(context);
+  if (status === "PENDING") throw conflict("Văn bản đang có đề nghị chờ xem xét, hãy dùng Xem xét.");
+  if (status === "CONFIRMED") throw conflict("Văn bản đã được loại bỏ.");
+  if (context.management?.businessCompletion?.completed === true) {
+    throw conflict("Văn bản đã có kết quả nên không thể loại bỏ.");
+  }
+  // Discarding would hide it from the pending-complaint filter with nobody deciding it.
+  if (context.management?.scoreComplaint?.status === "PENDING") {
+    throw conflict("Văn bản đang có khiếu nại điểm chờ duyệt, hãy xử lý khiếu nại trước.");
+  }
+  const reason = requiredText(body.reason, "Nhập lý do loại bỏ.", "Lý do quá dài.");
+
+  const now = new Date();
+  const updated = await transition(actor, context, {
+    from: {
+      "management.notRequired.status": { $nin: ["PENDING", "CONFIRMED"] },
+      "management.businessCompletion.completed": { $ne: true },
+      "management.scoreComplaint.status": { $ne: "PENDING" },
+    },
+    action: "DISCARDED",
+    note: reason,
+    at: now,
+    set: {
+      status: "CONFIRMED",
+      reason,
+      requestedBy: null,
+      requestedByName: "",
+      requestedAt: null,
+      decisionNote: "",
+      decidedBy: actor.id,
+      decidedAt: now,
+    },
+    conflictMessage: "Trạng thái văn bản vừa thay đổi, hãy tải lại rồi thử lại.",
+  });
+  const entry = `${actorName(actor)} loại bỏ nhiệm vụ; văn bản không tính vào KPI. Lý do: ${reason}`;
+  await appendNote(context, entry);
+
+  const ownerId = effectiveOfficeDocumentOwnerId(context);
+  if (ownerId && ownerId !== actor.id) {
+    await notifyUser(ownerId, {
+      actor: actor.id,
+      type: "OFFICE_DOCUMENT_NOT_REQUIRED_CONFIRMED",
+      title: "Nhiệm vụ đã được lãnh đạo loại bỏ",
+      message: `${symbolOf(context)}: ${entry}`,
+      relatedModel: "IncomingDocument",
+      relatedId: idOf(context._id),
+      metadata: { reason },
     });
   }
 

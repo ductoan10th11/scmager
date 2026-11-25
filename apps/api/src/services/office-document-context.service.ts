@@ -1775,6 +1775,8 @@ export const listOfficeDocumentContexts = async (
       complaintState === "PENDING"
       && context.management?.scoreComplaint?.status !== "PENDING"
     ) return false;
+    // A discarded task lives on its own page: it shows only when asked for.
+    if (officeDocumentNotRequiredStatus(context) === "CONFIRMED" && notRequiredState !== "CONFIRMED") return false;
     if (notRequiredState && officeDocumentNotRequiredStatus(context) !== notRequiredState) return false;
     if (scoreState === "AWAITING_SCORE" && !tracking.awaitingScore) return false;
     if (scoreState === "SCORED" && tracking.rawScore === null) return false;

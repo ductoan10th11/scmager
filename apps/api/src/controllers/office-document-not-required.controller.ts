@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from "express";
 import {
   cancelOfficeDocumentNotRequiredService,
   decideOfficeDocumentNotRequiredService,
+  discardOfficeDocumentService,
   requestOfficeDocumentNotRequiredService,
   restoreOfficeDocumentNotRequiredService,
 } from "../services/office-document-not-required.service";
@@ -35,6 +36,14 @@ export const decideOfficeDocumentNotRequired = async (req: Request, res: Respons
 export const restoreOfficeDocumentNotRequired = async (req: Request, res: Response, next: NextFunction) => {
   try {
     res.status(200).json(await restoreOfficeDocumentNotRequiredService(actor(req), req.params.id, req.body));
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const discardOfficeDocument = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    res.status(200).json(await discardOfficeDocumentService(actor(req), req.params.id, req.body));
   } catch (error) {
     next(error);
   }

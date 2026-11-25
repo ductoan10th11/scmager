@@ -6,6 +6,7 @@ import { preloadProtectedRouteComponents, preloadRouteComponent } from '@/router
 import { 
   Activity, 
   AlertTriangle, 
+  Ban,
   BarChart3, 
   Building2, 
   CalendarRange, 
@@ -53,6 +54,7 @@ const topLevelNavItems = computed(() => {
 const kpiSubItems = computed(() => {
   const items = [
     { name: 'Văn bản', path: '/office-documents', icon: FileText, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
+    { name: 'Nhiệm vụ đã bỏ', path: '/discarded-tasks', icon: Ban, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
     { name: 'Hiệu suất', path: '/performance', icon: BarChart3, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
     { name: 'Lịch công việc', path: '/assignments', icon: CalendarRange, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER', 'SPECIALIST'] },
     { name: 'Báo cáo quá hạn', path: '/reports', icon: AlertTriangle, roles: ['ADMIN', 'OFFICE_CHIEF', 'COMMUNE_LEADER', 'DEPARTMENT_LEADER'] },
